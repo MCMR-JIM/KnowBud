@@ -13,7 +13,7 @@ This repository currently contains **Phase T0**: project layout, dependencies, e
 - Python **3.11+**
 - Windows / macOS / Linux（开发以 Windows 为主时可先验证本机路径）
 
-## 快速开始
+## 开始
 
 ```bash
 cd LoopTutor
