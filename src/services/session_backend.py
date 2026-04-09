@@ -3,14 +3,13 @@ import json
 from pathlib import Path
 from dataclasses import dataclass, field
 
-from dotenv import load_dotenv
-
 from src.core.enums import UserIntent, LearningPhase
 from src.core.models import AppState, UserProfile, LearningState, CurriculumConfig, TopicNode, PendingQuestion
 from src.core.decision_engine import DecisionEngine
 from src.skills.base_skill import SkillContext
 from src.skills.voice_io_skill import VoiceIOSkill
 from src.skills.llm_tutor_skill import LLMTutorSkill
+from src.services.env_loader import load_project_env
 
 
 @dataclass
@@ -25,7 +24,7 @@ class SessionBackend:
     """系统大管家：负责协调前端、状态机、语音与LLM技能。"""
 
     def __init__(self) -> None:
-        load_dotenv()
+        load_project_env()
 
         data_root = Path(os.getenv("DATA_ROOT", "./data"))
         self.ctx = SkillContext(data_root=data_root)
