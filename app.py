@@ -26,7 +26,13 @@ if "companion" not in st.session_state:
 # 2. 侧边栏：只保留伴学配置和真进度
 # ==========================================
 with st.sidebar:
-    st.markdown("<h1 style='text-align:center; color:#2C3E50;'>✨星梦乐园</h1>", unsafe_allow_html=True)
+    st.markdown(
+        "<div class='sidebar-brand'><h1 style='text-align:center; color:#2C3E50;'>✨星梦乐园</h1></div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown("### 🧭 页面切换")
+    st.page_link("app.py", label="儿童学习页", icon="👶")
+    st.page_link("pages/1_Admin_Dashboard.py", label="家长管理页", icon="🧑‍🏫")
     st.markdown("---")
 
     st.markdown("### 🏆 我的百宝箱")
@@ -56,7 +62,6 @@ with st.sidebar:
         list(COMPANIONS.keys()),
         index=list(COMPANIONS.keys()).index(st.session_state.companion),
     )
-    st.info("🧑‍🏫 家长管理请点击左侧栏上方的 '1 Admin Dashboard'")
 
 # ==========================================
 # 3. 主界面：人物问候与沉浸式学习舱

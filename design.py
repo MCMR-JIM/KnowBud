@@ -48,6 +48,15 @@ def get_global_css():
         border-right: 3px dashed rgba(255, 255, 255, 0.5) !important; /* 可爱的虚线边框 */
     }}
     
+    [data-testid="stSidebarUserContent"] {{
+        padding-top: 0.35rem;
+    }}
+
+    .sidebar-brand h1 {{
+        margin-top: -0.4rem;
+        margin-bottom: 0.2rem;
+    }}
+
     /* 放大侧边栏所有文字，增加圆润感 */
     [data-testid="stSidebar"] .stMarkdown p, 
     [data-testid="stSidebar"] .stMarkdown h1, 
@@ -166,6 +175,39 @@ def get_global_css():
         transform: translateY(2px) scale(0.95) !important;
     }}
 
-    header, footer, [data-testid="stSidebarNav"] {{ visibility: hidden; }}
+    /* 保留顶部控制区，避免侧边栏收起后无法拉出 */
+    [data-testid="stHeader"] {{
+        background: transparent !important;
+    }}
+    [data-testid="stSidebarCollapsedControl"] {{
+        top: 0.35rem !important;
+        z-index: 1000 !important;
+    }}
+    [data-testid="stSidebarCollapsedControl"] button {{
+        background: rgba(255, 255, 255, 0.9) !important;
+        border-radius: 12px !important;
+    }}
+
+    /* 隐藏右上角 Deploy 与配置菜单，但保留侧栏拉出按钮 */
+    [data-testid="stToolbar"] {{
+        display: flex !important;
+    }}
+    [data-testid="stToolbar"] button[kind="header"] {{
+        display: none !important;
+    }}
+    [data-testid="stSidebarCollapsedControl"] button[kind="header"] {{
+        display: flex !important;
+    }}
+    [data-testid="stSidebarCollapsedControl"] {{
+        display: block !important;
+    }}
+    [data-testid="stAppDeployButton"] {{
+        display: none !important;
+    }}
+    #MainMenu {{
+        display: none !important;
+    }}
+
+    footer, [data-testid="stSidebarNav"] {{ visibility: hidden; }}
     </style>
     """
