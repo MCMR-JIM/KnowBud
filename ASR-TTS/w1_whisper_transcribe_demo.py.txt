@@ -1,0 +1,17 @@
+from faster_whisper import WhisperModel
+import argparse
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--audio", required=True)
+    parser.add_argument("--language", default="zh")
+    args = parser.parse_args()
+
+    model = WhisperModel("base", device="cpu")
+    segments, info = model.transcribe(args.audio, language=args.language)
+
+    print("="*30)
+    print("语音转文字结果：")
+    print("="*30)
+    for seg in segments:
+        print(seg.text)
