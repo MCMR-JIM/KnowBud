@@ -1,4 +1,5 @@
-# design.py - 界面规范与全局样式引擎 (修复版)
+# design.py
+import streamlit as st
 
 COLORS = {
     "primary": "#FF9A9E",       
@@ -9,18 +10,38 @@ COLORS = {
     "cabin_border": "#FFD700"   
 }
 
+# 保留进化的逻辑，但恢复使用可爱的 Emoji 形态
 COMPANIONS = {
     "星空兔 🐰": {
         "greeting": "叮咚！我是星空兔，今天我们要一起收集好多智慧星星哦！",
-        "avatar": "🐰",
+        "stages": {
+            0: "🐇",    # 0分: 小白兔
+            50: "🐰",   # 50分: 大白兔
+            150: "🦸‍♀️🐰"  # 150分: 超级兔
+        },
         "theme_color": "#FF9A9E"
     },
     "小智龙 🦖": {
         "greeting": "嗷呜～小智龙来啦！快坐进我们的魔法学习舱，准备起飞！",
-        "avatar": "🦖",
+        "stages": {
+            0: "🦎",    # 小蜥蜴
+            50: "🦕",   # 梁龙
+            150: "🦖"   # 霸王龙
+        },
         "theme_color": "#A8E063"
     }
 }
+
+def get_companion_avatar(companion_name, score):
+    stages = COMPANIONS[companion_name]["stages"]
+    thresholds = sorted(stages.keys())
+    current_avatar = stages[thresholds[0]]
+    for t in thresholds:
+        if score >= t:
+            current_avatar = stages[t]
+        else:
+            break
+    return current_avatar
 
 def get_global_css():
     return f"""
@@ -33,129 +54,33 @@ def get_global_css():
         cursor: url('https://cdn-icons-png.flaticon.com/32/1864/1864470.png'), pointer !important;
     }}
 
-    /* 主背景 */
     .stApp {{
         background: {COLORS['bg_gradient']};
     }}
 
-    /* =========================================
-       ✨ 新增：侧边栏玻璃拟态与童趣化字体
-       ========================================= */
-    [data-testid="stSidebar"] {{
-        background: rgba(255, 255, 255, 0.2) !important; /* 让侧边栏透出主背景的渐变色 */
-        backdrop-filter: blur(15px) !important;
-        -webkit-backdrop-filter: blur(15px) !important;
-        border-right: 3px dashed rgba(255, 255, 255, 0.5) !important; /* 可爱的虚线边框 */
-    }}
-    
-    [data-testid="stSidebarUserContent"] {{
-        padding-top: 0.35rem;
+    [data-testid="stSidebar"], [data-testid="collapsedControl"] {{
+        display: none !important;
     }}
 
-    .sidebar-brand h1 {{
-        margin-top: -0.4rem;
-        margin-bottom: 0.2rem;
-    }}
-
-    /* 放大侧边栏所有文字，增加圆润感 */
-    [data-testid="stSidebar"] .stMarkdown p, 
-    [data-testid="stSidebar"] .stMarkdown h1, 
-    [data-testid="stSidebar"] .stMarkdown h3,
-    [data-testid="stSidebar"] .stRadio label {{
-        font-size: 20px !important;
-        font-weight: 800 !important;
-        color: {COLORS['text_dark']} !important;
-    }}
-    
-    /* 放大单选按钮的小圆圈 */
-    [data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-child {{
-        transform: scale(1.4);
-        margin-right: 8px;
-    }}
-
-    /* 角色浮动动画 */
-    .floating-avatar {{
-        font-size: 80px;
-        animation: float 3s ease-in-out infinite;
-        text-align: center;
-        margin-bottom: 10px;
-        text-shadow: 0 10px 20px rgba(0,0,0,0.15);
-    }}
-    @keyframes float {{
-        0% {{ transform: translateY(0px); }}
-        50% {{ transform: translateY(-15px); }}
-        100% {{ transform: translateY(0px); }}
-    }}
-
-    /* 漫画对话气泡 */
-    .speech-bubble {{
-        position: relative;
-        background: rgba(255, 255, 255, 0.9);
-        border-radius: 20px;
-        padding: 15px 25px;
-        color: {COLORS['text_dark']};
-        font-weight: bold;
-        font-size: 20px;
-        text-align: center;
-        box-shadow: 0 8px 20px rgba(0,0,0,0.1);
-        margin: 0 auto 30px auto;
-        max-width: 600px;
-        border: 3px solid white;
-    }}
-    .speech-bubble::after {{
-        content: '';
-        position: absolute;
-        top: -15px;
-        left: 50%;
-        margin-left: -15px;
-        border-width: 0 15px 15px 15px;
-        border-style: solid;
-        border-color: transparent transparent rgba(255, 255, 255, 0.9) transparent;
-    }}
-
-    /* 沉浸式魔法学习舱 */
-    .learning-cabin {{
-        background: rgba(255, 255, 255, 0.6);
-        backdrop-filter: blur(20px);
-        -webkit-backdrop-filter: blur(20px);
-        border: 6px solid {COLORS['cabin_border']};
-        border-radius: 40px;
-        box-shadow: inset 0 0 20px rgba(255, 215, 0, 0.3), 0 15px 35px rgba(0,0,0,0.1);
+    /* 恢复可爱的卡片样式 */
+    .cute-card {{
+        background: rgba(255,255,255,0.7);
         padding: 30px;
-        position: relative;
-    }}
-    .learning-cabin::before {{
-        content: '🔴 🟡 🟢';
-        position: absolute;
-        top: 10px;
-        left: 20px;
-        font-size: 14px;
-        letter-spacing: 5px;
-    }}
-
-    /* 能量条 */
-    .energy-container {{
-        width: 100%;
-        background-color: rgba(255,255,255,0.5);
-        border-radius: 20px;
-        padding: 4px;
-        box-shadow: inset 0 2px 5px rgba(0,0,0,0.1);
-    }}
-    .energy-fill {{
-        height: 28px;
-        border-radius: 16px;
-        background: linear-gradient(90deg, #FAD961 0%, #F76B1C 100%);
-        transition: width 0.8s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        border-radius: 25px;
+        text-align: center;
+        border: 4px dashed #FF9A9E;
+        box-shadow: 0 10px 20px rgba(0,0,0,0.1);
+        height: 280px;
         display: flex;
-        align-items: center;
-        justify-content: flex-end;
-        padding-right: 10px;
-        color: white;
-        font-weight: bold;
-        font-size: 16px;
+        flex-direction: column;
+        justify-content: center;
+        transition: transform 0.3s;
+    }}
+    .cute-card:hover {{
+        transform: translateY(-10px);
     }}
 
-    /* 按钮动效 */
+    /* 恢复圆润的果冻按钮 */
     .stButton > button {{
         background: rgba(255, 255, 255, 0.9) !important;
         border: 3px solid {COLORS['primary']} !important;
@@ -171,43 +96,5 @@ def get_global_css():
         transform: translateY(-6px) scale(1.05) !important;
         box-shadow: 0 12px 25px rgba(255, 154, 158, 0.5) !important;
     }}
-    .stButton > button:active {{
-        transform: translateY(2px) scale(0.95) !important;
-    }}
-
-    /* 保留顶部控制区，避免侧边栏收起后无法拉出 */
-    [data-testid="stHeader"] {{
-        background: transparent !important;
-    }}
-    [data-testid="stSidebarCollapsedControl"] {{
-        top: 0.35rem !important;
-        z-index: 1000 !important;
-    }}
-    [data-testid="stSidebarCollapsedControl"] button {{
-        background: rgba(255, 255, 255, 0.9) !important;
-        border-radius: 12px !important;
-    }}
-
-    /* 隐藏右上角 Deploy 与配置菜单，但保留侧栏拉出按钮 */
-    [data-testid="stToolbar"] {{
-        display: flex !important;
-    }}
-    [data-testid="stToolbar"] button[kind="header"] {{
-        display: none !important;
-    }}
-    [data-testid="stSidebarCollapsedControl"] button[kind="header"] {{
-        display: flex !important;
-    }}
-    [data-testid="stSidebarCollapsedControl"] {{
-        display: block !important;
-    }}
-    [data-testid="stAppDeployButton"] {{
-        display: none !important;
-    }}
-    #MainMenu {{
-        display: none !important;
-    }}
-
-    footer, [data-testid="stSidebarNav"] {{ visibility: hidden; }}
     </style>
     """

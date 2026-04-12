@@ -1,3 +1,4 @@
+# src/services/session_backend.py
 import os
 import json
 from pathlib import Path
@@ -11,14 +12,12 @@ from src.skills.voice_io_skill import VoiceIOSkill
 from src.skills.llm_tutor_skill import LLMTutorSkill
 from src.services.env_loader import load_project_env
 
-
 @dataclass
 class UIRenderBundle:
     play_path: Path | None = None
     audio_bytes: bytes | None = None
     show_question: object | None = None
     messages: list[str] = field(default_factory=list)
-
 
 class SessionBackend:
     """系统大管家：负责协调前端、状态机、语音与LLM技能。"""
@@ -53,7 +52,7 @@ class SessionBackend:
 
         return AppState(
             profile=UserProfile(student_id="user_01", display_name="演示同学"),
-            learning=LearningState(current_phase=LearningPhase.NOT_STARTED),
+            learning=LearningState(current_phase=LearningPhase.NOT_STARTED, total_score=0),
             curriculum=CurriculumConfig(
                 topics=[
                     TopicNode(
@@ -76,11 +75,9 @@ class SessionBackend:
     def handle_audio_upload(self, audio_bytes: bytes) -> UIRenderBundle:
         if not audio_bytes:
             return UIRenderBundle()
-
         transcribed_text = self.voice_skill.transcribe(audio_bytes)
         if transcribed_text:
             return self.handle_text_event(intent=UserIntent.SUBMIT_ANSWER, text=transcribed_text)
-
         return UIRenderBundle()
 
     def handle_text_event(self, intent: UserIntent, text: str | None = None) -> UIRenderBundle:
@@ -129,3 +126,55 @@ class SessionBackend:
 
         self.save_app_state(state)
         return UIRenderBundle()
+
+    # ==========================================
+    # 以下为对接前端UI的桥接方法
+    # ==========================================
+
+    def transcribe_audio(self, audio_bytes: bytes) -> str:
+        """供前端调用：将音频字节流转为文本"""
+        if not audio_bytes:
+            return ""
+        transcribed_text = self.voice_skill.transcribe(audio_bytes)
+        return transcribed_text if transcribed_text else "（哎呀，我没听清，能再说一遍吗？）"
+
+    def generate_proactive_question(self) -> str:
+        """供前端调用：AI主动向孩子发起提问或引导"""
+        state = self.load_app_state()
+        topic_title = state.curriculum.topics[0].title if state.curriculum.topics else "新知识"
+        return f"嗷呜！准备好探索【{topic_title}】了吗？看视频的时候要仔细哦，一会我要考考你！"
+
+    def evaluate_student_answer(self, user_text: str) -> tuple[str, int]:
+        """
+        供前端调用：处理孩子的回答，返回 AI的文字回复 和 获得的积分
+        返回值: (reply_text, earned_points)
+        """
+        state = self.load_app_state()
+        
+        question = state.learning.pending_question or PendingQuestion(
+            question_id="demo_q_01",
+            stem="恐龙为什么会灭绝？",
+            expected_format="open",
+        )
+        
+        try:
+            eval_result = self.llm_skill.evaluate_answer(question=question, user_answer=user_text)
+            is_correct = eval_result.is_correct
+            # 假设 eval_result 有 feedback_text 字段 (根据你的 models.py)
+            reply_text = getattr(eval_result, "feedback_text", "哇，你说得太棒了！" if is_correct else "差一点点哦，再想想？") 
+        except Exception as exc:
+            print(f"[SessionBackend] LLM评判失败，启用兜底: {exc}")
+            is_correct = "陨石" in user_text or "火山" in user_text
+            reply_text = "哇，你说得有道理！跟陨石或火山爆发有关哦！" if is_correct else "好像不太对哦，是不是跟陨石有关？"
+
+        # 对了给20分，错了给5分鼓励
+        earned_points = 20 if is_correct else 5
+        
+        # 更新积分并保存
+        state.learning.total_score += earned_points
+        self.save_app_state(state)
+        
+        # 触发底层状态机记录日志
+        self.handle_text_event(intent=UserIntent.SUBMIT_ANSWER, text=user_text)
+        
+        return reply_text, earned_points
