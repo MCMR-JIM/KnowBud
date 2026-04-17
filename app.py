@@ -1,142 +1,33 @@
-# app.py - 儿童AI学习伴侣 (完全对接后台版)
 import streamlit as st
-from design import COMPANIONS, get_global_css
+import os
+from design import get_global_css, ICONS
 
-from src.services.session_backend import SessionBackend
-from src.core.enums import UserIntent, LearningPhase
-
-st.set_page_config(page_title="AI星梦乐园", page_icon="✨", layout="wide")
+st.set_page_config(page_title="星梦乐园", layout="centered")
 st.markdown(get_global_css(), unsafe_allow_html=True)
 
-# ==========================================
-# 1. 唤醒大管家，读取真实记忆
-# ==========================================
-if "backend" not in st.session_state:
-    st.session_state.backend = SessionBackend()
-backend: SessionBackend = st.session_state.backend
+st.markdown("<h1 style='text-align:center; margin-bottom: 10px;'>欢迎来到星梦乐园</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align:center; color: #888; margin-bottom: 40px;'>请选择你的身份，开启奇妙旅程</p>", unsafe_allow_html=True)
 
-app_state = backend.load_app_state()
-learning = app_state.learning
-current_topic = app_state.curriculum.topics[0].title if app_state.curriculum.topics else "自由探索"
+col1, col_gap, col2 = st.columns([4, 1, 4])
 
-if "companion" not in st.session_state:
-    st.session_state.companion = "小智龙 🦖"
+with col1:
+    st.markdown(f"""
+    <div class="cute-card" style="border-top-color: #FF8DA1;">
+        <div class="icon-box" style="color: #FF8DA1;">{ICONS['rocket']}</div>
+        <h2 style='margin:0;'>我是小朋友</h2>
+        <p style='color:#888; font-size:0.9rem;'>进入魔法学习舱，看动画闯关</p>
+    </div><br>
+    """, unsafe_allow_html=True)
+    if st.button("启动学习舱", use_container_width=True):
+        if os.path.exists("pages/1_Kids_Learning.py"): st.switch_page("pages/1_Kids_Learning.py")
 
-# ==========================================
-# 2. 侧边栏：只保留伴学配置和真进度
-# ==========================================
-with st.sidebar:
-    st.markdown(
-        "<div class='sidebar-brand'><h1 style='text-align:center; color:#2C3E50;'>✨星梦乐园</h1></div>",
-        unsafe_allow_html=True,
-    )
-    st.markdown("### 🧭 页面切换")
-    st.page_link("app.py", label="儿童学习页", icon="👶")
-    st.page_link("pages/1_Admin_Dashboard.py", label="家长管理页", icon="🧑‍🏫")
-    st.markdown("---")
-
-    st.markdown("### 🏆 我的百宝箱")
-    phase_mapping = {
-        LearningPhase.NOT_STARTED: 0,
-        LearningPhase.LEARNING: 30,
-        LearningPhase.PRACTICING: 60,
-        LearningPhase.REVIEWING: 40,
-        LearningPhase.MASTERED: 100,
-    }
-    real_progress = phase_mapping.get(learning.current_phase, 0)
-
-    st.markdown(f"**当前阶段: {learning.current_phase}**")
-    st.markdown(
-        f"""
-        <div style='background:rgba(255,255,255,0.6); padding:15px; border-radius:15px; border:2px solid white;'>
-            <p style='margin:0; font-size:18px;'>🌟 智慧星: {real_progress // 20} 颗</p>
-            <p style='margin:0; font-size:18px;'>🏅 能量值: {real_progress}%</p>
-        </div>
-    """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown("### 🧩 伴学配置")
-    st.session_state.companion = st.selectbox(
-        "选择你的好朋友",
-        list(COMPANIONS.keys()),
-        index=list(COMPANIONS.keys()).index(st.session_state.companion),
-    )
-
-# ==========================================
-# 3. 主界面：人物问候与沉浸式学习舱
-# ==========================================
-comp_info = COMPANIONS[st.session_state.companion]
-st.markdown(
-    f"""
-<div class="floating-avatar">{comp_info['avatar']}</div>
-<div class="speech-bubble">{comp_info['greeting']}</div>
-""",
-    unsafe_allow_html=True,
-)
-
-col_main, col_action = st.columns([7, 3], gap="large")
-
-with col_main:
-    html_content = f"""
-    <div class="learning-cabin">
-        <h3 style='color: #2C3E50; margin-top:0; text-align:center;'>🚀 {current_topic}</h3>
-        <div style="height: 320px; background: rgba(0,0,0,0.8); border-radius: 20px; display: flex; flex-direction: column; align-items: center; justify-content: center; box-shadow: inset 0 0 30px rgba(0,0,0,0.5);">
-            <h2 style="color: white; text-shadow: 0 0 10px #A18CD1;">📺 本地动画 / 课件播放区</h2>
-            <p style="color: #FF9A9E; margin-top: 10px;">(系统内部状态: {learning.current_phase})</p>
-        </div>
-        <br>
-        <p style="color: #666; font-weight:bold; margin-bottom: 5px;">🔥 当前能量值</p>
-        <div class="energy-container">
-            <div class="energy-fill" style="width: {real_progress}%;">⭐</div>
-        </div>
-    </div>
-    """
-    st.markdown(html_content, unsafe_allow_html=True)
-
-# ==========================================
-# 4. 核心对接：千变万化的魔法按钮
-# ==========================================
-with col_action:
-    st.markdown("### 🪄 魔法按钮")
-
-    if learning.current_phase == LearningPhase.NOT_STARTED:
-        st.info("准备好起飞了吗？")
-        if st.button("🚀 开始学习", use_container_width=True):
-            backend.handle_text_event(intent=UserIntent.NONE)
-            st.rerun()
-
-    elif learning.current_phase in [LearningPhase.LEARNING, LearningPhase.REVIEWING]:
-        st.warning("👀 请认真看视频哦！")
-        if st.button("✅ 视频我看完了！", use_container_width=True):
-            backend.handle_text_event(intent=UserIntent.MARK_LEARNING_DONE)
-            st.rerun()
-
-    elif learning.current_phase == LearningPhase.PRACTICING:
-        st.warning("📝 现在是闯关答题时间！")
-
-        st.write("老师提问：**恐龙为什么会灭绝？** (提示: 答案里包含陨石或火山)")
-
-        user_answer = st.text_input("方式1：在这里输入文字答案：")
-        if st.button("📤 提交文字", use_container_width=True):
-            backend.handle_text_event(intent=UserIntent.SUBMIT_ANSWER, text=user_answer)
-            st.rerun()
-
-        st.markdown("---")
-
-        st.write("方式2：或者直接用语音回答！")
-        audio_bytes = st.audio_input("点击麦克风开始录音 🎙️", label_visibility="collapsed")
-
-        if audio_bytes:
-            with st.spinner("系统正在拼命听和思考..."):
-                backend.handle_audio_upload(audio_bytes.getvalue())
-            st.rerun()
-
-    elif learning.current_phase == LearningPhase.MASTERED:
-        st.balloons()
-        st.success("🎉 太棒了！你已经完全掌握了这个知识点！")
-        if st.button("🔄 重新体验 (重置进度)", use_container_width=True):
-            state_file = backend.state_file
-            if state_file.exists():
-                state_file.unlink()
-            st.rerun()
+with col2:
+    st.markdown(f"""
+    <div class="cute-card" style="border-top-color: #7EC8E3;">
+        <div class="icon-box" style="color: #7EC8E3;">{ICONS['parent']}</div>
+        <h2 style='margin:0;'>我是家长</h2>
+        <p style='color:#888; font-size:0.9rem;'>查看学习报告，配置课程内容</p>
+    </div><br>
+    """, unsafe_allow_html=True)
+    if st.button("进入控制台", use_container_width=True):
+        if os.path.exists("pages/2_Admin_Dashboard.py"): st.switch_page("pages/2_Admin_Dashboard.py")

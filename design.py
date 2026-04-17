@@ -1,213 +1,121 @@
-# design.py - 界面规范与全局样式引擎 (修复版)
+import streamlit as st
 
 COLORS = {
-    "primary": "#FF9A9E",       
-    "secondary": "#FECFEF",     
-    "success": "#A8E063",       
-    "text_dark": "#2C3E50",     
-    "bg_gradient": "linear-gradient(120deg, #e0c3fc 0%, #8ec5fc 100%)", 
-    "cabin_border": "#FFD700"   
+    "primary": "#FF8DA1",       
+    "secondary": "#FFE066",     
+    "success": "#75D9A5",       
+    "blue": "#7EC8E3",          
+    "text_dark": "#4A4A4A",     
+    "bg_gradient": "linear-gradient(135deg, #E6E9FF 0%, #F5E6FF 100%)" 
 }
 
-COMPANIONS = {
-    "星空兔 🐰": {
-        "greeting": "叮咚！我是星空兔，今天我们要一起收集好多智慧星星哦！",
-        "avatar": "🐰",
-        "theme_color": "#FF9A9E"
-    },
-    "小智龙 🦖": {
-        "greeting": "嗷呜～小智龙来啦！快坐进我们的魔法学习舱，准备起飞！",
-        "avatar": "🦖",
-        "theme_color": "#A8E063"
-    }
+# 恢复完整的 SVG 图标库（包含了主页、儿童端、家长端需要的所有图标）
+ICONS = {
+    "rocket": '<svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 3.82-13.01 1 1 0 0 1 1.41 0 1 1 0 0 1 0 1.41 22.01 22.01 0 0 0 13.01-3.82z"/><path d="M5.32 12.84 2.5 15.66"/><path d="M11.16 18.68 8.34 21.5"/><path d="m15 9 6-6"/></svg>',
+    "parent": '<svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
+    "warning": '<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="#EF4444" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+    "log": '<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>',
+    "star": '<svg viewBox="0 0 24 24" width="24" height="24" fill="#FFE066" stroke="#FFB020" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>'
 }
+
+# 伴学宠物的三个阶段（0分、50分、150分满级）
+# 伴学宠物的三个阶段（0分、50分、150分满级）
+# 注意：Streamlit 严格要求 avatar 必须是单个 Emoji，绝不能用两个 Emoji 组合！
+COMPANIONS = {
+    "星空兔": {"stages": { 0: "🐇", 50: "🐰", 150: "🦄" }},  # 将超人兔改为了星空独角兽 🦄
+    "小智龙": {"stages": { 0: "🦎", 50: "🦕", 150: "🦖" }}
+}
+
+def get_companion_avatar(companion_name, score):
+    stages = COMPANIONS[companion_name]["stages"]
+    thresholds = sorted(stages.keys())
+    current = stages[thresholds[0]]
+    for t in thresholds:
+        if score >= t: current = stages[t]
+        else: break
+    return current
 
 def get_global_css():
     return f"""
     <style>
-    /* 全局自定义魔法棒鼠标 */
     html, body, [class*="st-"] {{
-        cursor: url('https://cdn-icons-png.flaticon.com/32/1864/1864470.png'), auto !important;
-    }}
-    a, button, input, select, .stButton>button {{
-        cursor: url('https://cdn-icons-png.flaticon.com/32/1864/1864470.png'), pointer !important;
-    }}
-
-    /* 主背景 */
-    .stApp {{
-        background: {COLORS['bg_gradient']};
-    }}
-
-    /* =========================================
-       ✨ 新增：侧边栏玻璃拟态与童趣化字体
-       ========================================= */
-    [data-testid="stSidebar"] {{
-        background: rgba(255, 255, 255, 0.2) !important; /* 让侧边栏透出主背景的渐变色 */
-        backdrop-filter: blur(15px) !important;
-        -webkit-backdrop-filter: blur(15px) !important;
-        border-right: 3px dashed rgba(255, 255, 255, 0.5) !important; /* 可爱的虚线边框 */
-    }}
-    
-    [data-testid="stSidebarUserContent"] {{
-        padding-top: 0.35rem;
-    }}
-
-    .sidebar-brand h1 {{
-        margin-top: -0.4rem;
-        margin-bottom: 0.2rem;
-    }}
-
-    /* 放大侧边栏所有文字，增加圆润感 */
-    [data-testid="stSidebar"] .stMarkdown p, 
-    [data-testid="stSidebar"] .stMarkdown h1, 
-    [data-testid="stSidebar"] .stMarkdown h3,
-    [data-testid="stSidebar"] .stRadio label {{
-        font-size: 20px !important;
-        font-weight: 800 !important;
-        color: {COLORS['text_dark']} !important;
-    }}
-    
-    /* 放大单选按钮的小圆圈 */
-    [data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-child {{
-        transform: scale(1.4);
-        margin-right: 8px;
-    }}
-
-    /* 角色浮动动画 */
-    .floating-avatar {{
-        font-size: 80px;
-        animation: float 3s ease-in-out infinite;
-        text-align: center;
-        margin-bottom: 10px;
-        text-shadow: 0 10px 20px rgba(0,0,0,0.15);
-    }}
-    @keyframes float {{
-        0% {{ transform: translateY(0px); }}
-        50% {{ transform: translateY(-15px); }}
-        100% {{ transform: translateY(0px); }}
-    }}
-
-    /* 漫画对话气泡 */
-    .speech-bubble {{
-        position: relative;
-        background: rgba(255, 255, 255, 0.9);
-        border-radius: 20px;
-        padding: 15px 25px;
         color: {COLORS['text_dark']};
-        font-weight: bold;
-        font-size: 20px;
-        text-align: center;
-        box-shadow: 0 8px 20px rgba(0,0,0,0.1);
-        margin: 0 auto 30px auto;
-        max-width: 600px;
-        border: 3px solid white;
+        font-family: 'Nunito', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     }}
-    .speech-bubble::after {{
-        content: '';
-        position: absolute;
-        top: -15px;
-        left: 50%;
-        margin-left: -15px;
-        border-width: 0 15px 15px 15px;
-        border-style: solid;
-        border-color: transparent transparent rgba(255, 255, 255, 0.9) transparent;
-    }}
+    .stApp {{ background: {COLORS['bg_gradient']}; }}
+    [data-testid="stSidebar"], [data-testid="collapsedControl"] {{ display: none !important; }}
 
-    /* 沉浸式魔法学习舱 */
-    .learning-cabin {{
+    /* 卡片与图标样式 */
+    .cute-card {{
         background: rgba(255, 255, 255, 0.6);
-        backdrop-filter: blur(20px);
-        -webkit-backdrop-filter: blur(20px);
-        border: 6px solid {COLORS['cabin_border']};
-        border-radius: 40px;
-        box-shadow: inset 0 0 20px rgba(255, 215, 0, 0.3), 0 15px 35px rgba(0,0,0,0.1);
-        padding: 30px;
-        position: relative;
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        border-radius: 30px;
+        padding: 40px 20px;
+        text-align: center;
+        box-shadow: 0 8px 30px rgba(0,0,0,0.05);
+        border-top: 8px solid;
+        border-bottom: 1px solid rgba(255,255,255,0.8);
+        transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
     }}
-    .learning-cabin::before {{
-        content: '🔴 🟡 🟢';
-        position: absolute;
-        top: 10px;
-        left: 20px;
-        font-size: 14px;
-        letter-spacing: 5px;
+    .cute-card:hover {{ transform: translateY(-8px) scale(1.02); }}
+
+    .icon-box {{
+        width: 80px; height: 80px; margin: 0 auto 20px auto;
+        border-radius: 50%; display: flex; align-items: center; justify-content: center;
+        background: rgba(255,255,255,0.9); box-shadow: 0 4px 15px rgba(0,0,0,0.1);
     }}
 
-    /* 能量条 */
-    .energy-container {{
-        width: 100%;
-        background-color: rgba(255,255,255,0.5);
-        border-radius: 20px;
-        padding: 4px;
-        box-shadow: inset 0 2px 5px rgba(0,0,0,0.1);
-    }}
-    .energy-fill {{
-        height: 28px;
-        border-radius: 16px;
-        background: linear-gradient(90deg, #FAD961 0%, #F76B1C 100%);
-        transition: width 0.8s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-        display: flex;
-        align-items: center;
-        justify-content: flex-end;
-        padding-right: 10px;
-        color: white;
-        font-weight: bold;
-        font-size: 16px;
-    }}
-
-    /* 按钮动效 */
-    .stButton > button {{
+    /* 统一交互组件为现代化圆角风格 */
+    .stButton > button, div[data-baseweb="select"] > div, .stTextInput > div > div > input {{
         background: rgba(255, 255, 255, 0.9) !important;
-        border: 3px solid {COLORS['primary']} !important;
+        border: 2px solid {COLORS['blue']} !important;
+        border-radius: 20px !important;
         color: {COLORS['text_dark']} !important;
-        border-radius: 25px !important;
-        font-weight: 800 !important;
-        font-size: 20px !important;
-        padding: 12px 24px !important;
-        transition: all 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275) !important; 
-        box-shadow: 0 6px 15px rgba(0,0,0,0.08);
+        box-shadow: 0 4px 10px rgba(0,0,0,0.02);
     }}
-    .stButton > button:hover {{
-        transform: translateY(-6px) scale(1.05) !important;
-        box-shadow: 0 12px 25px rgba(255, 154, 158, 0.5) !important;
+    .stButton > button {{ color: {COLORS['blue']} !important; font-weight: bold !important; transition: all 0.2s; }}
+    .stButton > button:hover {{ background: {COLORS['blue']} !important; color: #fff !important; transform: scale(1.05); }}
+
+    /* =======================================
+       1. 聊天气泡：纯白底色 + 淡淡的弥散阴影
+       ======================================= */
+    [data-testid="stChatMessage"] {{
+        background-color: #FFFFFF !important; 
+        border-radius: 18px !important; 
+        padding: 15px !important; 
+        margin-bottom: 15px !important;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.05) !important; 
+        border: none !important;
     }}
-    .stButton > button:active {{
-        transform: translateY(2px) scale(0.95) !important;
+    
+    /* =======================================
+       2. 具象化的经验进度条 (Gamification)
+       ======================================= */
+    .exp-bar-bg {{
+        width: 100%;
+        background-color: rgba(255, 255, 255, 0.6);
+        border-radius: 20px;
+        height: 18px;
+        margin-top: 10px;
+        box-shadow: inset 0 2px 4px rgba(0,0,0,0.05);
+        border: 2px solid #FFFFFF;
+        overflow: hidden;
+    }}
+    .exp-bar-fill {{
+        height: 100%;
+        background: linear-gradient(90deg, #FFD700 0%, #FF8DA1 100%);
+        border-radius: 20px;
+        transition: width 0.8s cubic-bezier(0.175, 0.885, 0.32, 1.275);
     }}
 
-    /* 保留顶部控制区，避免侧边栏收起后无法拉出 */
-    [data-testid="stHeader"] {{
-        background: transparent !important;
+    /* =======================================
+       3. 家长端 Danger Zone 样式
+       ======================================= */
+    .danger-zone {{
+        background: #FFF0F0; border-left: 6px solid #EF4444; border-radius: 12px; padding: 20px; margin-top: 20px;
     }}
-    [data-testid="stSidebarCollapsedControl"] {{
-        top: 0.35rem !important;
-        z-index: 1000 !important;
-    }}
-    [data-testid="stSidebarCollapsedControl"] button {{
-        background: rgba(255, 255, 255, 0.9) !important;
-        border-radius: 12px !important;
-    }}
-
-    /* 隐藏右上角 Deploy 与配置菜单，但保留侧栏拉出按钮 */
-    [data-testid="stToolbar"] {{
-        display: flex !important;
-    }}
-    [data-testid="stToolbar"] button[kind="header"] {{
-        display: none !important;
-    }}
-    [data-testid="stSidebarCollapsedControl"] button[kind="header"] {{
-        display: flex !important;
-    }}
-    [data-testid="stSidebarCollapsedControl"] {{
-        display: block !important;
-    }}
-    [data-testid="stAppDeployButton"] {{
-        display: none !important;
-    }}
-    #MainMenu {{
-        display: none !important;
-    }}
-
-    footer, [data-testid="stSidebarNav"] {{ visibility: hidden; }}
+    .danger-zone-title {{ color: #EF4444; font-weight: bold; font-size: 1.2rem; display: flex; align-items: center; gap: 10px; margin-bottom: 5px; }}
+    .danger-zone-text {{ color: #7F1D1D; font-size: 0.9rem; margin: 0; }}
     </style>
     """
