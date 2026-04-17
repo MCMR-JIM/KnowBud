@@ -1,1 +1,42 @@
-import time;import logging;logging.basicConfig(filename='asr_run.log',level=logging.INFO,format='%(asctime)s - %(message)s');print('=====================================');print('ASR Input Preference (For Frontend/Backend)');print('=====================================');print('1. Recommended Audio Format: WAV/MP3');print('2. Sampling Rate: 16000 Hz');print('3. Channel: Mono (Single Channel)');print('4. Duration: <= 30 seconds per clip');print('5. Segmentation Strategy: Auto split by silence');print('=====================================');start=time.time();print('=== Transcription Result ===');print('Open the light');end=time.time();delay=end-start;rtf=delay/1;logging.info(f'CPU Run Delay: {delay:.2f}s | RTF Order: {rtf:.2f}');print(f'[Log] Delay: {delay:.2f}s (Order: 10^0 Seconds)');print('[Log] Saved to asr_run.log')
+import time
+import logging
+from faster_whisper import WhisperModel
+
+logging.basicConfig(
+    filename='asr_run.log',
+    level=logging.INFO,
+    format='%(asctime)s - %(message)s'
+)
+
+_model_instance = None
+
+def get_asr_model():
+    global _model_instance
+    if _model_instance is None:
+        _model_instance = WhisperModel("base", device="cpu", compute_type="float32")
+    return _model_instance
+
+def speech_to_text(audio_file):
+    try:
+        start = time.time()
+        model = get_asr_model()
+        
+        segments, info = model.transcribe(
+            audio_file,
+            language="zh",
+            vad_filter=True,
+            word_timestamps=True
+        )
+        
+        text = "".join([seg.text for seg in segments])
+        cost = time.time() - start
+        
+        logging.info(f"识别成功，耗时：{cost:.2f}s，结果：{text}")
+        return text
+    except Exception as e:
+        logging.error(f"识别失败：{str(e)}")
+        return ""
+
+if __name__ == "__main__":
+    text = speech_to_text("打开灯.wav")
+    print("识别结果：", text)
