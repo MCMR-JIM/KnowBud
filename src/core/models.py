@@ -1,4 +1,3 @@
-# src/core/models.py
 from typing import Literal, Any
 from pydantic import BaseModel, Field
 from src.core.enums import LearningPhase
@@ -39,10 +38,7 @@ class LearningState(BaseModel):
     error_window_size: int = 10
     consecutive_correct: int = 0
     consecutive_wrong: int = 0
-    
-    # 🔴 这是为你新增的积分字段，用于前端控制宠物形态
-    total_score: int = 0 
-    
+    total_score: int = 0  # 前端 UI 动态进化的核心依赖
     history_logs: list[LearningEvent] = Field(default_factory=list)
     pending_question: PendingQuestion | None = None
     last_evaluation: EvaluationResult | None = None
