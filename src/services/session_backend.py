@@ -1,10 +1,12 @@
 import os
 import json
+import time
 from pathlib import Path
 from dataclasses import dataclass, field
+import datetime
 
 from src.core.enums import UserIntent, LearningPhase
-from src.core.models import AppState, UserProfile, LearningState, CurriculumConfig, TopicNode, PendingQuestion
+from src.core.models import AppState, UserProfile, LearningState, CurriculumConfig, TopicNode, PendingQuestion, ErrorRecord
 from src.core.decision_engine import DecisionEngine
 from src.skills.base_skill import SkillContext
 from src.skills.voice_io_skill import VoiceIOSkill
@@ -54,7 +56,6 @@ class SessionBackend:
         )
 
     def save_app_state(self, state: AppState) -> None:
-        # 直接写入以解决 Windows 权限冲突 (PermissionError)
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
         self.state_file.write_text(state.model_dump_json(indent=2), encoding="utf-8")
 
@@ -78,6 +79,13 @@ class SessionBackend:
             else:
                 state.learning.consecutive_wrong += 1
                 state.learning.consecutive_correct = 0
+                # 🚀 新增：答错时自动加入错题本
+                existing_ids = [e.topic_id for e in state.learning.error_book]
+                if question.question_id not in existing_ids:
+                    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+                    state.learning.error_book.append(
+                        ErrorRecord(topic_id=question.question_id, stem=question.stem, first_error_time=now_str)
+                    )
 
         decision = self.engine.evaluate(state=state.learning, curriculum=state.curriculum, intent=intent, user_answer_text=text)
 
@@ -93,9 +101,28 @@ class SessionBackend:
         self.save_app_state(state)
         return UIRenderBundle()
 
-    # --- UI 桥接接口 ---
+    # 🚀 新增：家长端调用，强制推送错题
+    def inject_review_topic(self, topic_id: str):
+        state = self.load_app_state()
+        if topic_id not in state.learning.review_queue:
+            state.learning.review_queue.append(topic_id)
+            self.save_app_state(state)
+
     def transcribe_audio(self, audio_bytes: bytes) -> str:
         if not audio_bytes: return ""
+        
+        # 🚀 新增：将前端录制的音频物理保存到本地 data/audio_logs/
+        try:
+            audio_dir = Path("data/audio_logs")
+            audio_dir.mkdir(parents=True, exist_ok=True)
+            file_name = f"record_{int(time.time())}.wav"
+            file_path = audio_dir / file_name
+            file_path.write_bytes(audio_bytes)
+            # 注意：实际项目中还需要把这个 file_path 塞进 messages 列表里供家长端播放，
+            # 为了不破坏当前简单的 messages 结构，暂时只存硬盘。
+        except Exception as e:
+            print(f"音频保存失败: {e}")
+
         text = self.voice_skill.transcribe(audio_bytes)
         return text if text else "（哎呀，没听清，能再说一遍吗？）"
 

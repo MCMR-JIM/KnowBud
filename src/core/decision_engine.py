@@ -9,8 +9,8 @@ class DecisionEngine:
     """系统的核心大脑：根据当前状态和用户意图，决定下一步该干什么"""
     
     def __init__(self, *, fail_threshold: int, master_streak: int) -> None:
-        self.fail_threshold = fail_threshold # 连续错几次触发复习（默认3）
-        self.master_streak = master_streak   # 连续对几次算掌握（默认3）
+        self.fail_threshold = fail_threshold
+        self.master_streak = master_streak 
 
     def evaluate(
         self,
@@ -21,6 +21,26 @@ class DecisionEngine:
         user_answer_text: str | None = None,
     ) -> DecisionResult:
         
+        # 🚀 【规则 0】：最高优先级劫持！只要复习队列里有错题，并且正准备开启新学习阶段，立刻挂起主线，强制复习。
+        if state.review_queue and state.current_phase in {LearningPhase.NOT_STARTED, LearningPhase.MASTERED} and intent in {UserIntent.NONE, UserIntent.CONFIRM}:
+            topic_to_review = state.review_queue[0]
+            remaining_queue = state.review_queue[1:]
+            return DecisionResult(
+                action=PlayMediaAction(
+                    topic_id=topic_to_review,
+                    media=MediaKind.VIDEO,
+                    prefer_review=True # 告诉前端播放专门的复习/错题切片视频
+                ),
+                state_delta=StateDelta(
+                    patch_learning={
+                        "current_phase": LearningPhase.REVIEWING,
+                        "current_topic_id": topic_to_review,
+                        "review_queue": remaining_queue # 消耗掉该错题
+                    }
+                ),
+                trace=f"家长控制台触发：强制挂起主线，优先复习错题 {topic_to_review}"
+            )
+
         # 规则 1：刚开始还没学，且没有明确拒绝 -> 分配第一个知识点，开始播放教学视频
         if state.current_phase == LearningPhase.NOT_STARTED and intent in {UserIntent.NONE, UserIntent.CONFIRM}:
             first_topic = curriculum.topics[0]
@@ -64,12 +84,12 @@ class DecisionEngine:
                     action=PlayMediaAction(
                         topic_id=state.current_topic_id or "",
                         media=MediaKind.VIDEO,
-                        prefer_review=True  # 重点：播放复习版视频
+                        prefer_review=True
                     ),
                     state_delta=StateDelta(
                         patch_learning={"current_phase": LearningPhase.REVIEWING}
                     ),
-                    trace=f"连续错 {state.consecutive_wrong} 次，触发复习"
+                    trace=f"连续错 {state.consecutive_wrong} 次，触发自动复习"
                 )
             elif state.consecutive_correct >= self.master_streak:
                 return DecisionResult(
@@ -100,7 +120,7 @@ class DecisionEngine:
                 trace="复习确认完毕，返回正常学习阶段"
             )
 
-        # 规则 5：兜底处理（如果出现了没想到的奇葩情况，啥也不干，但记录下来）
+        # 规则 5：兜底处理
         return DecisionResult(
             action=NoopAction(),
             state_delta=StateDelta(),
