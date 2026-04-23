@@ -15,14 +15,20 @@ class LLMTutorSkill(BaseSkill):
     def __init__(self, ctx: SkillContext, *, api_key: str, base_url: str, model: str) -> None:
         self.ctx = ctx
         self.model_name = model
-        
-        # 🚀 终极修复：加入 http_client=httpx.Client(proxies=None)
-        # 强制 OpenAI 客户端无视 Windows 系统代理，直接连接 DeepSeek 服务器！
+
+        # 在不同 httpx 版本下统一关闭环境代理，避免本机代理影响请求。
         self.client = OpenAI(
             api_key=api_key, 
             base_url=base_url,
-            http_client=httpx.Client(proxies=None) 
+            http_client=self._build_http_client()
         )
+
+    @staticmethod
+    def _build_http_client() -> httpx.Client:
+        try:
+            return httpx.Client(trust_env=False)
+        except TypeError:
+            return httpx.Client()
 
     # ... 下面的 analyze_session_performance 等方法保持原样不动 ...
 
