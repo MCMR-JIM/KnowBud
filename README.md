@@ -85,6 +85,16 @@ docker compose -f docker/asr_tts/docker-compose.yml up -d
 docker compose -f docker/asr_tts/docker-compose.yml down
 ```
 
+## Frontend API（预留）
+
+已提供用于前后端分离的 HTTP API 骨架：
+
+```bash
+uvicorn src.api.app:app --host 0.0.0.0 --port 8090 --reload
+```
+
+接口文档见：`docs/api/frontend_http_api.md`。
+
 ## 协议与规范
 
 - 学习流程由 **决策引擎（FSM）** 控制，不由 LLM 直接编排。
