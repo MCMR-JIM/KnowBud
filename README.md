@@ -87,13 +87,14 @@ docker compose -f docker/asr_tts/docker-compose.yml down
 
 ## Frontend API
 
-已提供用于前后端分离的 HTTP API（会话生命周期、回合输入、事件轮询、掌握度、图谱、复习队列、探索时间窗）：
+已提供用于前后端分离的 HTTP API（单会话、回合输入、事件轮询、掌握度、图谱、复习队列、探索时间窗、流式语音输出）：
 
 ```bash
 uvicorn src.api.app:app --host 0.0.0.0 --port 8090 --reload
 ```
 
-接口文档见：`docs/api/frontend_http_api.md`（v1.1，保留 `/v1/session/*` 兼容路径）。
+接口文档见：`docs/api/frontend_http_api.md`（v1.2，单会话模式，保留 `/v1/sessions/*` 兼容路径）。
+存储设计见：`docs/api/session_state_storage.md`（SQLite 事务存储 + 事件按需加载）。
 
 ## 协议与规范
 
@@ -104,8 +105,8 @@ uvicorn src.api.app:app --host 0.0.0.0 --port 8090 --reload
 
 - 儿童端页面先把录音交给 `SessionBackend.transcribe_audio()` 做 ASR。
 - 文本答案经 `SessionBackend.evaluate_student_answer()` 完成评估与积分变更。
-- 评估回复再由 `SessionBackend.synthesize_reply_audio()` 合成语音。
-- 页面调用 `SessionBackend.evaluate_and_speak()` 一次拿到 `reply + points + audio`。
+- 评估回复可走 `SessionBackend.synthesize_reply_audio()` 一次性合成，或 `SessionBackend.synthesize_reply_audio_stream()` 流式合成。
+- 页面可调用普通回合接口拿 `reply + points + audio`，也可调用实时接口拿 `stream_id` 再边收边播并支持打断。
 
 语音相关脚本统一放到 `scripts/asr_tts/`：
 

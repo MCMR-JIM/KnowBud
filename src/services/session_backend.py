@@ -3,10 +3,12 @@ from __future__ import annotations
 import os
 import json
 import time
+import sqlite3
 from pathlib import Path
 from dataclasses import dataclass, field
 import datetime
 from datetime import timezone
+from typing import AsyncIterator
 
 from src.core.enums import UserIntent, LearningPhase
 from src.core.models import AppState, UserProfile, LearningState, CurriculumConfig, TopicNode, PendingQuestion, ErrorRecord, LearningEvent, GraphProposalRecord
@@ -40,11 +42,13 @@ class SessionBackend:
         data_root = Path(os.getenv("DATA_ROOT", "./data"))
         self.ctx = SkillContext(data_root=data_root)
         self.state_file = Path(os.getenv("STATE_FILE", "./data/state.json"))
+        self.state_db_file = os.getenv("STATE_DB_FILE", "").strip()
         self.log_file = Path(os.getenv("DECISION_LOG_FILE", "./logs/decision_trace.jsonl"))
         self.audio_artifact_root = Path(os.getenv("AUDIO_ARTIFACT_ROOT", "./artifacts/audio"))
         self.learning_arch_mode = os.getenv("LEARNING_ARCH_MODE", "legacy").strip().lower()
         self.agent_policy = AgentPolicyConfig.from_env()
         self.explore_window_minutes = self.agent_policy.explore_window_minutes
+        self.history_tail_limit = self._bounded_int_env("HISTORY_TAIL_LIMIT", default=200, lower=20, upper=2000)
 
         fail_th = int(os.getenv("FSM_FAIL_THRESHOLD", "3"))
         master_st = int(os.getenv("FSM_MASTER_STREAK", "3"))
@@ -64,24 +68,27 @@ class SessionBackend:
         )
         self.mastery_engine = MasteryEngine()
 
-    def load_app_state(self) -> AppState:
-        if self.state_file.exists():
-            try:
-                return AppState.model_validate_json(self.state_file.read_text(encoding="utf-8"))
-            except Exception as exc:
-                print(f"读取存档异常: {exc}")
+    def load_app_state(self, *, include_history: bool = True, history_limit: int | None = None) -> AppState:
+        with self._db_connection() as conn:
+            self._ensure_storage_initialized(conn)
+            state = self._load_state_row(conn)
+            if state is None:
+                state = self._load_legacy_or_default_state()
+                self._save_state_row(conn, state)
+                self._migrate_legacy_events(conn, state)
 
-        return AppState(
-            profile=UserProfile(student_id="user_01", display_name="演示同学"),
-            learning=LearningState(current_phase=LearningPhase.NOT_STARTED, total_score=0),
-            curriculum=CurriculumConfig(
-                topics=[TopicNode(topic_id="demo_01", title="恐龙为什么会灭绝？", difficulty=1, prerequisite_ids=[], tags=[])]
-            ),
-        )
+            if include_history:
+                limit = self.history_tail_limit if history_limit is None else max(0, history_limit)
+                state.learning.history_logs = self._fetch_recent_events(conn, limit=limit)
+            else:
+                state.learning.history_logs = []
+
+            return state
 
     def save_app_state(self, state: AppState) -> None:
-        self.state_file.parent.mkdir(parents=True, exist_ok=True)
-        self.state_file.write_text(state.model_dump_json(indent=2), encoding="utf-8")
+        with self._db_connection() as conn:
+            self._ensure_storage_initialized(conn)
+            self._save_state_row(conn, state)
 
     def handle_text_event(self, intent: UserIntent, text: str | None = None) -> UIRenderBundle:
         state = self.load_app_state()
@@ -140,15 +147,48 @@ class SessionBackend:
         self._save_audio_artifact(audio_bytes, bucket="outgoing", suffix=".mp3")
         return audio_bytes
 
-    def evaluate_and_speak(self, user_text: str) -> tuple[str, int, bytes]:
-        if self.agent_orchestrator is not None:
-            return self._evaluate_and_speak_agent(user_text)
+    async def synthesize_reply_audio_stream(
+        self,
+        text: str,
+        *,
+        stop_signal,
+    ) -> AsyncIterator[bytes]:
+        if not text:
+            return
 
-        reply_text, earned_points = self.evaluate_student_answer(user_text)
+        voice = os.getenv("EDGE_TTS_VOICE", "zh-CN-XiaoxiaoNeural")
+        chunk_collector = bytearray()
+        try:
+            async for chunk in self.voice_skill.synthesize_plain_stream(text, voice=voice):
+                if stop_signal is not None and stop_signal.is_set():
+                    break
+                if not chunk:
+                    continue
+                chunk_collector.extend(chunk)
+                yield chunk
+        except Exception as exc:
+            print(f"流式语音合成失败: {exc}")
+            return
+
+        if chunk_collector:
+            self._save_audio_artifact(bytes(chunk_collector), bucket="outgoing", suffix=".mp3")
+
+    def evaluate_and_speak(self, user_text: str) -> tuple[str, int, bytes]:
+        reply_text, earned_points = self.evaluate_text_turn(user_text)
         reply_audio = self.synthesize_reply_audio(reply_text)
         return reply_text, earned_points, reply_audio
 
+    def evaluate_text_turn(self, user_text: str) -> tuple[str, int]:
+        if self.agent_orchestrator is not None:
+            return self._evaluate_text_turn_agent(user_text)
+        return self.evaluate_student_answer(user_text)
+
     def _evaluate_and_speak_agent(self, user_text: str) -> tuple[str, int, bytes]:
+        reply_text, earned_points = self._evaluate_text_turn_agent(user_text)
+        reply_audio = self.synthesize_reply_audio(reply_text)
+        return reply_text, earned_points, reply_audio
+
+    def _evaluate_text_turn_agent(self, user_text: str) -> tuple[str, int]:
         state = self.load_app_state()
         window_ended_now = self._consume_explore_window_expiry(state)
         decision = self.agent_orchestrator.process_turn(state=state, user_text=user_text)
@@ -196,9 +236,7 @@ class SessionBackend:
 
         if window_ended_now:
             reply_text = f"探索时间结束啦，我们回到主线继续学习。\n\n{reply_text}"
-
-        reply_audio = self.synthesize_reply_audio(reply_text)
-        return reply_text, earned_points, reply_audio
+        return reply_text, earned_points
 
     def _save_audio_artifact(self, audio_bytes: bytes, *, bucket: str, suffix: str) -> Path | None:
         if not audio_bytes:
@@ -294,6 +332,49 @@ class SessionBackend:
         self.save_app_state(state)
         return reply_text, earned_points
 
+    def append_learning_event(self, *, kind: str, payload: dict[str, object], audio_file_path: str | None = None) -> int:
+        event = LearningEvent(
+            ts=datetime.datetime.now(timezone.utc).isoformat(),
+            kind=kind,
+            payload=payload,
+            audio_file_path=audio_file_path,
+        )
+        with self._db_connection() as conn:
+            self._ensure_storage_initialized(conn)
+            return self._insert_event_row(conn, event)
+
+    def get_learning_events(self, *, after: int, limit: int) -> tuple[int, int, list[LearningEvent]]:
+        start = max(0, after)
+        capped_limit = min(max(1, limit), 200)
+        with self._db_connection() as conn:
+            self._ensure_storage_initialized(conn)
+            rows = conn.execute(
+                """
+                SELECT event_id, ts, kind, payload_json, audio_file_path
+                FROM learning_events
+                WHERE event_id > ?
+                ORDER BY event_id ASC
+                LIMIT ?
+                """,
+                (start, capped_limit),
+            ).fetchall()
+
+        events = [self._event_from_row(row) for row in rows]
+        next_cursor = int(rows[-1]["event_id"]) if rows else start
+        return start, next_cursor, events
+
+    def get_learning_event_count(self, *, kind: str | None = None) -> int:
+        with self._db_connection() as conn:
+            self._ensure_storage_initialized(conn)
+            if kind:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM learning_events WHERE kind = ?",
+                    (kind,),
+                ).fetchone()
+            else:
+                row = conn.execute("SELECT COUNT(*) FROM learning_events").fetchone()
+        return int(row[0]) if row else 0
+
     @staticmethod
     def _apply_answer_outcome(*, state: AppState, question: PendingQuestion, is_correct: bool) -> None:
         if is_correct:
@@ -323,6 +404,9 @@ class SessionBackend:
             payload=payload,
         )
         state.learning.history_logs.append(event)
+        with self._db_connection() as conn:
+            self._ensure_storage_initialized(conn)
+            self._insert_event_row(conn, event)
 
     def _open_explore_window(self, state: AppState) -> None:
         until = datetime.datetime.now(timezone.utc) + datetime.timedelta(minutes=max(1, self.explore_window_minutes))
@@ -397,3 +481,157 @@ class SessionBackend:
         )
         self.save_app_state(state)
         return True
+
+    def _db_path(self) -> Path:
+        if self.state_db_file:
+            return Path(self.state_db_file)
+        return self.state_file.with_suffix(".db")
+
+    def _db_connection(self) -> sqlite3.Connection:
+        db_path = self._db_path()
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        return conn
+
+    def _ensure_storage_initialized(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_state (
+                state_id INTEGER PRIMARY KEY CHECK (state_id = 1),
+                state_json TEXT NOT NULL,
+                updated_ts TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS learning_events (
+                event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                audio_file_path TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_learning_events_kind
+            ON learning_events(kind)
+            """
+        )
+        conn.commit()
+
+    def _load_state_row(self, conn: sqlite3.Connection) -> AppState | None:
+        row = conn.execute("SELECT state_json FROM app_state WHERE state_id = 1").fetchone()
+        if row is None:
+            return None
+        try:
+            return AppState.model_validate_json(row["state_json"])
+        except Exception as exc:
+            print(f"读取数据库状态异常: {exc}")
+            return None
+
+    def _save_state_row(self, conn: sqlite3.Connection, state: AppState) -> None:
+        state_copy = state.model_copy(deep=True)
+        state_copy.learning.history_logs = []
+        now = datetime.datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            """
+            INSERT INTO app_state(state_id, state_json, updated_ts)
+            VALUES(1, ?, ?)
+            ON CONFLICT(state_id)
+            DO UPDATE SET state_json=excluded.state_json, updated_ts=excluded.updated_ts
+            """,
+            (state_copy.model_dump_json(), now),
+        )
+        conn.commit()
+
+    def _migrate_legacy_events(self, conn: sqlite3.Connection, state: AppState) -> None:
+        existing_count = conn.execute("SELECT COUNT(*) FROM learning_events").fetchone()
+        if existing_count and int(existing_count[0]) > 0:
+            return
+
+        migrated = 0
+        for event in state.learning.history_logs:
+            self._insert_event_row(conn, event)
+            migrated += 1
+
+        if migrated:
+            conn.commit()
+
+    def _load_legacy_or_default_state(self) -> AppState:
+        if self.state_file.exists():
+            try:
+                return AppState.model_validate_json(self.state_file.read_text(encoding="utf-8"))
+            except Exception as exc:
+                print(f"读取旧版存档异常: {exc}")
+
+        return AppState(
+            profile=UserProfile(student_id="user_01", display_name="演示同学"),
+            learning=LearningState(current_phase=LearningPhase.NOT_STARTED, total_score=0),
+            curriculum=CurriculumConfig(
+                topics=[TopicNode(topic_id="demo_01", title="恐龙为什么会灭绝？", difficulty=1, prerequisite_ids=[], tags=[])]
+            ),
+        )
+
+    def _fetch_recent_events(self, conn: sqlite3.Connection, *, limit: int) -> list[LearningEvent]:
+        if limit <= 0:
+            return []
+
+        rows = conn.execute(
+            """
+            SELECT event_id, ts, kind, payload_json, audio_file_path
+            FROM learning_events
+            ORDER BY event_id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        rows = list(reversed(rows))
+        return [self._event_from_row(row) for row in rows]
+
+    def _insert_event_row(self, conn: sqlite3.Connection, event: LearningEvent) -> int:
+        payload_text = json.dumps(event.payload, ensure_ascii=False)
+        cursor = conn.execute(
+            """
+            INSERT INTO learning_events(ts, kind, payload_json, audio_file_path)
+            VALUES(?, ?, ?, ?)
+            """,
+            (event.ts, event.kind, payload_text, event.audio_file_path),
+        )
+        conn.commit()
+        return int(cursor.lastrowid)
+
+    @staticmethod
+    def _event_from_row(row: sqlite3.Row) -> LearningEvent:
+        payload_obj = {}
+        payload_text = row["payload_json"]
+        if payload_text:
+            try:
+                parsed = json.loads(payload_text)
+                if isinstance(parsed, dict):
+                    payload_obj = parsed
+            except Exception:
+                payload_obj = {}
+
+        return LearningEvent(
+            ts=str(row["ts"]),
+            kind=str(row["kind"]),
+            payload=payload_obj,
+            audio_file_path=row["audio_file_path"],
+        )
+
+    @staticmethod
+    def _bounded_int_env(name: str, *, default: int, lower: int, upper: int) -> int:
+        value = os.getenv(name)
+        if value is None:
+            return default
+        try:
+            parsed = int(value)
+        except ValueError:
+            return default
+        return max(lower, min(upper, parsed))

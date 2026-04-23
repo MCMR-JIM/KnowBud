@@ -4,11 +4,14 @@ import io
 import os
 import asyncio
 from xml.sax.saxutils import escape
-from faster_whisper import WhisperModel
-import edge_tts
+from typing import TYPE_CHECKING, AsyncIterator
+
 import httpx
 
 from src.skills.base_skill import BaseSkill, SkillContext
+
+if TYPE_CHECKING:
+    from faster_whisper import WhisperModel
 
 class VoiceIOSkill(BaseSkill):
     """语音 IO 技能：负责语音识别 (ASR) 和语音合成 (TTS)"""
@@ -28,6 +31,8 @@ class VoiceIOSkill(BaseSkill):
 
     def _create_local_asr_model(self) -> WhisperModel:
         # 仅在未配置 Docker ASR 服务时加载本地 Whisper，避免无谓的模型初始化开销。
+        from faster_whisper import WhisperModel
+
         return WhisperModel(
             self.whisper_model_size,
             device="cpu",
@@ -82,6 +87,35 @@ class VoiceIOSkill(BaseSkill):
         # Edge-TTS 的 Communicate 接口可以直接处理包含简单 XML 标签的文本
         return asyncio.run(self._async_synthesize(ssml, voice))
 
+    async def synthesize_plain_stream(self, text: str, *, voice: str) -> AsyncIterator[bytes]:
+        """边合成边输出音频分片，供前端实时播放。"""
+        if not text:
+            return
+
+        target_voice = voice or self.default_voice
+        if self._should_try_tts_service():
+            try:
+                audio = self._synthesize_via_service(text, voice=target_voice)
+                for i in range(0, len(audio), 4096):
+                    chunk = audio[i : i + 4096]
+                    if chunk:
+                        yield chunk
+                return
+            except Exception as exc:
+                print(f"[VoiceIOSkill] 流式 TTS 服务不可用，回退 edge-tts: {exc}")
+
+        try:
+            import edge_tts
+        except ModuleNotFoundError as exc:
+            raise RuntimeError("edge_tts is required for streaming synthesis") from exc
+
+        communicate = edge_tts.Communicate(text, target_voice)
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                data = chunk["data"]
+                if data:
+                    yield data
+
     def _should_try_asr_service(self) -> bool:
         return self.voice_backend_mode in {"auto", "docker"} and bool(self.asr_service_url)
 
@@ -123,6 +157,11 @@ class VoiceIOSkill(BaseSkill):
 
     async def _async_synthesize(self, text: str, voice: str) -> bytes:
         """内部异步工作马：真正去调用 edge-tts 下载音频的地方"""
+        try:
+            import edge_tts
+        except ModuleNotFoundError as exc:
+            raise RuntimeError("edge_tts is required for synthesis") from exc
+
         communicate = edge_tts.Communicate(text, voice)
         audio_data = b""
         async for chunk in communicate.stream():

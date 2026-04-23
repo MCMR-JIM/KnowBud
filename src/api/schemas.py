@@ -76,7 +76,7 @@ class SessionStateResponse(BaseModel):
 
 
 class TextTurnRequest(BaseModel):
-    text: str
+    text: str = Field(min_length=1, max_length=8192)
 
 
 class TurnResponse(BaseModel):
@@ -165,3 +165,22 @@ class ExploreWindowResponse(BaseModel):
 class MasteryListResponse(BaseModel):
     session_id: str
     mastery: list[MasteryInfo] = Field(default_factory=list)
+
+
+class StreamTurnInitResponse(BaseModel):
+    session_id: str
+    turn_id: str
+    reply_text: str
+    earned_points: int
+    current_topic_id: str | None = None
+    current_phase: str
+    total_score: int
+    explore_window_until: str | None = None
+    stream_id: str
+    events_cursor: int = 0
+
+
+class StreamInterruptResponse(BaseModel):
+    session_id: str
+    stream_id: str
+    interrupted: bool

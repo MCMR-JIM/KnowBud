@@ -1,8 +1,14 @@
-# Frontend HTTP API v1.1 (Detailed)
+# Frontend HTTP API v1.2 (Single Session)
 
-本文件是前后端分离模式下的完整 API 对接说明，覆盖会话生命周期、回合输入、事件轮询、掌握度、知识图谱、复习队列、探索时间窗，以及兼容接口。
+本版本按产品约束收敛为**单会话模式**，并补齐 P0 能力：
 
-## Quick start
+- 单会话（固定 `session_id=default`）
+- 事务性状态存储（SQLite）
+- 记忆事件按需加载（游标分页）
+- 文本输入长度限制
+- 实时语音播放通道（流式输出 + 打断）
+
+## Run
 
 ```bash
 uvicorn src.api.app:app --host 0.0.0.0 --port 8090 --reload
@@ -11,170 +17,75 @@ uvicorn src.api.app:app --host 0.0.0.0 --port 8090 --reload
 - Swagger UI: `http://127.0.0.1:8090/docs`
 - OpenAPI JSON: `http://127.0.0.1:8090/openapi.json`
 
-## API scope and route count
+## Key conventions
 
-当前业务接口共 19 个：
+- 单会话固定：`session_id=default`
+- `turn_id` 形如 `turn_000001`
+- 事件游标：请求 `after`，响应 `next_cursor`
+- 时间格式：ISO-8601（UTC）
 
-- 新版会话化接口（推荐）：14 个，统一前缀 `/v1/sessions/{session_id}`。
-- 兼容接口（legacy）：5 个，统一绑定默认会话 `default`。
+## Limits and env
 
-## Core conventions
+- `API_TEXT_MAX_CHARS`：文本最大长度（默认 `128`，硬上限 `8192`）
+- `API_AUDIO_MAX_BYTES`：音频上传字节上限（默认 `5242880`，即 5MB）
+- `STATE_DB_FILE`：状态数据库路径（默认按 `STATE_FILE` 推导）
+- `HISTORY_TAIL_LIMIT`：`/state` 返回的最近事件条数上限（默认 `200`）
 
-- 时间格式：ISO-8601 字符串（UTC）。
-- `session_id` 格式：`sess_<12位hex>`（由后端生成）。
-- `turn_id` 格式：`turn_000001`（会话内单调递增）。
-- 音频回包：`reply_audio_base64` + `reply_audio_mime`，前端自行解码播放。
-- 奖励时间窗是后端状态（`explore_window_until`），前端只展示。
-- 事件消费采用游标：`after` + `next_cursor`。
+## Transaction storage
 
-## Error semantics
+后端状态与事件写入 SQLite：
 
-- `400`：请求语义错误（例如 `text` 为空、音频文件为空）。
-- `404`：会话不存在（仅新版会话化接口会返回）。
-- `422`：请求体/参数校验失败（FastAPI/Pydantic 自动校验）。
+- `app_state`：学习状态快照（事务更新）
+- `learning_events`：事件日志（自增游标）
 
-错误响应遵循 FastAPI 默认格式：
+设计目的：
 
-```json
-{
-  "detail": "text cannot be empty"
-}
-```
+- 防止 JSON 文件并发覆盖
+- 支持事件按需分页读取
+- 长会话下避免一次性加载全部历史
 
-## Data models (key fields)
+## Endpoints (canonical)
 
-### HealthResponse
+### System
 
-- `ok: bool`
-- `service: str`
-- `version: str`
-- `arch_mode: str`
+- `GET /health`
 
-### SessionSummary
+### Session state and turns
 
-- `session_id: str`
-- `created_at: str`
-- `updated_at: str`
-- `turn_count: int`
+- `GET /v1/session/state`
+- `POST /v1/session/input/text`
+- `POST /v1/session/input/audio`
+- `POST /v1/session/input/audio/sentence`（句级实时上传）
+- `GET /v1/session/events?after=0&limit=50`
 
-### SessionStateResponse
+### Review / graph / mastery / explore
 
-- `session_id: str`
-- `profile: SessionProfile`
-  - `student_id: str`
-  - `display_name: str`
-  - `locale: str`
-- `learning: SessionLearningState`
-  - `current_topic_id: str | null`
-  - `current_phase: str`
-  - `total_score: int`
-  - `consecutive_correct: int`
-  - `consecutive_wrong: int`
-  - `explore_window_until: str | null`
-  - `review_queue_size: int`
-  - `history_event_count: int`
-- `topics: TopicInfo[]`
-- `proposals: ProposalInfo[]`
-- `mastery: MasteryInfo[]`
-- `turn_count: int`
-- `events_cursor: int`
+- `POST /v1/session/review/push`
+- `GET /v1/session/review-queue`
+- `GET /v1/knowledge/graph`
+- `GET /v1/session/mastery`
+- `GET /v1/session/explore-window`
+- `POST /v1/session/explore-window/open`
+- `POST /v1/session/explore-window/close`
 
-### TurnResponse / AudioTurnResponse
+### Realtime audio output (stream + interrupt)
 
-- `session_id: str`
-- `turn_id: str`
-- `user_text: str`
-- `reply_text: str`
-- `earned_points: int`
-- `reply_audio_base64: str | null`
-- `reply_audio_mime: str`（默认 `audio/mpeg`）
-- `current_topic_id: str | null`
-- `current_phase: str`
-- `total_score: int`
-- `explore_window_until: str | null`
-- `events_cursor: int`
-- `recognized_text: str`（仅 `AudioTurnResponse`）
+- `POST /v1/session/input/text/realtime`
+- `POST /v1/session/input/audio/sentence`
+- `GET /v1/session/output/audio/stream/{stream_id}`
+- `POST /v1/session/output/audio/interrupt/{stream_id}`
 
-### EventListResponse
+说明：
 
-- `session_id: str`
-- `after: int`
-- `next_cursor: int`
-- `events: EventInfo[]`
-  - `event_index: int`
-  - `ts: str`
-  - `kind: str`
-  - `payload: object`
+1. 先调用 `input/text/realtime`，拿 `stream_id`。
+2. 前端立即拉 `output/audio/stream/{stream_id}` 并边播边收。
+3. 若用户打断，调用 `interrupt/{stream_id}`。
 
-### KnowledgeGraphResponse
+## Request / response notes
 
-- `session_id: str`
-- `topics: TopicInfo[]`
-- `proposals: ProposalInfo[]`
-- `mastery: MasteryInfo[]`
+### Text turn
 
-### ExploreWindowResponse
-
-- `session_id: str`
-- `explore_window_until: str | null`
-- `active: bool`
-- `remaining_seconds: int | null`
-
-## Event kinds seen by frontend
-
-前端轮询 `/events` 时，可能看到的事件类型包括：
-
-- `api_turn_completed`（每轮文本/语音提交后写入）
-- `review_topic_pushed`
-- `explore_window_opened`
-- `explore_window_closed`
-- 以及学习引擎本身写入的历史事件（如 `mastery_update`、`graph_proposal`、`topic_transition` 等）
-
-## Endpoints (recommended, session-scoped)
-
-### 1) System
-
-#### GET `/health`
-
-返回服务状态和 API 版本。
-
----
-
-### 2) Session lifecycle
-
-#### POST `/v1/sessions`
-
-创建新会话。
-
-请求体（可选）：
-
-```json
-{
-  "student_id": "u_001",
-  "display_name": "demo",
-  "locale": "zh-CN"
-}
-```
-
-返回：`CreateSessionResponse`（包含 `session` 概要和 `state` 快照）。
-
-#### GET `/v1/sessions`
-
-列出会话：`SessionListResponse`。
-
-#### GET `/v1/sessions/{session_id}/state`
-
-读取会话完整状态快照。
-
-错误：`404`（会话不存在）。
-
----
-
-### 3) Turns
-
-#### POST `/v1/sessions/{session_id}/turns/text`
-
-请求体：
+请求：
 
 ```json
 {
@@ -182,125 +93,44 @@ uvicorn src.api.app:app --host 0.0.0.0 --port 8090 --reload
 }
 ```
 
-行为：
+返回关键字段：
 
-- `text.strip()` 后为空会返回 `400`。
-- 成功后写入 `api_turn_completed` 事件。
+- `turn_id`
+- `reply_text`
+- `reply_audio_base64`（普通模式）
+- `events_cursor`
 
-返回：`TurnResponse`。
+### Audio turn
 
-#### POST `/v1/sessions/{session_id}/turns/audio`
+`multipart/form-data`：
 
-`multipart/form-data`，字段：
+- `file`：音频文件
 
-- `file`: wav/mp3 等音频文件
+返回包含：
 
-行为：
+- `recognized_text`
+- 其他字段同 `TurnResponse`
 
-- 空文件返回 `400`。
-- 后端先 ASR，再走一轮问答，再写入 `api_turn_completed` 事件。
+### Event polling
 
-返回：`AudioTurnResponse`（含 `recognized_text`）。
+- `after`：从该游标之后读取
+- `limit`：请求条数，内部裁剪到 `1..200`
 
----
+常见事件：
 
-### 4) Event polling
+- `api_turn_completed`
+- `review_topic_pushed`
+- `explore_window_opened`
+- `explore_window_closed`
+- 学习引擎事件（如 `mastery_update`、`graph_proposal`、`topic_transition`）
 
-#### GET `/v1/sessions/{session_id}/events?after=0&limit=50`
+## Errors
 
-查询参数：
+- `400`：空文本/空音频/文本超长
+- `413`：音频超过上限
+- `404`：流式 `stream_id` 不存在
+- `422`：请求参数校验失败
 
-- `after`：起始游标，默认 `0`。
-- `limit`：拉取条数，默认 `50`，后端裁剪为 `1..200`。
+## Compatibility routes
 
-返回：`EventListResponse`。
-
-轮询建议：
-
-1. 首次用 `after=0`。
-2. 使用返回的 `next_cursor` 继续拉取。
-3. 遇到空数组也保留 `next_cursor`，继续下一次轮询。
-
----
-
-### 5) Review queue
-
-#### POST `/v1/sessions/{session_id}/review-queue`
-
-请求体：
-
-```json
-{
-  "topic_id": "demo_01"
-}
-```
-
-返回：`PushReviewResponse`。
-
-#### GET `/v1/sessions/{session_id}/review-queue`
-
-返回：`ReviewQueueResponse`（`topics` + `size`）。
-
----
-
-### 6) Knowledge and mastery
-
-#### GET `/v1/sessions/{session_id}/graph`
-
-返回当前知识网视图：`KnowledgeGraphResponse`。
-
-#### GET `/v1/sessions/{session_id}/mastery`
-
-返回掌握度列表：`MasteryListResponse`。
-
----
-
-### 7) Explore window
-
-#### GET `/v1/sessions/{session_id}/explore-window`
-
-返回探索时间窗状态：`ExploreWindowResponse`。
-
-#### POST `/v1/sessions/{session_id}/explore-window/open`
-
-请求体：
-
-```json
-{
-  "minutes": 5
-}
-```
-
-约束：`minutes` 范围 `1..120`。
-
-返回：`ExploreWindowResponse`，并写入 `explore_window_opened` 事件。
-
-#### POST `/v1/sessions/{session_id}/explore-window/close`
-
-关闭探索时间窗，返回 `ExploreWindowResponse`，并写入 `explore_window_closed` 事件。
-
----
-
-## Legacy compatibility endpoints
-
-以下接口保留用于兼容旧前端，统一绑定默认会话 `default`，且会自动创建：
-
-- `GET /v1/session/state`
-- `POST /v1/session/input/text`
-- `POST /v1/session/input/audio`
-- `POST /v1/session/review/push`
-- `GET /v1/knowledge/graph`
-
-说明：
-
-- 若新项目接入，建议只使用 `/v1/sessions/*`。
-- legacy 与新接口读写的是不同会话命名空间（`default` vs 显式 `session_id`）。
-
-## Recommended frontend flow (production)
-
-1. 调用 `POST /v1/sessions` 创建会话并持久化 `session_id`。
-2. 首屏调用 `GET /v1/sessions/{session_id}/state` 渲染当前学习态。
-3. 输入走 `turns/text` 或 `turns/audio`。
-4. 用 `events` 做增量轮询驱动消息流和状态提示。
-5. 家长端通过 `review-queue` 推入复习主题。
-6. 进阶页可按需拉 `graph`、`mastery`、`explore-window`。
+为兼容旧前端，保留 `/v1/sessions/*` 路径，但仅接受 `session_id=default`。
