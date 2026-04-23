@@ -81,3 +81,23 @@ def test_backend_promotes_shadow_topic_after_mastery(tmp_path: Path) -> None:
     promoted = next(t for t in updated.curriculum.topics if t.topic_id == "shadow_node")
     assert "shadow" not in promoted.tags
     assert "active" in promoted.tags
+
+
+def test_backend_persists_graph_proposal_record(tmp_path: Path) -> None:
+    backend = SessionBackend()
+    backend.state_file = tmp_path / "state.json"
+    backend.log_file = tmp_path / "decision_trace.jsonl"
+    backend.agent_orchestrator = AgentOrchestrator()
+    backend.synthesize_reply_audio = lambda _: b""
+
+    state = backend.load_app_state()
+    state.learning.current_topic_id = "demo_01"
+    backend.save_app_state(state)
+
+    backend._evaluate_and_speak_agent("黑洞怎么形成")
+    updated = backend.load_app_state()
+
+    assert len(updated.learning.graph_proposals) >= 1
+    latest = updated.learning.graph_proposals[-1]
+    assert latest.status in {"shadow", "active", "rejected"}
+    assert latest.proposal_id

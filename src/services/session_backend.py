@@ -9,7 +9,7 @@ import datetime
 from datetime import timezone
 
 from src.core.enums import UserIntent, LearningPhase
-from src.core.models import AppState, UserProfile, LearningState, CurriculumConfig, TopicNode, PendingQuestion, ErrorRecord, LearningEvent
+from src.core.models import AppState, UserProfile, LearningState, CurriculumConfig, TopicNode, PendingQuestion, ErrorRecord, LearningEvent, GraphProposalRecord
 from src.core.decision_engine import DecisionEngine
 from src.skills.base_skill import SkillContext
 from src.skills.voice_io_skill import VoiceIOSkill
@@ -160,13 +160,16 @@ class SessionBackend:
             if earned_points:
                 state.learning.total_score += earned_points
             if decision.proposal is not None:
+                self._upsert_graph_proposal(state=state, proposal=decision.proposal)
                 self._append_learning_event(
                     state=state,
                     kind="graph_proposal",
                     payload={
+                        "proposal_id": decision.proposal.proposal_id,
                         "title": decision.proposal.title,
                         "status": decision.proposal.status.value,
                         "reason": decision.proposal.reason,
+                        "created_topic_id": decision.proposal.created_topic_id,
                     },
                 )
             self.save_app_state(state)
@@ -247,6 +250,7 @@ class SessionBackend:
             )
             if promoted:
                 reply_text = f"{reply_text}\n\n你已经把这个新知识点学稳了，我已将它转入主学习网。"
+                self._mark_proposal_active_for_topic(state=state, topic_id=topic_id)
                 self._append_learning_event(
                     state=state,
                     kind="graph_promotion",
@@ -314,6 +318,40 @@ class SessionBackend:
     def _open_explore_window(self, state: AppState) -> None:
         until = datetime.datetime.now(timezone.utc) + datetime.timedelta(minutes=max(1, self.explore_window_minutes))
         state.learning.explore_window_until = until.isoformat()
+
+    def _upsert_graph_proposal(self, *, state: AppState, proposal) -> None:
+        now = datetime.datetime.now(timezone.utc).isoformat()
+        for rec in state.learning.graph_proposals:
+            if rec.proposal_id == proposal.proposal_id:
+                rec.status = proposal.status.value
+                rec.reason = proposal.reason
+                rec.created_topic_id = proposal.created_topic_id
+                rec.updated_ts = now
+                return
+
+        state.learning.graph_proposals.append(
+            GraphProposalRecord(
+                proposal_id=proposal.proposal_id,
+                title=proposal.title,
+                summary=proposal.summary,
+                trigger=proposal.trigger,
+                parent_node_ids=list(proposal.parent_node_ids),
+                edge_type=proposal.edge_type.value,
+                status=proposal.status.value,
+                reason=proposal.reason,
+                created_topic_id=proposal.created_topic_id,
+                created_ts=now,
+                updated_ts=now,
+            )
+        )
+
+    def _mark_proposal_active_for_topic(self, *, state: AppState, topic_id: str) -> None:
+        now = datetime.datetime.now(timezone.utc).isoformat()
+        for rec in state.learning.graph_proposals:
+            if rec.created_topic_id == topic_id and rec.status in {"shadow", "validated", "proposed"}:
+                rec.status = "active"
+                rec.reason = "promoted by mastery evidence"
+                rec.updated_ts = now
 
     def _consume_explore_window_expiry(self, state: AppState) -> bool:
         until_text = state.learning.explore_window_until

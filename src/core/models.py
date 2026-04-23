@@ -49,6 +49,20 @@ class LearningEvent(BaseModel):
     audio_file_path: str | None = None  # 🚀 新增：保存孩子录音的本地路径
 
 
+class GraphProposalRecord(BaseModel):
+    proposal_id: str
+    title: str
+    summary: str
+    trigger: str
+    parent_node_ids: list[str] = Field(default_factory=list)
+    edge_type: str = "requires"
+    status: str = "proposed"
+    reason: str = ""
+    created_topic_id: str | None = None
+    created_ts: str
+    updated_ts: str
+
+
 class NodeMastery(BaseModel):
     depth_level: int = 0
     stability_level: int = 0
@@ -73,6 +87,7 @@ class LearningState(BaseModel):
     review_queue: list[str] = Field(default_factory=list) # 等待家长强推的复习队列
     explore_window_until: str | None = None
     mastery_map: dict[str, NodeMastery] = Field(default_factory=dict)
+    graph_proposals: list[GraphProposalRecord] = Field(default_factory=list)
     
     history_logs: list[LearningEvent] = Field(default_factory=list)
     pending_question: PendingQuestion | None = None

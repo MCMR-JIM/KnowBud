@@ -35,6 +35,7 @@ class TopicRoutingResult(BaseModel):
 
 
 class GraphMutationProposal(BaseModel):
+    proposal_id: str
     trigger: str
     title: str
     summary: str
@@ -42,6 +43,7 @@ class GraphMutationProposal(BaseModel):
     edge_type: EdgeType = EdgeType.REQUIRES
     status: ProposalStatus = ProposalStatus.PROPOSED
     reason: str = ""
+    created_topic_id: str | None = None
 
 
 class AgentTurnDecision(BaseModel):

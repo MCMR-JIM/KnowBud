@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from uuid import uuid4
 
 from src.agent.models import EdgeType, GraphMutationProposal, ProposalStatus
 from src.core.models import CurriculumConfig, NodeMastery, TopicNode
@@ -11,6 +12,7 @@ class GraphCurator:
         title = self._summarize_title(question_text)
         parent_ids = [current_topic_id] if current_topic_id else []
         return GraphMutationProposal(
+            proposal_id=uuid4().hex,
             trigger="unknown_question",
             title=title,
             summary=question_text[:120],
@@ -35,6 +37,11 @@ class GraphCurator:
             proposal.reason = "self dependency"
             return False, None
 
+        if not self._is_subject_links_allowed(proposal.parent_node_ids, curriculum.topics):
+            proposal.status = ProposalStatus.REJECTED
+            proposal.reason = "cross-subject requires relation is not allowed"
+            return False, None
+
         proposal.status = ProposalStatus.VALIDATED
 
         prerequisite_ids = proposal.parent_node_ids if proposal.edge_type == EdgeType.REQUIRES else []
@@ -47,6 +54,7 @@ class GraphCurator:
                 tags=["auto-proposed", "shadow"],
             )
         )
+        proposal.created_topic_id = new_topic_id
         proposal.status = ProposalStatus.SHADOW
         proposal.reason = "validated and inserted as shadow node"
         return True, new_topic_id
@@ -106,6 +114,26 @@ class GraphCurator:
     @staticmethod
     def _normalize_title(text: str) -> str:
         return re.sub(r"\s+", "", text).lower()
+
+    @staticmethod
+    def _topic_subject(topic: TopicNode) -> str:
+        for tag in topic.tags:
+            if tag.startswith("subject:"):
+                return tag.split(":", 1)[1]
+        return "general"
+
+    @classmethod
+    def _is_subject_links_allowed(cls, parent_node_ids: list[str], topics: list[TopicNode]) -> bool:
+        if len(parent_node_ids) <= 1:
+            return True
+
+        topic_map = {topic.topic_id: topic for topic in topics}
+        subjects = {
+            cls._topic_subject(topic_map[parent_id])
+            for parent_id in parent_node_ids
+            if parent_id in topic_map
+        }
+        return len(subjects) <= 1
 
     @classmethod
     def _is_duplicate_title(cls, title: str, topics: list[TopicNode]) -> bool:

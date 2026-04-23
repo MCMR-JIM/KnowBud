@@ -51,6 +51,22 @@ def test_orchestrator_adds_new_topic_for_off_topic_question() -> None:
     assert "shadow" in created.tags
 
 
+def test_graph_curator_blocks_cross_subject_requires() -> None:
+    curator = GraphCurator()
+    curriculum = CurriculumConfig(
+        topics=[
+            TopicNode(topic_id="math_1", title="四则运算", difficulty=1, prerequisite_ids=[], tags=["subject:math"]),
+            TopicNode(topic_id="bio_1", title="恐龙灭绝", difficulty=1, prerequisite_ids=[], tags=["subject:science"]),
+        ]
+    )
+    proposal = curator.propose_from_question(question_text="跨学科节点", current_topic_id="math_1")
+    proposal.parent_node_ids = ["math_1", "bio_1"]
+
+    applied, _topic_id = curator.auto_review_and_apply(proposal=proposal, curriculum=curriculum)
+    assert applied is False
+    assert proposal.status.value == "rejected"
+
+
 def test_orchestrator_off_topic_in_explore_window_no_proposal() -> None:
     state = make_state()
     state.learning.explore_window_until = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
