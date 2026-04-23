@@ -289,6 +289,12 @@ class SessionBackend:
             self._open_explore_window(state)
             reply_text = f"{reply_text}\n\n🎁 奖励时间开启：接下来 {self.explore_window_minutes} 分钟你可以自由探索提问。"
 
+        expanded_count = 0
+        if self.agent_orchestrator is not None and mastery_update.true_mastered_now:
+            expanded_count = self._auto_expand_from_mastery(state=state, topic_id=topic_id)
+            if expanded_count > 0:
+                reply_text = f"{reply_text}\n\n我还为你自动扩展了 {expanded_count} 个进阶分支，我们可以继续挑战更深入的问题。"
+
         if self.agent_orchestrator is not None:
             promoted = self.agent_orchestrator.curator.promote_shadow_topic(
                 topic_id=topic_id,
@@ -327,6 +333,8 @@ class SessionBackend:
                 "mastered_now": mastery_update.mastered_now,
                 "true_mastered_now": mastery_update.true_mastered_now,
                 "open_explore_window": mastery_update.should_open_explore_window,
+                "mastery_state": state.learning.mastery_map.get(topic_id).mastery_state if topic_id in state.learning.mastery_map else None,
+                "auto_expanded": expanded_count,
             },
         )
         self.save_app_state(state)
@@ -445,6 +453,45 @@ class SessionBackend:
             if rec.created_topic_id == topic_id and rec.status in {"shadow", "validated", "proposed"}:
                 self._transition_proposal_record(rec, to_status="active", reason="promoted by mastery evidence")
                 rec.updated_ts = now
+
+    def _auto_expand_from_mastery(self, *, state: AppState, topic_id: str) -> int:
+        if self.agent_orchestrator is None:
+            return 0
+
+        topic = next((item for item in state.curriculum.topics if item.topic_id == topic_id), None)
+        if topic is None:
+            return 0
+
+        proposals = self.agent_orchestrator.curator.propose_mastery_followups(
+            topic=topic,
+            curriculum=state.curriculum,
+            limit=1,
+        )
+        if not proposals:
+            return 0
+
+        expanded = 0
+        for proposal in proposals:
+            applied, created_topic_id = self.agent_orchestrator.curator.auto_review_and_apply(
+                proposal=proposal,
+                curriculum=state.curriculum,
+            )
+            self._upsert_graph_proposal(state=state, proposal=proposal)
+            self._append_learning_event(
+                state=state,
+                kind="graph_auto_expand",
+                payload={
+                    "proposal_id": proposal.proposal_id,
+                    "trigger": proposal.trigger,
+                    "title": proposal.title,
+                    "status": proposal.status.value,
+                    "created_topic_id": created_topic_id,
+                    "reason": proposal.reason,
+                },
+            )
+            if applied and created_topic_id:
+                expanded += 1
+        return expanded
 
     def _transition_proposal_record(self, rec: GraphProposalRecord, *, to_status: str, reason: str) -> bool:
         if rec.status == to_status:

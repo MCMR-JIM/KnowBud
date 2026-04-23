@@ -55,6 +55,7 @@ class AgentOrchestrator:
             proposal = self.curator.propose_from_question(
                 question_text=user_text,
                 current_topic_id=state.learning.current_topic_id,
+                topics=state.curriculum.topics,
             )
             applied, new_topic_id = self.curator.auto_review_and_apply(proposal=proposal, curriculum=state.curriculum)
             hint = "这个问题很棒。我先记入知识网，等获得探索时间后我们深入聊。"

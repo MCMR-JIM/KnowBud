@@ -64,12 +64,14 @@ class GraphProposalRecord(BaseModel):
 
 
 class NodeMastery(BaseModel):
+    mastery_state: str = "unknown"
     depth_level: int = 0
     stability_level: int = 0
     success_count: int = 0
     success_streak: int = 0
     spaced_success_count: int = 0
     last_success_ts: str | None = None
+    last_state_ts: str | None = None
     reward_window_granted: bool = False
 
 class LearningState(BaseModel):

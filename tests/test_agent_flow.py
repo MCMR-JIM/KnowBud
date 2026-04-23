@@ -119,3 +119,33 @@ def test_topic_router_respects_prerequisite_unlock_threshold() -> None:
     )
     assert unlocked.off_topic is False
     assert unlocked.target_topic_id == "t_adv"
+
+
+def test_graph_curator_rejects_missing_parent_node() -> None:
+    state = make_state()
+    curator = GraphCurator()
+    proposal = curator.propose_from_question(
+        question_text="板块运动如何导致火山喷发",
+        current_topic_id="topic_dino",
+        topics=state.curriculum.topics,
+    )
+    proposal.parent_node_ids = ["topic_missing"]
+
+    applied, new_topic_id = curator.auto_review_and_apply(proposal=proposal, curriculum=state.curriculum)
+    assert applied is False
+    assert new_topic_id is None
+    assert proposal.status.value == "rejected"
+
+
+def test_graph_curator_generates_mastery_followups() -> None:
+    state = make_state()
+    curator = GraphCurator()
+    topic = state.curriculum.topics[0]
+
+    proposals = curator.propose_mastery_followups(topic=topic, curriculum=state.curriculum, limit=1)
+    assert len(proposals) == 1
+    assert proposals[0].trigger == "mastery_expand"
+
+    applied, new_topic_id = curator.auto_review_and_apply(proposal=proposals[0], curriculum=state.curriculum)
+    assert applied is True
+    assert new_topic_id is not None

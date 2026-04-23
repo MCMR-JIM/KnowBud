@@ -49,6 +49,7 @@ class ProposalInfo(BaseModel):
 
 class MasteryInfo(BaseModel):
     topic_id: str
+    mastery_state: str
     depth_level: int
     stability_level: int
     success_count: int

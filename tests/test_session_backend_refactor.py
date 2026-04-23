@@ -101,3 +101,27 @@ def test_backend_persists_graph_proposal_record(tmp_path: Path) -> None:
     latest = updated.learning.graph_proposals[-1]
     assert latest.status in {"shadow", "active", "rejected"}
     assert latest.proposal_id
+
+
+def test_backend_auto_expands_mastered_topic(tmp_path: Path) -> None:
+    backend = SessionBackend()
+    backend.state_file = tmp_path / "state.json"
+    backend.state_db_file = str(tmp_path / "state.db")
+    backend.log_file = tmp_path / "decision_trace.jsonl"
+    backend.agent_orchestrator = AgentOrchestrator()
+    backend.synthesize_reply_audio = lambda _: b""
+    backend.llm_skill.evaluate_answer = lambda **_: EvaluationResult(
+        is_correct=True,
+        feedback_text="回答不错",
+    )
+
+    state = backend.load_app_state()
+    state.learning.current_topic_id = "demo_01"
+    backend.save_app_state(state)
+
+    backend.evaluate_student_answer("因为可以结合应用，所以我这样理解")
+    backend.evaluate_student_answer("因为可以结合应用，所以我这样理解")
+
+    updated = backend.load_app_state()
+    assert any(rec.trigger == "mastery_expand" for rec in updated.learning.graph_proposals)
+    assert any(rec.trigger == "mastery_expand" and rec.created_topic_id is not None for rec in updated.learning.graph_proposals)

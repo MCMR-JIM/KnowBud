@@ -661,6 +661,7 @@ def _proposal_info(record) -> ProposalInfo:
 def _mastery_info(topic_id: str, mastery) -> MasteryInfo:
     return MasteryInfo(
         topic_id=topic_id,
+        mastery_state=getattr(mastery, "mastery_state", "unknown"),
         depth_level=mastery.depth_level,
         stability_level=mastery.stability_level,
         success_count=mastery.success_count,
