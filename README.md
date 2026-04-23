@@ -93,7 +93,7 @@ docker compose -f docker/asr_tts/docker-compose.yml down
 uvicorn src.api.app:app --host 0.0.0.0 --port 8090 --reload
 ```
 
-接口文档见：`docs/api/frontend_http_api.md`（v1.2，单会话模式，保留 `/v1/sessions/*` 兼容路径）。
+接口文档见：`docs/api/frontend_http_api.md`（v1.3，单会话模式，保留 `/v1/sessions/*` 兼容路径）。
 存储设计见：`docs/api/session_state_storage.md`（SQLite 事务存储 + 事件按需加载）。
 
 ## 协议与规范

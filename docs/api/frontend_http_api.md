@@ -1,4 +1,4 @@
-# Frontend HTTP API v1.2 (Single Session)
+# Frontend HTTP API v1.3 (Single Session)
 
 本版本按产品约束收敛为**单会话模式**，并补齐 P0 能力：
 
@@ -30,6 +30,9 @@ uvicorn src.api.app:app --host 0.0.0.0 --port 8090 --reload
 - `API_AUDIO_MAX_BYTES`：音频上传字节上限（默认 `5242880`，即 5MB）
 - `STATE_DB_FILE`：状态数据库路径（默认按 `STATE_FILE` 推导）
 - `HISTORY_TAIL_LIMIT`：`/state` 返回的最近事件条数上限（默认 `200`）
+- `EXPLORE_WINDOW_COOLDOWN_MINUTES`：探索奖励时间窗冷却时长（默认 `8`）
+- `SHADOW_ACTIVATE_OBSERVATION_TURNS`：影子节点晋升为 active 的最少观察轮次（默认 `2`）
+- `SHADOW_ROLLBACK_WRONG_STREAK`：影子节点连续失败回滚阈值（默认 `2`）
 
 ## Transaction storage
 
@@ -121,8 +124,17 @@ uvicorn src.api.app:app --host 0.0.0.0 --port 8090 --reload
 - `api_turn_completed`
 - `review_topic_pushed`
 - `explore_window_opened`
+- `explore_window_open_blocked`
 - `explore_window_closed`
+- `graph_shadow_rollback`
 - 学习引擎事件（如 `mastery_update`、`graph_proposal`、`topic_transition`）
+
+### Explore window response
+
+`/v1/session/explore-window` 与 open/close 响应增加冷却字段：
+
+- `cooldown_until`
+- `cooldown_remaining_seconds`
 
 ## Errors
 

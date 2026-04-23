@@ -12,9 +12,12 @@ class AgentPolicyConfig:
     unlock_depth_threshold: int = 1
     locked_topic_penalty: float = 0.35
     explore_window_minutes: int = 5
+    explore_window_cooldown_minutes: int = 8
     shadow_promote_depth: int = 2
     shadow_promote_success_count: int = 2
     shadow_promote_stability: int = 1
+    shadow_activate_observation_turns: int = 2
+    shadow_rollback_wrong_streak: int = 2
     allow_cross_subject_requires: bool = False
 
     @classmethod
@@ -26,9 +29,12 @@ class AgentPolicyConfig:
             unlock_depth_threshold=_env_int("PREREQ_UNLOCK_DEPTH", 1),
             locked_topic_penalty=_env_float("LOCKED_TOPIC_PENALTY", 0.35),
             explore_window_minutes=_env_int("EXPLORE_WINDOW_MINUTES", 5),
+            explore_window_cooldown_minutes=_env_int("EXPLORE_WINDOW_COOLDOWN_MINUTES", 8),
             shadow_promote_depth=_env_int("SHADOW_PROMOTE_DEPTH", 2),
             shadow_promote_success_count=_env_int("SHADOW_PROMOTE_SUCCESS_COUNT", 2),
             shadow_promote_stability=_env_int("SHADOW_PROMOTE_STABILITY", 1),
+            shadow_activate_observation_turns=_env_int("SHADOW_ACTIVATE_OBSERVATION_TURNS", 2),
+            shadow_rollback_wrong_streak=_env_int("SHADOW_ROLLBACK_WRONG_STREAK", 2),
             allow_cross_subject_requires=_env_bool("ALLOW_CROSS_SUBJECT_REQUIRES", False),
         )
 

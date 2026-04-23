@@ -48,6 +48,9 @@ class SessionBackend:
         self.learning_arch_mode = os.getenv("LEARNING_ARCH_MODE", "legacy").strip().lower()
         self.agent_policy = AgentPolicyConfig.from_env()
         self.explore_window_minutes = self.agent_policy.explore_window_minutes
+        self.explore_window_cooldown_minutes = max(0, self.agent_policy.explore_window_cooldown_minutes)
+        self.shadow_activate_observation_turns = max(1, self.agent_policy.shadow_activate_observation_turns)
+        self.shadow_rollback_wrong_streak = max(1, self.agent_policy.shadow_rollback_wrong_streak)
         self.history_tail_limit = self._bounded_int_env("HISTORY_TAIL_LIMIT", default=200, lower=20, upper=2000)
 
         fail_th = int(os.getenv("FSM_FAIL_THRESHOLD", "3"))
@@ -286,8 +289,11 @@ class SessionBackend:
             reply_text = f"{reply_text}\n\n你已经开始会结合应用这个知识点了！"
 
         if mastery_update.should_open_explore_window:
-            self._open_explore_window(state)
-            reply_text = f"{reply_text}\n\n🎁 奖励时间开启：接下来 {self.explore_window_minutes} 分钟你可以自由探索提问。"
+            opened = self._open_explore_window(state)
+            if opened:
+                reply_text = f"{reply_text}\n\n🎁 奖励时间开启：接下来 {self.explore_window_minutes} 分钟你可以自由探索提问。"
+            else:
+                reply_text = f"{reply_text}\n\n你又有新进步了！探索奖励在冷却中，我们继续主线挑战。"
 
         expanded_count = 0
         if self.agent_orchestrator is not None and mastery_update.true_mastered_now:
@@ -295,20 +301,16 @@ class SessionBackend:
             if expanded_count > 0:
                 reply_text = f"{reply_text}\n\n我还为你自动扩展了 {expanded_count} 个进阶分支，我们可以继续挑战更深入的问题。"
 
+        shadow_lifecycle = None
         if self.agent_orchestrator is not None:
-            promoted = self.agent_orchestrator.curator.promote_shadow_topic(
-                topic_id=topic_id,
-                curriculum=state.curriculum,
-                mastery_map=state.learning.mastery_map,
-            )
+            shadow_lifecycle = self._update_shadow_lifecycle(state=state, topic_id=topic_id, is_correct=is_correct)
+            if shadow_lifecycle.get("rolled_back"):
+                reply_text = f"{reply_text}\n\n这个新分支我们先放回观察区，等你准备好再挑战。"
+
+        if self.agent_orchestrator is not None:
+            promoted = bool(shadow_lifecycle and shadow_lifecycle.get("promoted"))
             if promoted:
                 reply_text = f"{reply_text}\n\n你已经把这个新知识点学稳了，我已将它转入主学习网。"
-                self._mark_proposal_active_for_topic(state=state, topic_id=topic_id)
-                self._append_learning_event(
-                    state=state,
-                    kind="graph_promotion",
-                    payload={"topic_id": topic_id, "to": "active"},
-                )
 
         decision = self.engine.evaluate(
             state=state.learning,
@@ -335,6 +337,9 @@ class SessionBackend:
                 "open_explore_window": mastery_update.should_open_explore_window,
                 "mastery_state": state.learning.mastery_map.get(topic_id).mastery_state if topic_id in state.learning.mastery_map else None,
                 "auto_expanded": expanded_count,
+                "shadow_observation_count": state.learning.shadow_observation_map.get(topic_id, 0),
+                "shadow_wrong_streak": state.learning.shadow_wrong_streak_map.get(topic_id, 0),
+                "shadow_rolled_back": bool(shadow_lifecycle and shadow_lifecycle.get("rolled_back")),
             },
         )
         self.save_app_state(state)
@@ -416,9 +421,42 @@ class SessionBackend:
             self._ensure_storage_initialized(conn)
             self._insert_event_row(conn, event)
 
-    def _open_explore_window(self, state: AppState) -> None:
-        until = datetime.datetime.now(timezone.utc) + datetime.timedelta(minutes=max(1, self.explore_window_minutes))
+    def _open_explore_window(self, state: AppState) -> bool:
+        now = datetime.datetime.now(timezone.utc)
+        cooldown_until = self._parse_iso_datetime(state.learning.explore_window_cooldown_until)
+        if cooldown_until is not None and cooldown_until > now:
+            self._append_learning_event(
+                state=state,
+                kind="explore_window_open_blocked",
+                payload={
+                    "reason": "cooldown_active",
+                    "cooldown_until": state.learning.explore_window_cooldown_until,
+                },
+            )
+            return False
+
+        until = now + datetime.timedelta(minutes=max(1, self.explore_window_minutes))
         state.learning.explore_window_until = until.isoformat()
+        state.learning.explore_window_cooldown_until = None
+        return True
+
+    def force_close_explore_window(self, *, source: str) -> AppState:
+        state = self.load_app_state()
+        if state.learning.explore_window_until is None:
+            return state
+
+        state.learning.explore_window_until = None
+        state.learning.explore_window_cooldown_until = self._next_cooldown_until()
+        self._append_learning_event(
+            state=state,
+            kind="explore_window_closed",
+            payload={
+                "source": source,
+                "cooldown_until": state.learning.explore_window_cooldown_until,
+            },
+        )
+        self.save_app_state(state)
+        return state
 
     def _upsert_graph_proposal(self, *, state: AppState, proposal) -> None:
         now = datetime.datetime.now(timezone.utc).isoformat()
@@ -452,7 +490,95 @@ class SessionBackend:
         for rec in state.learning.graph_proposals:
             if rec.created_topic_id == topic_id and rec.status in {"shadow", "validated", "proposed"}:
                 self._transition_proposal_record(rec, to_status="active", reason="promoted by mastery evidence")
+                rec.observation_count = max(rec.observation_count, state.learning.shadow_observation_map.get(topic_id, 0))
                 rec.updated_ts = now
+
+    def _mark_proposal_rejected_for_topic(self, *, state: AppState, topic_id: str, reason: str) -> None:
+        now = datetime.datetime.now(timezone.utc).isoformat()
+        for rec in state.learning.graph_proposals:
+            if rec.created_topic_id != topic_id:
+                continue
+            if rec.status in {"active", "rejected"}:
+                continue
+            self._transition_proposal_record(rec, to_status="rejected", reason=reason)
+            rec.updated_ts = now
+
+    def _update_shadow_lifecycle(self, *, state: AppState, topic_id: str, is_correct: bool) -> dict[str, object]:
+        topic = next((item for item in state.curriculum.topics if item.topic_id == topic_id), None)
+        if topic is None or "shadow" not in topic.tags:
+            state.learning.shadow_observation_map.pop(topic_id, None)
+            state.learning.shadow_wrong_streak_map.pop(topic_id, None)
+            return {"promoted": False, "rolled_back": False}
+
+        if is_correct:
+            obs = state.learning.shadow_observation_map.get(topic_id, 0) + 1
+            state.learning.shadow_observation_map[topic_id] = obs
+            state.learning.shadow_wrong_streak_map[topic_id] = 0
+
+            promoted = False
+            if obs >= self.shadow_activate_observation_turns:
+                promoted = self.agent_orchestrator.curator.promote_shadow_topic(
+                    topic_id=topic_id,
+                    curriculum=state.curriculum,
+                    mastery_map=state.learning.mastery_map,
+                )
+                if promoted:
+                    self._mark_proposal_active_for_topic(state=state, topic_id=topic_id)
+                    self._append_learning_event(
+                        state=state,
+                        kind="graph_promotion",
+                        payload={
+                            "topic_id": topic_id,
+                            "to": "active",
+                            "observation_count": obs,
+                        },
+                    )
+            return {
+                "promoted": promoted,
+                "rolled_back": False,
+                "observation_count": obs,
+            }
+
+        wrong_streak = state.learning.shadow_wrong_streak_map.get(topic_id, 0) + 1
+        state.learning.shadow_wrong_streak_map[topic_id] = wrong_streak
+        rolled_back = False
+        if wrong_streak >= self.shadow_rollback_wrong_streak:
+            rolled_back = self._rollback_shadow_topic(state=state, topic_id=topic_id)
+            if rolled_back:
+                self._append_learning_event(
+                    state=state,
+                    kind="graph_shadow_rollback",
+                    payload={
+                        "topic_id": topic_id,
+                        "wrong_streak": wrong_streak,
+                        "threshold": self.shadow_rollback_wrong_streak,
+                    },
+                )
+
+        return {
+            "promoted": False,
+            "rolled_back": rolled_back,
+            "wrong_streak": wrong_streak,
+        }
+
+    def _rollback_shadow_topic(self, *, state: AppState, topic_id: str) -> bool:
+        topic = next((item for item in state.curriculum.topics if item.topic_id == topic_id), None)
+        if topic is None or "shadow" not in topic.tags:
+            return False
+
+        state.curriculum.topics = [item for item in state.curriculum.topics if item.topic_id != topic_id]
+        state.learning.shadow_observation_map.pop(topic_id, None)
+        state.learning.shadow_wrong_streak_map.pop(topic_id, None)
+        state.learning.mastery_map.pop(topic_id, None)
+        if state.learning.current_topic_id == topic_id:
+            state.learning.current_topic_id = None
+
+        self._mark_proposal_rejected_for_topic(
+            state=state,
+            topic_id=topic_id,
+            reason="rolled back due to repeated failures during shadow observation",
+        )
+        return True
 
     def _auto_expand_from_mastery(self, *, state: AppState, topic_id: str) -> int:
         if self.agent_orchestrator is None:
@@ -515,16 +641,23 @@ class SessionBackend:
             until = datetime.datetime.fromisoformat(until_text)
         except Exception:
             state.learning.explore_window_until = None
+            state.learning.explore_window_cooldown_until = self._next_cooldown_until()
             return True
 
         if until > datetime.datetime.now(timezone.utc):
             return False
 
         state.learning.explore_window_until = None
+        state.learning.explore_window_cooldown_until = self._next_cooldown_until()
         self._append_learning_event(
             state=state,
             kind="explore_window_closed",
-            payload={"closed_at": datetime.datetime.now(timezone.utc).isoformat()},
+            payload={
+                "closed_at": datetime.datetime.now(timezone.utc).isoformat(),
+                "source": "window_expired",
+                "cooldown_until": state.learning.explore_window_cooldown_until,
+                "return_hint": "探索时间结束啦，我们回到主线继续学习。",
+            },
         )
         self.save_app_state(state)
         return True
@@ -671,6 +804,24 @@ class SessionBackend:
             payload=payload_obj,
             audio_file_path=row["audio_file_path"],
         )
+
+    def _next_cooldown_until(self) -> str | None:
+        if self.explore_window_cooldown_minutes <= 0:
+            return None
+        until = datetime.datetime.now(timezone.utc) + datetime.timedelta(minutes=self.explore_window_cooldown_minutes)
+        return until.isoformat()
+
+    @staticmethod
+    def _parse_iso_datetime(value: str | None) -> datetime.datetime | None:
+        if not value:
+            return None
+        try:
+            parsed = datetime.datetime.fromisoformat(value)
+        except Exception:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed
 
     @staticmethod
     def _bounded_int_env(name: str, *, default: int, lower: int, upper: int) -> int:

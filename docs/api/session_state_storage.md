@@ -1,6 +1,6 @@
 # Session State Storage (SQLite)
 
-本文件说明单会话后端的状态与记忆存储设计（P0）。
+本文件说明单会话后端的状态与记忆存储设计（P0 + P2）。
 
 ## 目标
 
@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS app_state (
 
 - `state_json`：`AppState` 的 JSON 序列化结果。
 - 写入时会清空 `history_logs` 字段（历史事件单独放 `learning_events`）。
+- P2 相关状态（探索时间窗冷却、影子节点观察计数/回滚计数）随 `state_json` 一并事务保存。
 
 ### `learning_events`
 

@@ -43,7 +43,7 @@ from src.api.schemas import (
 if TYPE_CHECKING:
     from src.services.session_backend import SessionBackend
 
-API_VERSION = "1.2.0"
+API_VERSION = "1.3.0"
 SINGLE_SESSION_ID = "default"
 TURN_EVENT_KIND = "api_turn_completed"
 
@@ -178,8 +178,20 @@ class SingleSessionRuntime:
         backend = self._backend_factory()
         with self._lock:
             state = backend.load_app_state(include_history=False)
+            cooldown_until = _parse_iso_ts(state.learning.explore_window_cooldown_until)
+            if cooldown_until and cooldown_until > datetime.now(timezone.utc):
+                backend.append_learning_event(
+                    kind="explore_window_open_blocked",
+                    payload={
+                        "reason": "cooldown_active",
+                        "cooldown_until": state.learning.explore_window_cooldown_until,
+                    },
+                )
+                return state
+
             until = datetime.now(timezone.utc).timestamp() + (max(1, minutes) * 60)
             state.learning.explore_window_until = datetime.fromtimestamp(until, tz=timezone.utc).isoformat()
+            state.learning.explore_window_cooldown_until = None
             backend.save_app_state(state)
             backend.append_learning_event(
                 kind="explore_window_opened",
@@ -190,13 +202,7 @@ class SingleSessionRuntime:
     def close_explore_window(self):
         backend = self._backend_factory()
         with self._lock:
-            state = backend.load_app_state(include_history=False)
-            state.learning.explore_window_until = None
-            backend.save_app_state(state)
-            backend.append_learning_event(
-                kind="explore_window_closed",
-                payload={"source": "frontend_api"},
-            )
+            state = backend.force_close_explore_window(source="frontend_api")
             return state
 
     def get_events(self, *, after: int, limit: int) -> tuple[int, int, list[object]]:
@@ -421,21 +427,30 @@ def get_mastery() -> MasteryListResponse:
 def get_explore_window() -> ExploreWindowResponse:
     runtime = get_runtime()
     state = runtime.load_state()
-    return _build_explore_window_response(state.learning.explore_window_until)
+    return _build_explore_window_response(
+        until_text=state.learning.explore_window_until,
+        cooldown_text=state.learning.explore_window_cooldown_until,
+    )
 
 
 @app.post("/v1/session/explore-window/open", response_model=ExploreWindowResponse, tags=["session"])
 def open_explore_window(payload: ExploreWindowOpenRequest) -> ExploreWindowResponse:
     runtime = get_runtime()
     state = runtime.open_explore_window(payload.minutes)
-    return _build_explore_window_response(state.learning.explore_window_until)
+    return _build_explore_window_response(
+        until_text=state.learning.explore_window_until,
+        cooldown_text=state.learning.explore_window_cooldown_until,
+    )
 
 
 @app.post("/v1/session/explore-window/close", response_model=ExploreWindowResponse, tags=["session"])
 def close_explore_window() -> ExploreWindowResponse:
     runtime = get_runtime()
     state = runtime.close_explore_window()
-    return _build_explore_window_response(state.learning.explore_window_until)
+    return _build_explore_window_response(
+        until_text=state.learning.explore_window_until,
+        cooldown_text=state.learning.explore_window_cooldown_until,
+    )
 
 
 # Compatibility wrappers: keep /v1/sessions/* but bind to single default session.
@@ -552,6 +567,7 @@ def _build_state_response(*, state, turn_count: int, events_cursor: int) -> Sess
             consecutive_correct=state.learning.consecutive_correct,
             consecutive_wrong=state.learning.consecutive_wrong,
             explore_window_until=state.learning.explore_window_until,
+            explore_window_cooldown_until=state.learning.explore_window_cooldown_until,
             review_queue_size=len(state.learning.review_queue),
             history_event_count=events_cursor,
         ),
@@ -598,14 +614,22 @@ def _build_turn_response(
     )
 
 
-def _build_explore_window_response(until_text: str | None) -> ExploreWindowResponse:
+def _build_explore_window_response(*, until_text: str | None, cooldown_text: str | None) -> ExploreWindowResponse:
     until = _parse_iso_ts(until_text)
+    cooldown_until = _parse_iso_ts(cooldown_text)
+    cooldown_remaining: int | None = None
+    if cooldown_until is not None:
+        remaining = int((cooldown_until - datetime.now(timezone.utc)).total_seconds())
+        cooldown_remaining = remaining if remaining > 0 else 0
+
     if until is None:
         return ExploreWindowResponse(
             session_id=SINGLE_SESSION_ID,
             explore_window_until=until_text,
             active=False,
             remaining_seconds=None,
+            cooldown_until=cooldown_text,
+            cooldown_remaining_seconds=cooldown_remaining,
         )
 
     now = datetime.now(timezone.utc)
@@ -616,6 +640,8 @@ def _build_explore_window_response(until_text: str | None) -> ExploreWindowRespo
             explore_window_until=until_text,
             active=False,
             remaining_seconds=0,
+            cooldown_until=cooldown_text,
+            cooldown_remaining_seconds=cooldown_remaining,
         )
 
     return ExploreWindowResponse(
@@ -623,6 +649,8 @@ def _build_explore_window_response(until_text: str | None) -> ExploreWindowRespo
         explore_window_until=until_text,
         active=True,
         remaining_seconds=remaining,
+        cooldown_until=cooldown_text,
+        cooldown_remaining_seconds=cooldown_remaining,
     )
 
 

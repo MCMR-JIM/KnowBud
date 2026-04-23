@@ -61,6 +61,11 @@ class FakeBackend:
         if topic_id not in self._state.learning.review_queue:
             self._state.learning.review_queue.append(topic_id)
 
+    def force_close_explore_window(self, *, source: str):
+        self._state.learning.explore_window_until = None
+        self._state.learning.explore_window_cooldown_until = "2026-01-01T00:10:00+00:00"
+        return self.load_app_state(include_history=False)
+
     def append_learning_event(self, *, kind: str, payload: dict[str, object], audio_file_path: str | None = None) -> int:
         event = LearningEvent(ts="2026-01-01T00:00:00+00:00", kind=kind, payload=payload, audio_file_path=audio_file_path)
         self._events.append(event)
@@ -95,7 +100,7 @@ def test_health_and_single_session_state(monkeypatch) -> None:
 
     health = client.get("/health")
     assert health.status_code == 200
-    assert health.json()["version"] == "1.2.0"
+    assert health.json()["version"] == "1.3.0"
 
     state = client.get("/v1/session/state")
     assert state.status_code == 200
@@ -158,6 +163,7 @@ def test_realtime_stream_and_review_explore(monkeypatch) -> None:
     closed = client.post("/v1/session/explore-window/close")
     assert closed.status_code == 200
     assert closed.json()["active"] is False
+    assert closed.json()["cooldown_until"] is not None
 
     compat = client.get("/v1/sessions/default/state")
     assert compat.status_code == 200

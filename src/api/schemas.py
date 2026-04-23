@@ -25,6 +25,7 @@ class SessionLearningState(BaseModel):
     consecutive_correct: int
     consecutive_wrong: int
     explore_window_until: str | None = None
+    explore_window_cooldown_until: str | None = None
     review_queue_size: int = 0
     history_event_count: int = 0
 
@@ -161,6 +162,8 @@ class ExploreWindowResponse(BaseModel):
     explore_window_until: str | None = None
     active: bool
     remaining_seconds: int | None = None
+    cooldown_until: str | None = None
+    cooldown_remaining_seconds: int | None = None
 
 
 class MasteryListResponse(BaseModel):

@@ -59,6 +59,7 @@ class GraphProposalRecord(BaseModel):
     status: str = "proposed"
     reason: str = ""
     created_topic_id: str | None = None
+    observation_count: int = 0
     created_ts: str
     updated_ts: str
 
@@ -88,8 +89,11 @@ class LearningState(BaseModel):
     error_book: list[ErrorRecord] = Field(default_factory=list)
     review_queue: list[str] = Field(default_factory=list) # 等待家长强推的复习队列
     explore_window_until: str | None = None
+    explore_window_cooldown_until: str | None = None
     mastery_map: dict[str, NodeMastery] = Field(default_factory=dict)
     graph_proposals: list[GraphProposalRecord] = Field(default_factory=list)
+    shadow_observation_map: dict[str, int] = Field(default_factory=dict)
+    shadow_wrong_streak_map: dict[str, int] = Field(default_factory=dict)
     
     history_logs: list[LearningEvent] = Field(default_factory=list)
     pending_question: PendingQuestion | None = None
