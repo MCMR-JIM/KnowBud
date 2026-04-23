@@ -15,6 +15,7 @@ from src.skills.base_skill import SkillContext
 from src.skills.voice_io_skill import VoiceIOSkill
 from src.skills.llm_tutor_skill import LLMTutorSkill
 from src.agent.orchestrator import AgentOrchestrator
+from src.agent.policy import AgentPolicyConfig
 from src.agent.mastery_engine import MasteryEngine
 from src.services.env_loader import load_project_env
 
@@ -26,6 +27,14 @@ class UIRenderBundle:
     messages: list[str] = field(default_factory=list)
 
 class SessionBackend:
+    _PROPOSAL_RECORD_TRANSITIONS: dict[str, set[str]] = {
+        "proposed": {"validated", "rejected", "shadow"},
+        "validated": {"shadow", "rejected"},
+        "shadow": {"active", "rejected"},
+        "active": set(),
+        "rejected": set(),
+    }
+
     def __init__(self) -> None:
         load_project_env()
         data_root = Path(os.getenv("DATA_ROOT", "./data"))
@@ -34,8 +43,8 @@ class SessionBackend:
         self.log_file = Path(os.getenv("DECISION_LOG_FILE", "./logs/decision_trace.jsonl"))
         self.audio_artifact_root = Path(os.getenv("AUDIO_ARTIFACT_ROOT", "./artifacts/audio"))
         self.learning_arch_mode = os.getenv("LEARNING_ARCH_MODE", "legacy").strip().lower()
-        self.explore_window_minutes = int(os.getenv("EXPLORE_WINDOW_MINUTES", "5"))
-        self.prereq_unlock_depth = int(os.getenv("PREREQ_UNLOCK_DEPTH", "1"))
+        self.agent_policy = AgentPolicyConfig.from_env()
+        self.explore_window_minutes = self.agent_policy.explore_window_minutes
 
         fail_th = int(os.getenv("FSM_FAIL_THRESHOLD", "3"))
         master_st = int(os.getenv("FSM_MASTER_STREAK", "3"))
@@ -49,7 +58,7 @@ class SessionBackend:
             model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
         )
         self.agent_orchestrator = (
-            AgentOrchestrator(unlock_depth_threshold=self.prereq_unlock_depth)
+            AgentOrchestrator(policy=self.agent_policy)
             if self.learning_arch_mode in {"agent", "hybrid"}
             else None
         )
@@ -321,9 +330,10 @@ class SessionBackend:
 
     def _upsert_graph_proposal(self, *, state: AppState, proposal) -> None:
         now = datetime.datetime.now(timezone.utc).isoformat()
+        target_status = proposal.status.value
         for rec in state.learning.graph_proposals:
             if rec.proposal_id == proposal.proposal_id:
-                rec.status = proposal.status.value
+                self._transition_proposal_record(rec, to_status=target_status, reason=proposal.reason)
                 rec.reason = proposal.reason
                 rec.created_topic_id = proposal.created_topic_id
                 rec.updated_ts = now
@@ -337,7 +347,7 @@ class SessionBackend:
                 trigger=proposal.trigger,
                 parent_node_ids=list(proposal.parent_node_ids),
                 edge_type=proposal.edge_type.value,
-                status=proposal.status.value,
+                status=target_status,
                 reason=proposal.reason,
                 created_topic_id=proposal.created_topic_id,
                 created_ts=now,
@@ -349,9 +359,21 @@ class SessionBackend:
         now = datetime.datetime.now(timezone.utc).isoformat()
         for rec in state.learning.graph_proposals:
             if rec.created_topic_id == topic_id and rec.status in {"shadow", "validated", "proposed"}:
-                rec.status = "active"
-                rec.reason = "promoted by mastery evidence"
+                self._transition_proposal_record(rec, to_status="active", reason="promoted by mastery evidence")
                 rec.updated_ts = now
+
+    def _transition_proposal_record(self, rec: GraphProposalRecord, *, to_status: str, reason: str) -> bool:
+        if rec.status == to_status:
+            rec.reason = reason
+            return True
+
+        allowed = self._PROPOSAL_RECORD_TRANSITIONS.get(rec.status, set())
+        if to_status not in allowed:
+            return False
+
+        rec.status = to_status
+        rec.reason = reason
+        return True
 
     def _consume_explore_window_expiry(self, state: AppState) -> bool:
         until_text = state.learning.explore_window_until

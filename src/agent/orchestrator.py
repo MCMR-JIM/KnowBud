@@ -4,14 +4,27 @@ from datetime import datetime, timezone
 
 from src.agent.graph_curator import GraphCurator
 from src.agent.models import AgentTurnDecision
+from src.agent.policy import AgentPolicyConfig
 from src.agent.topic_router import TopicRouter
 from src.core.models import AppState
 
 
 class AgentOrchestrator:
-    def __init__(self, *, unlock_depth_threshold: int = 1) -> None:
-        self.router = TopicRouter(unlock_depth_threshold=unlock_depth_threshold)
-        self.curator = GraphCurator()
+    def __init__(self, *, policy: AgentPolicyConfig | None = None) -> None:
+        self.policy = policy or AgentPolicyConfig()
+        self.router = TopicRouter(
+            inertia_bonus=self.policy.inertia_bonus,
+            switch_margin=self.policy.switch_margin,
+            min_score=self.policy.min_score,
+            unlock_depth_threshold=self.policy.unlock_depth_threshold,
+            locked_topic_penalty=self.policy.locked_topic_penalty,
+        )
+        self.curator = GraphCurator(
+            shadow_promote_depth=self.policy.shadow_promote_depth,
+            shadow_promote_success_count=self.policy.shadow_promote_success_count,
+            shadow_promote_stability=self.policy.shadow_promote_stability,
+            allow_cross_subject_requires=self.policy.allow_cross_subject_requires,
+        )
 
     def process_turn(self, *, state: AppState, user_text: str) -> AgentTurnDecision:
         explore_active = self._is_explore_window_active(state.learning.explore_window_until)

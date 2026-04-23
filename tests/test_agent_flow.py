@@ -67,6 +67,23 @@ def test_graph_curator_blocks_cross_subject_requires() -> None:
     assert proposal.status.value == "rejected"
 
 
+def test_graph_curator_can_allow_cross_subject_requires_by_policy() -> None:
+    curator = GraphCurator(allow_cross_subject_requires=True)
+    curriculum = CurriculumConfig(
+        topics=[
+            TopicNode(topic_id="math_1", title="四则运算", difficulty=1, prerequisite_ids=[], tags=["subject:math"]),
+            TopicNode(topic_id="bio_1", title="恐龙灭绝", difficulty=1, prerequisite_ids=[], tags=["subject:science"]),
+        ]
+    )
+    proposal = curator.propose_from_question(question_text="跨学科节点", current_topic_id="math_1")
+    proposal.parent_node_ids = ["math_1", "bio_1"]
+
+    applied, topic_id = curator.auto_review_and_apply(proposal=proposal, curriculum=curriculum)
+    assert applied is True
+    assert topic_id is not None
+    assert proposal.status.value == "shadow"
+
+
 def test_orchestrator_off_topic_in_explore_window_no_proposal() -> None:
     state = make_state()
     state.learning.explore_window_until = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
