@@ -85,15 +85,15 @@ docker compose -f docker/asr_tts/docker-compose.yml up -d
 docker compose -f docker/asr_tts/docker-compose.yml down
 ```
 
-## Frontend API（预留）
+## Frontend API
 
-已提供用于前后端分离的 HTTP API 骨架：
+已提供用于前后端分离的 HTTP API（会话生命周期、回合输入、事件轮询、掌握度、图谱、复习队列、探索时间窗）：
 
 ```bash
 uvicorn src.api.app:app --host 0.0.0.0 --port 8090 --reload
 ```
 
-接口文档见：`docs/api/frontend_http_api.md`。
+接口文档见：`docs/api/frontend_http_api.md`（v1.1，保留 `/v1/session/*` 兼容路径）。
 
 ## 协议与规范
 

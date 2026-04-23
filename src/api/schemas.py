@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -13,7 +15,7 @@ class HealthResponse(BaseModel):
 class SessionProfile(BaseModel):
     student_id: str
     display_name: str
-    locale: str
+    locale: str = "zh-CN"
 
 
 class SessionLearningState(BaseModel):
@@ -23,6 +25,8 @@ class SessionLearningState(BaseModel):
     consecutive_correct: int
     consecutive_wrong: int
     explore_window_until: str | None = None
+    review_queue_size: int = 0
+    history_event_count: int = 0
 
 
 class TopicInfo(BaseModel):
@@ -53,19 +57,31 @@ class MasteryInfo(BaseModel):
     last_success_ts: str | None = None
 
 
-class SessionStateResponse(BaseModel):
-    profile: SessionProfile
-    learning: SessionLearningState
+class KnowledgeGraphResponse(BaseModel):
+    session_id: str
     topics: list[TopicInfo] = Field(default_factory=list)
     proposals: list[ProposalInfo] = Field(default_factory=list)
     mastery: list[MasteryInfo] = Field(default_factory=list)
 
 
+class SessionStateResponse(BaseModel):
+    session_id: str
+    profile: SessionProfile
+    learning: SessionLearningState
+    topics: list[TopicInfo] = Field(default_factory=list)
+    proposals: list[ProposalInfo] = Field(default_factory=list)
+    mastery: list[MasteryInfo] = Field(default_factory=list)
+    turn_count: int = 0
+    events_cursor: int = 0
+
+
 class TextTurnRequest(BaseModel):
-    text: str = Field(min_length=1, max_length=2000)
+    text: str
 
 
 class TurnResponse(BaseModel):
+    session_id: str
+    turn_id: str
     user_text: str
     reply_text: str
     earned_points: int
@@ -75,6 +91,7 @@ class TurnResponse(BaseModel):
     current_phase: str
     total_score: int
     explore_window_until: str | None = None
+    events_cursor: int = 0
 
 
 class AudioTurnResponse(TurnResponse):
@@ -82,16 +99,69 @@ class AudioTurnResponse(TurnResponse):
 
 
 class PushReviewRequest(BaseModel):
-    topic_id: str = Field(min_length=1, max_length=120)
+    topic_id: str
 
 
 class PushReviewResponse(BaseModel):
+    session_id: str
     queued: bool
     topic_id: str
     review_queue_size: int
 
 
-class KnowledgeGraphResponse(BaseModel):
-    topics: list[TopicInfo] = Field(default_factory=list)
-    proposals: list[ProposalInfo] = Field(default_factory=list)
+class CreateSessionRequest(BaseModel):
+    student_id: str | None = None
+    display_name: str | None = None
+    locale: str | None = None
+
+
+class SessionSummary(BaseModel):
+    session_id: str
+    created_at: str
+    updated_at: str
+    turn_count: int
+
+
+class CreateSessionResponse(BaseModel):
+    session: SessionSummary
+    state: SessionStateResponse
+
+
+class SessionListResponse(BaseModel):
+    sessions: list[SessionSummary] = Field(default_factory=list)
+
+
+class EventInfo(BaseModel):
+    event_index: int
+    ts: str
+    kind: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class EventListResponse(BaseModel):
+    session_id: str
+    after: int
+    next_cursor: int
+    events: list[EventInfo] = Field(default_factory=list)
+
+
+class ReviewQueueResponse(BaseModel):
+    session_id: str
+    topics: list[str] = Field(default_factory=list)
+    size: int
+
+
+class ExploreWindowOpenRequest(BaseModel):
+    minutes: int = Field(default=5, ge=1, le=120)
+
+
+class ExploreWindowResponse(BaseModel):
+    session_id: str
+    explore_window_until: str | None = None
+    active: bool
+    remaining_seconds: int | None = None
+
+
+class MasteryListResponse(BaseModel):
+    session_id: str
     mastery: list[MasteryInfo] = Field(default_factory=list)
