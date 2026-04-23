@@ -117,8 +117,10 @@ with col_chat:
             
             with st.chat_message("assistant", avatar=avatar):
                 with st.spinner(f"🧠 {pet_name} 正在转动小脑筋..."):
-                    reply, pts = backend.evaluate_student_answer(user_text)
+                    reply, pts, reply_audio = backend.evaluate_and_speak(user_text)
                     st.markdown(reply)
+                    if reply_audio:
+                        st.audio(reply_audio, format="audio/mp3")
                     if pts > 0: 
                         st.caption(f"获得 {pts} 颗智慧星！")
                         st.balloons()

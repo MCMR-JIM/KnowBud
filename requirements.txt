@@ -2,6 +2,7 @@ streamlit>=1.28
 pydantic>=2.5
 python-dotenv>=1.0
 openai>=1.0
+httpx>=0.24
 faster-whisper>=1.0
 edge-tts>=6.0
 numpy>=1.24

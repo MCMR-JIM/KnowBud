@@ -18,6 +18,10 @@ build/
 # Runtime / local data (generated)
 data/state.json
 data/resource_index.json
+data/state.tmp
+data/audio_logs/
+data/audio_outputs/
+artifacts/audio/
 logs/*.jsonl
 logs/*.log
 

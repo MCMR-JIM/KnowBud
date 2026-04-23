@@ -6,7 +6,7 @@
 
 **LoopTutor** hosts **LTA (Local Teaching Agent)**, a production-oriented desktop learning companion. Core learning flow is driven by a Python FSM and decision engine; ASR/TTS/LLM are stateless skills. The UI is a Streamlit multipage app (child-facing + admin).
 
-This repository currently contains **Phase T0**: project layout, dependencies, environment template, and placeholders for `src/core`, `src/services`, and `src/skills`. Application entry points and business logic will land in subsequent commits.
+This repository includes a runnable Streamlit frontend with FSM-driven backend orchestration and pluggable ASR/TTS/LLM skills.
 
 ## 环境要求
 
@@ -28,22 +28,28 @@ copy .env.example .env
 # 编辑 .env，填入 OPENAI_API_KEY 等
 ```
 
-应用入口与 `streamlit run` 将在后续里程碑中加入；当前步骤仅保证依赖可安装、目录结构就绪。
+启动应用：
 
-## 目录结构（T0）
+```bash
+streamlit run app.py
+```
+
+## 目录分层
 
 ```text
 LoopTutor/
 ├── src/
-│   ├── core/          # 领域模型与决策引擎（后续）
-│   ├── services/      # 会话编排与持久化（后续）
-│   └── skills/        # 语音、LLM、本地资源（后续）
-├── data/              # 运行时数据（.gitignore 已排除 state 等）
-├── logs/              # 运行日志
-├── tests/
-├── requirements.txt
-├── .env.example
-└── README.md
+│   ├── core/          # 领域模型与决策引擎
+│   ├── services/      # 会话编排与后端调用链
+│   └── skills/        # ASR/TTS/LLM 技能实现
+├── pages/             # Streamlit 页面
+├── scripts/asr_tts/   # ASR/TTS 演示与验证脚本
+├── docker/asr_tts/    # Docker 部署编排
+├── docs/asr_tts/      # 语音相关文档归档
+├── artifacts/audio/   # 运行时音频产物（已忽略）
+├── data/              # 运行时状态数据（已忽略生成物）
+├── logs/              # 运行日志（已忽略）
+└── tests/
 ```
 
 ## 配置说明
@@ -56,11 +62,47 @@ LoopTutor/
 | `OPENAI_BASE_URL` | API 基地址 |
 | `DATA_ROOT` | 本地教学资源根目录 |
 | `STATE_FILE` | 学习状态 JSON 路径 |
+| `VOICE_BACKEND_MODE` | `auto` / `local` / `docker` |
+| `ASR_SERVICE_URL` | Docker ASR 服务地址 |
+| `TTS_SERVICE_URL` | Docker TTS 服务地址 |
+| `AUDIO_ARTIFACT_ROOT` | 入站/出站语音文件落盘目录 |
+
+## 语音部署模式
+
+- `VOICE_BACKEND_MODE=local`：强制走本地 `faster-whisper + edge-tts`
+- `VOICE_BACKEND_MODE=docker`：优先走 Docker 服务（地址来自 `ASR_SERVICE_URL`/`TTS_SERVICE_URL`）
+- `VOICE_BACKEND_MODE=auto`：有服务地址就走 Docker，否则走本地；服务故障时会自动回退本地
+
+### Docker 启动 ASR/TTS
+
+```bash
+docker compose -f docker/asr_tts/docker-compose.yml up -d
+```
+
+停止：
+
+```bash
+docker compose -f docker/asr_tts/docker-compose.yml down
+```
 
 ## 协议与规范
 
 - 学习流程由 **决策引擎（FSM）** 控制，不由 LLM 直接编排。
 - `skills` 层不依赖 Streamlit；UI 仅通过编排层调用后端。
+
+## 语音链路（ASR -> LLM -> TTS）
+
+- 儿童端页面先把录音交给 `SessionBackend.transcribe_audio()` 做 ASR。
+- 文本答案经 `SessionBackend.evaluate_student_answer()` 完成评估与积分变更。
+- 评估回复再由 `SessionBackend.synthesize_reply_audio()` 合成语音。
+- 页面调用 `SessionBackend.evaluate_and_speak()` 一次拿到 `reply + points + audio`。
+
+语音相关脚本统一放到 `scripts/asr_tts/`：
+
+- `scripts/asr_tts/tts_demo.py`
+- `scripts/asr_tts/asr_demo.py`
+
+运行时音频产物默认落在 `artifacts/audio/`（已加入 `.gitignore`）。
 
 ## License
 

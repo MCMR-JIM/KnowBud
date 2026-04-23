@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import json
 import time
@@ -27,6 +29,7 @@ class SessionBackend:
         self.ctx = SkillContext(data_root=data_root)
         self.state_file = Path(os.getenv("STATE_FILE", "./data/state.json"))
         self.log_file = Path(os.getenv("DECISION_LOG_FILE", "./logs/decision_trace.jsonl"))
+        self.audio_artifact_root = Path(os.getenv("AUDIO_ARTIFACT_ROOT", "./artifacts/audio"))
 
         fail_th = int(os.getenv("FSM_FAIL_THRESHOLD", "3"))
         master_st = int(os.getenv("FSM_MASTER_STREAK", "3"))
@@ -109,22 +112,47 @@ class SessionBackend:
             self.save_app_state(state)
 
     def transcribe_audio(self, audio_bytes: bytes) -> str:
-        if not audio_bytes: return ""
-        
-        # 🚀 新增：将前端录制的音频物理保存到本地 data/audio_logs/
-        try:
-            audio_dir = Path("data/audio_logs")
-            audio_dir.mkdir(parents=True, exist_ok=True)
-            file_name = f"record_{int(time.time())}.wav"
-            file_path = audio_dir / file_name
-            file_path.write_bytes(audio_bytes)
-            # 注意：实际项目中还需要把这个 file_path 塞进 messages 列表里供家长端播放，
-            # 为了不破坏当前简单的 messages 结构，暂时只存硬盘。
-        except Exception as e:
-            print(f"音频保存失败: {e}")
+        if not audio_bytes:
+            return ""
+
+        self._save_audio_artifact(audio_bytes, bucket="incoming", suffix=".wav")
 
         text = self.voice_skill.transcribe(audio_bytes)
         return text if text else "（哎呀，没听清，能再说一遍吗？）"
+
+    def synthesize_reply_audio(self, text: str) -> bytes:
+        if not text:
+            return b""
+
+        voice = os.getenv("EDGE_TTS_VOICE", "zh-CN-XiaoxiaoNeural")
+        try:
+            audio_bytes = self.voice_skill.synthesize_plain(text, voice=voice)
+        except Exception as exc:
+            print(f"语音合成失败: {exc}")
+            return b""
+
+        self._save_audio_artifact(audio_bytes, bucket="outgoing", suffix=".mp3")
+        return audio_bytes
+
+    def evaluate_and_speak(self, user_text: str) -> tuple[str, int, bytes]:
+        reply_text, earned_points = self.evaluate_student_answer(user_text)
+        reply_audio = self.synthesize_reply_audio(reply_text)
+        return reply_text, earned_points, reply_audio
+
+    def _save_audio_artifact(self, audio_bytes: bytes, *, bucket: str, suffix: str) -> Path | None:
+        if not audio_bytes:
+            return None
+
+        try:
+            bucket_dir = self.audio_artifact_root / bucket
+            bucket_dir.mkdir(parents=True, exist_ok=True)
+            file_name = f"{bucket}_{int(time.time() * 1000)}{suffix}"
+            file_path = bucket_dir / file_name
+            file_path.write_bytes(audio_bytes)
+            return file_path
+        except Exception as exc:
+            print(f"音频保存失败: {exc}")
+            return None
 
     def generate_proactive_question(self) -> str:
         state = self.load_app_state()
