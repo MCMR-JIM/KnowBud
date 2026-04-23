@@ -24,8 +24,7 @@ class GraphCurator:
         if proposal.status != ProposalStatus.PROPOSED:
             return False, None
 
-        normalized_titles = {self._normalize_title(t.title) for t in curriculum.topics}
-        if self._normalize_title(proposal.title) in normalized_titles:
+        if self._is_duplicate_title(proposal.title, curriculum.topics):
             proposal.status = ProposalStatus.REJECTED
             proposal.reason = "duplicated title"
             return False, None
@@ -77,3 +76,20 @@ class GraphCurator:
     @staticmethod
     def _normalize_title(text: str) -> str:
         return re.sub(r"\s+", "", text).lower()
+
+    @classmethod
+    def _is_duplicate_title(cls, title: str, topics: list[TopicNode]) -> bool:
+        normalized = cls._normalize_title(title)
+        if not normalized:
+            return True
+
+        for topic in topics:
+            existing = cls._normalize_title(topic.title)
+            if normalized == existing:
+                return True
+
+            if len(normalized) >= 4 and len(existing) >= 4:
+                if normalized in existing or existing in normalized:
+                    return True
+
+        return False

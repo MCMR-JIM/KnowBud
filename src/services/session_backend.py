@@ -79,30 +79,15 @@ class SessionBackend:
                 print(f"[SessionBackend] LLM调用失败，启用兜底: {exc}")
                 is_correct = "陨石" in text or "火山" in text
 
-            if is_correct:
-                state.learning.consecutive_correct += 1
-                state.learning.consecutive_wrong = 0
-            else:
-                state.learning.consecutive_wrong += 1
-                state.learning.consecutive_correct = 0
-                # 🚀 新增：答错时自动加入错题本
-                existing_ids = [e.topic_id for e in state.learning.error_book]
-                if question.question_id not in existing_ids:
-                    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-                    state.learning.error_book.append(
-                        ErrorRecord(topic_id=question.question_id, stem=question.stem, first_error_time=now_str)
-                    )
+            self._apply_answer_outcome(state=state, question=question, is_correct=is_correct)
 
         decision = self.engine.evaluate(state=state.learning, curriculum=state.curriculum, intent=intent, user_answer_text=text)
 
-        self.log_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.log_file, "a", encoding="utf-8") as f:
-            log_entry = {"intent": str(intent), "action_kind": str(decision.action.kind), "trace": decision.trace}
-            f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+        if decision.state_delta.patch_learning:
+            for k, v in decision.state_delta.patch_learning.items():
+                setattr(state.learning, k, v)
 
-            if decision.state_delta.patch_learning:
-                for k, v in decision.state_delta.patch_learning.items():
-                    setattr(state.learning, k, v)
+        self._append_decision_log(intent=intent, action_kind=str(decision.action.kind), trace=decision.trace)
 
         self.save_app_state(state)
         return UIRenderBundle()
@@ -154,6 +139,11 @@ class SessionBackend:
             if earned_points:
                 state.learning.total_score += earned_points
             self.save_app_state(state)
+            self._append_decision_log(
+                intent=UserIntent.SUBMIT_ANSWER,
+                action_kind="AGENT_DIRECT_REPLY",
+                trace=decision.routing.trace,
+            )
             reply_text = decision.reply_hint or "这个问题很有趣，我们先记下来，稍后深入探索。"
         else:
             self.save_app_state(state)
@@ -190,13 +180,53 @@ class SessionBackend:
         try:
             eval_result = self.llm_skill.evaluate_answer(question=question, user_answer=user_text)
             is_correct = eval_result.is_correct
+            state.learning.last_evaluation = eval_result
             reply_text = getattr(eval_result, "feedback_text", "说得太棒了！" if is_correct else "差一点点，再想想？") 
-        except Exception:
+        except Exception as exc:
+            print(f"[SessionBackend] 评估失败，启用兜底: {exc}")
             is_correct = "陨石" in user_text or "火山" in user_text
             reply_text = "有道理！跟陨石或火山有关哦！" if is_correct else "好像不太对，是不是跟陨石有关？"
 
+        self._apply_answer_outcome(state=state, question=question, is_correct=is_correct)
         earned_points = 20 if is_correct else 5
         state.learning.total_score += earned_points
+
+        decision = self.engine.evaluate(
+            state=state.learning,
+            curriculum=state.curriculum,
+            intent=UserIntent.SUBMIT_ANSWER,
+            user_answer_text=user_text,
+        )
+        if decision.state_delta.patch_learning:
+            for k, v in decision.state_delta.patch_learning.items():
+                setattr(state.learning, k, v)
+
+        self._append_decision_log(
+            intent=UserIntent.SUBMIT_ANSWER,
+            action_kind=str(decision.action.kind),
+            trace=decision.trace,
+        )
         self.save_app_state(state)
-        self.handle_text_event(intent=UserIntent.SUBMIT_ANSWER, text=user_text)
         return reply_text, earned_points
+
+    @staticmethod
+    def _apply_answer_outcome(*, state: AppState, question: PendingQuestion, is_correct: bool) -> None:
+        if is_correct:
+            state.learning.consecutive_correct += 1
+            state.learning.consecutive_wrong = 0
+            return
+
+        state.learning.consecutive_wrong += 1
+        state.learning.consecutive_correct = 0
+        existing_ids = [e.topic_id for e in state.learning.error_book]
+        if question.question_id not in existing_ids:
+            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+            state.learning.error_book.append(
+                ErrorRecord(topic_id=question.question_id, stem=question.stem, first_error_time=now_str)
+            )
+
+    def _append_decision_log(self, *, intent: UserIntent, action_kind: str, trace: str) -> None:
+        self.log_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.log_file, "a", encoding="utf-8") as f:
+            log_entry = {"intent": str(intent), "action_kind": action_kind, "trace": trace}
+            f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
