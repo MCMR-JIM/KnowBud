@@ -3,6 +3,7 @@ from src.agent.orchestrator import AgentOrchestrator
 from src.agent.topic_router import TopicRouter
 from src.core.enums import LearningPhase
 from src.core.models import AppState, CurriculumConfig, LearningState, TopicNode, UserProfile
+from datetime import datetime, timedelta, timezone
 
 
 def make_state() -> AppState:
@@ -46,3 +47,14 @@ def test_orchestrator_adds_new_topic_for_off_topic_question() -> None:
     assert result.should_answer_directly is True
     assert result.proposal is not None
     assert any("黑洞" in t.title for t in state.curriculum.topics)
+
+
+def test_orchestrator_off_topic_in_explore_window_no_proposal() -> None:
+    state = make_state()
+    state.learning.explore_window_until = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+    orchestrator = AgentOrchestrator()
+
+    result = orchestrator.process_turn(state=state, user_text="黑洞怎么形成")
+    assert result.should_answer_directly is True
+    assert result.explore_window_active is True
+    assert result.proposal is None

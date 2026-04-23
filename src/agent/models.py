@@ -50,3 +50,6 @@ class AgentTurnDecision(BaseModel):
     earned_points: int = 0
     should_answer_directly: bool = False
     proposal: GraphMutationProposal | None = None
+    explore_window_active: bool = False
+    transition_from_topic_id: str | None = None
+    transition_to_topic_id: str | None = None

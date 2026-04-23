@@ -6,14 +6,16 @@ import time
 from pathlib import Path
 from dataclasses import dataclass, field
 import datetime
+from datetime import timezone
 
 from src.core.enums import UserIntent, LearningPhase
-from src.core.models import AppState, UserProfile, LearningState, CurriculumConfig, TopicNode, PendingQuestion, ErrorRecord
+from src.core.models import AppState, UserProfile, LearningState, CurriculumConfig, TopicNode, PendingQuestion, ErrorRecord, LearningEvent
 from src.core.decision_engine import DecisionEngine
 from src.skills.base_skill import SkillContext
 from src.skills.voice_io_skill import VoiceIOSkill
 from src.skills.llm_tutor_skill import LLMTutorSkill
 from src.agent.orchestrator import AgentOrchestrator
+from src.agent.mastery_engine import MasteryEngine
 from src.services.env_loader import load_project_env
 
 @dataclass
@@ -32,6 +34,7 @@ class SessionBackend:
         self.log_file = Path(os.getenv("DECISION_LOG_FILE", "./logs/decision_trace.jsonl"))
         self.audio_artifact_root = Path(os.getenv("AUDIO_ARTIFACT_ROOT", "./artifacts/audio"))
         self.learning_arch_mode = os.getenv("LEARNING_ARCH_MODE", "legacy").strip().lower()
+        self.explore_window_minutes = int(os.getenv("EXPLORE_WINDOW_MINUTES", "5"))
 
         fail_th = int(os.getenv("FSM_FAIL_THRESHOLD", "3"))
         master_st = int(os.getenv("FSM_MASTER_STREAK", "3"))
@@ -45,6 +48,7 @@ class SessionBackend:
             model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
         )
         self.agent_orchestrator = AgentOrchestrator() if self.learning_arch_mode in {"agent", "hybrid"} else None
+        self.mastery_engine = MasteryEngine()
 
     def load_app_state(self) -> AppState:
         if self.state_file.exists():
@@ -134,10 +138,31 @@ class SessionBackend:
         state = self.load_app_state()
         decision = self.agent_orchestrator.process_turn(state=state, user_text=user_text)
 
+        if decision.transition_from_topic_id != decision.transition_to_topic_id:
+            self._append_learning_event(
+                state=state,
+                kind="topic_transition",
+                payload={
+                    "from": decision.transition_from_topic_id,
+                    "to": decision.transition_to_topic_id,
+                    "trace": decision.routing.trace,
+                },
+            )
+
         if decision.should_answer_directly:
             earned_points = max(0, decision.earned_points)
             if earned_points:
                 state.learning.total_score += earned_points
+            if decision.proposal is not None:
+                self._append_learning_event(
+                    state=state,
+                    kind="graph_proposal",
+                    payload={
+                        "title": decision.proposal.title,
+                        "status": decision.proposal.status.value,
+                        "reason": decision.proposal.reason,
+                    },
+                )
             self.save_app_state(state)
             self._append_decision_log(
                 intent=UserIntent.SUBMIT_ANSWER,
@@ -177,6 +202,7 @@ class SessionBackend:
     def evaluate_student_answer(self, user_text: str) -> tuple[str, int]:
         state = self.load_app_state()
         question = state.learning.pending_question or PendingQuestion(question_id="demo_q_01", stem="恐龙为什么会灭绝？", expected_format="open")
+        topic_id = state.learning.current_topic_id or question.question_id
         try:
             eval_result = self.llm_skill.evaluate_answer(question=question, user_answer=user_text)
             is_correct = eval_result.is_correct
@@ -190,6 +216,19 @@ class SessionBackend:
         self._apply_answer_outcome(state=state, question=question, is_correct=is_correct)
         earned_points = 20 if is_correct else 5
         state.learning.total_score += earned_points
+
+        mastery_update = self.mastery_engine.update_from_answer(
+            state=state.learning,
+            topic_id=topic_id,
+            user_text=user_text,
+            is_correct=is_correct,
+        )
+        if mastery_update.mastered_now:
+            reply_text = f"{reply_text}\n\n你已经开始会结合应用这个知识点了！"
+
+        if mastery_update.should_open_explore_window:
+            self._open_explore_window(state)
+            reply_text = f"{reply_text}\n\n🎁 奖励时间开启：接下来 {self.explore_window_minutes} 分钟你可以自由探索提问。"
 
         decision = self.engine.evaluate(
             state=state.learning,
@@ -205,6 +244,16 @@ class SessionBackend:
             intent=UserIntent.SUBMIT_ANSWER,
             action_kind=str(decision.action.kind),
             trace=decision.trace,
+        )
+        self._append_learning_event(
+            state=state,
+            kind="mastery_update",
+            payload={
+                "topic_id": topic_id,
+                "mastered_now": mastery_update.mastered_now,
+                "true_mastered_now": mastery_update.true_mastered_now,
+                "open_explore_window": mastery_update.should_open_explore_window,
+            },
         )
         self.save_app_state(state)
         return reply_text, earned_points
@@ -230,3 +279,15 @@ class SessionBackend:
         with open(self.log_file, "a", encoding="utf-8") as f:
             log_entry = {"intent": str(intent), "action_kind": action_kind, "trace": trace}
             f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+
+    def _append_learning_event(self, *, state: AppState, kind: str, payload: dict[str, object]) -> None:
+        event = LearningEvent(
+            ts=datetime.datetime.now(timezone.utc).isoformat(),
+            kind=kind,
+            payload=payload,
+        )
+        state.learning.history_logs.append(event)
+
+    def _open_explore_window(self, state: AppState) -> None:
+        until = datetime.datetime.now(timezone.utc) + datetime.timedelta(minutes=max(1, self.explore_window_minutes))
+        state.learning.explore_window_until = until.isoformat()

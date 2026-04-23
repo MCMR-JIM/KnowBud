@@ -48,6 +48,16 @@ class LearningEvent(BaseModel):
     payload: dict[str, Any]
     audio_file_path: str | None = None  # 🚀 新增：保存孩子录音的本地路径
 
+
+class NodeMastery(BaseModel):
+    depth_level: int = 0
+    stability_level: int = 0
+    success_count: int = 0
+    success_streak: int = 0
+    spaced_success_count: int = 0
+    last_success_ts: str | None = None
+    reward_window_granted: bool = False
+
 class LearningState(BaseModel):
     current_topic_id: str | None = None
     current_phase: LearningPhase
@@ -61,6 +71,8 @@ class LearningState(BaseModel):
     radar_data: RadarScore = Field(default_factory=RadarScore)
     error_book: list[ErrorRecord] = Field(default_factory=list)
     review_queue: list[str] = Field(default_factory=list) # 等待家长强推的复习队列
+    explore_window_until: str | None = None
+    mastery_map: dict[str, NodeMastery] = Field(default_factory=dict)
     
     history_logs: list[LearningEvent] = Field(default_factory=list)
     pending_question: PendingQuestion | None = None
