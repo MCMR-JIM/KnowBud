@@ -29,6 +29,7 @@ class AgentOrchestrator:
     def process_turn(self, *, state: AppState, user_text: str) -> AgentTurnDecision:
         explore_active = self._is_explore_window_active(state.learning.explore_window_until)
         from_topic_id = state.learning.current_topic_id
+        topic_title_map = {topic.topic_id: topic.title for topic in state.curriculum.topics}
         routing = self.router.route(
             user_text=user_text,
             current_topic_id=state.learning.current_topic_id,
@@ -60,7 +61,10 @@ class AgentOrchestrator:
             applied, new_topic_id = self.curator.auto_review_and_apply(proposal=proposal, curriculum=state.curriculum)
             hint = "这个问题很棒。我先记入知识网，等获得探索时间后我们深入聊。"
             if applied and new_topic_id:
-                hint = f"这个问题很好，我已经把它加入学习网节点：{proposal.title}。"
+                if len(proposal.parent_node_ids) > 1:
+                    hint = f"这个问题很好，我已将它作为桥接节点加入学习网：{proposal.title}。"
+                else:
+                    hint = f"这个问题很好，我已经把它加入学习网节点：{proposal.title}。"
 
             return AgentTurnDecision(
                 routing=routing,
@@ -74,7 +78,9 @@ class AgentOrchestrator:
             )
 
         if routing.switched:
-            hint = "我们先顺着你刚刚的问题，切到相关知识点继续讲。"
+            from_title = topic_title_map.get(from_topic_id or "", "当前主题")
+            to_title = topic_title_map.get(state.learning.current_topic_id or "", "相关主题")
+            hint = f"我们先顺着你刚刚的问题，从【{from_title}】过渡到【{to_title}】继续讲。"
         else:
             hint = ""
 

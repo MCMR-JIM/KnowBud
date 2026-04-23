@@ -95,6 +95,16 @@ def test_orchestrator_off_topic_in_explore_window_no_proposal() -> None:
     assert result.proposal is None
 
 
+def test_orchestrator_switch_hint_contains_bridge_titles() -> None:
+    state = make_state()
+    orchestrator = AgentOrchestrator()
+
+    result = orchestrator.process_turn(state=state, user_text="我们聊化石形成过程")
+    assert result.should_answer_directly is False
+    assert "恐龙灭绝原因" in result.reply_hint
+    assert "化石形成过程" in result.reply_hint
+
+
 def test_topic_router_respects_prerequisite_unlock_threshold() -> None:
     router = TopicRouter(min_score=0.4, unlock_depth_threshold=1)
     topics = [
@@ -119,6 +129,38 @@ def test_topic_router_respects_prerequisite_unlock_threshold() -> None:
     )
     assert unlocked.off_topic is False
     assert unlocked.target_topic_id == "t_adv"
+
+
+def test_topic_router_forced_switch_by_user_phrase() -> None:
+    state = make_state()
+    router = TopicRouter(inertia_bonus=0.4, switch_margin=0.5, min_score=0.2)
+
+    result = router.route(
+        user_text="我们聊化石形成过程",
+        current_topic_id="topic_dino",
+        topics=state.curriculum.topics,
+        mastery_map={},
+    )
+    assert result.off_topic is False
+    assert result.target_topic_id == "topic_fossil"
+    assert result.switched is True
+
+
+def test_topic_router_uses_topic_tags_for_matching() -> None:
+    router = TopicRouter(min_score=0.2)
+    topics = [
+        TopicNode(topic_id="bio_1", title="恐龙灭绝原因", difficulty=1, prerequisite_ids=[], tags=["subject:science"]),
+        TopicNode(topic_id="math_1", title="四则运算", difficulty=1, prerequisite_ids=[], tags=["subject:math", "fraction"]),
+    ]
+
+    result = router.route(
+        user_text="我想学fraction",
+        current_topic_id="bio_1",
+        topics=topics,
+        mastery_map={},
+    )
+    assert result.off_topic is False
+    assert result.target_topic_id == "math_1"
 
 
 def test_graph_curator_rejects_missing_parent_node() -> None:
