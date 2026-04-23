@@ -35,6 +35,7 @@ class SessionBackend:
         self.audio_artifact_root = Path(os.getenv("AUDIO_ARTIFACT_ROOT", "./artifacts/audio"))
         self.learning_arch_mode = os.getenv("LEARNING_ARCH_MODE", "legacy").strip().lower()
         self.explore_window_minutes = int(os.getenv("EXPLORE_WINDOW_MINUTES", "5"))
+        self.prereq_unlock_depth = int(os.getenv("PREREQ_UNLOCK_DEPTH", "1"))
 
         fail_th = int(os.getenv("FSM_FAIL_THRESHOLD", "3"))
         master_st = int(os.getenv("FSM_MASTER_STREAK", "3"))
@@ -47,7 +48,11 @@ class SessionBackend:
             base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
             model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
         )
-        self.agent_orchestrator = AgentOrchestrator() if self.learning_arch_mode in {"agent", "hybrid"} else None
+        self.agent_orchestrator = (
+            AgentOrchestrator(unlock_depth_threshold=self.prereq_unlock_depth)
+            if self.learning_arch_mode in {"agent", "hybrid"}
+            else None
+        )
         self.mastery_engine = MasteryEngine()
 
     def load_app_state(self) -> AppState:
@@ -136,6 +141,7 @@ class SessionBackend:
 
     def _evaluate_and_speak_agent(self, user_text: str) -> tuple[str, int, bytes]:
         state = self.load_app_state()
+        window_ended_now = self._consume_explore_window_expiry(state)
         decision = self.agent_orchestrator.process_turn(state=state, user_text=user_text)
 
         if decision.transition_from_topic_id != decision.transition_to_topic_id:
@@ -175,6 +181,9 @@ class SessionBackend:
             reply_text, earned_points = self.evaluate_student_answer(user_text)
             if decision.reply_hint:
                 reply_text = f"{decision.reply_hint}\n\n{reply_text}"
+
+        if window_ended_now:
+            reply_text = f"探索时间结束啦，我们回到主线继续学习。\n\n{reply_text}"
 
         reply_audio = self.synthesize_reply_audio(reply_text)
         return reply_text, earned_points, reply_audio
@@ -229,6 +238,20 @@ class SessionBackend:
         if mastery_update.should_open_explore_window:
             self._open_explore_window(state)
             reply_text = f"{reply_text}\n\n🎁 奖励时间开启：接下来 {self.explore_window_minutes} 分钟你可以自由探索提问。"
+
+        if self.agent_orchestrator is not None:
+            promoted = self.agent_orchestrator.curator.promote_shadow_topic(
+                topic_id=topic_id,
+                curriculum=state.curriculum,
+                mastery_map=state.learning.mastery_map,
+            )
+            if promoted:
+                reply_text = f"{reply_text}\n\n你已经把这个新知识点学稳了，我已将它转入主学习网。"
+                self._append_learning_event(
+                    state=state,
+                    kind="graph_promotion",
+                    payload={"topic_id": topic_id, "to": "active"},
+                )
 
         decision = self.engine.evaluate(
             state=state.learning,
@@ -291,3 +314,26 @@ class SessionBackend:
     def _open_explore_window(self, state: AppState) -> None:
         until = datetime.datetime.now(timezone.utc) + datetime.timedelta(minutes=max(1, self.explore_window_minutes))
         state.learning.explore_window_until = until.isoformat()
+
+    def _consume_explore_window_expiry(self, state: AppState) -> bool:
+        until_text = state.learning.explore_window_until
+        if not until_text:
+            return False
+
+        try:
+            until = datetime.datetime.fromisoformat(until_text)
+        except Exception:
+            state.learning.explore_window_until = None
+            return True
+
+        if until > datetime.datetime.now(timezone.utc):
+            return False
+
+        state.learning.explore_window_until = None
+        self._append_learning_event(
+            state=state,
+            kind="explore_window_closed",
+            payload={"closed_at": datetime.datetime.now(timezone.utc).isoformat()},
+        )
+        self.save_app_state(state)
+        return True

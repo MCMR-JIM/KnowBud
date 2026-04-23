@@ -9,8 +9,8 @@ from src.core.models import AppState
 
 
 class AgentOrchestrator:
-    def __init__(self) -> None:
-        self.router = TopicRouter()
+    def __init__(self, *, unlock_depth_threshold: int = 1) -> None:
+        self.router = TopicRouter(unlock_depth_threshold=unlock_depth_threshold)
         self.curator = GraphCurator()
 
     def process_turn(self, *, state: AppState, user_text: str) -> AgentTurnDecision:
@@ -20,6 +20,7 @@ class AgentOrchestrator:
             user_text=user_text,
             current_topic_id=state.learning.current_topic_id,
             topics=state.curriculum.topics,
+            mastery_map=state.learning.mastery_map,
         )
 
         if routing.target_topic_id and routing.target_topic_id != state.learning.current_topic_id:

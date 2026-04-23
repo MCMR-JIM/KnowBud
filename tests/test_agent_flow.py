@@ -2,7 +2,7 @@ from src.agent.graph_curator import GraphCurator
 from src.agent.orchestrator import AgentOrchestrator
 from src.agent.topic_router import TopicRouter
 from src.core.enums import LearningPhase
-from src.core.models import AppState, CurriculumConfig, LearningState, TopicNode, UserProfile
+from src.core.models import AppState, CurriculumConfig, LearningState, NodeMastery, TopicNode, UserProfile
 from datetime import datetime, timedelta, timezone
 
 
@@ -47,6 +47,8 @@ def test_orchestrator_adds_new_topic_for_off_topic_question() -> None:
     assert result.should_answer_directly is True
     assert result.proposal is not None
     assert any("黑洞" in t.title for t in state.curriculum.topics)
+    created = next(t for t in state.curriculum.topics if "黑洞" in t.title)
+    assert "shadow" in created.tags
 
 
 def test_orchestrator_off_topic_in_explore_window_no_proposal() -> None:
@@ -58,3 +60,29 @@ def test_orchestrator_off_topic_in_explore_window_no_proposal() -> None:
     assert result.should_answer_directly is True
     assert result.explore_window_active is True
     assert result.proposal is None
+
+
+def test_topic_router_respects_prerequisite_unlock_threshold() -> None:
+    router = TopicRouter(min_score=0.4, unlock_depth_threshold=1)
+    topics = [
+        TopicNode(topic_id="t_base", title="恐龙灭绝原因", difficulty=1, prerequisite_ids=[], tags=[]),
+        TopicNode(topic_id="t_adv", title="小行星撞击模型", difficulty=2, prerequisite_ids=["t_base"], tags=[]),
+    ]
+
+    locked = router.route(
+        user_text="小行星撞击模型",
+        current_topic_id="t_base",
+        topics=topics,
+        mastery_map={},
+    )
+    assert locked.off_topic is True
+    assert locked.target_topic_id == "t_base"
+
+    unlocked = router.route(
+        user_text="小行星撞击模型",
+        current_topic_id="t_base",
+        topics=topics,
+        mastery_map={"t_base": NodeMastery(depth_level=1)},
+    )
+    assert unlocked.off_topic is False
+    assert unlocked.target_topic_id == "t_adv"

@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from src.agent.models import EdgeType, GraphMutationProposal, ProposalStatus
-from src.core.models import CurriculumConfig, TopicNode
+from src.core.models import CurriculumConfig, NodeMastery, TopicNode
 
 
 class GraphCurator:
@@ -35,6 +35,8 @@ class GraphCurator:
             proposal.reason = "self dependency"
             return False, None
 
+        proposal.status = ProposalStatus.VALIDATED
+
         prerequisite_ids = proposal.parent_node_ids if proposal.edge_type == EdgeType.REQUIRES else []
         curriculum.topics.append(
             TopicNode(
@@ -42,11 +44,39 @@ class GraphCurator:
                 title=proposal.title,
                 difficulty=1,
                 prerequisite_ids=prerequisite_ids,
-                tags=["auto-proposed"],
+                tags=["auto-proposed", "shadow"],
             )
         )
-        proposal.status = ProposalStatus.ACTIVE
+        proposal.status = ProposalStatus.SHADOW
+        proposal.reason = "validated and inserted as shadow node"
         return True, new_topic_id
+
+    def promote_shadow_topic(
+        self,
+        *,
+        topic_id: str,
+        curriculum: CurriculumConfig,
+        mastery_map: dict[str, NodeMastery],
+    ) -> bool:
+        topic = next((t for t in curriculum.topics if t.topic_id == topic_id), None)
+        if topic is None:
+            return False
+        if "shadow" not in topic.tags:
+            return False
+
+        mastery = mastery_map.get(topic_id)
+        if mastery is None:
+            return False
+
+        if mastery.depth_level < 2:
+            return False
+        if mastery.success_count < 2 and mastery.stability_level < 1:
+            return False
+
+        topic.tags = [tag for tag in topic.tags if tag != "shadow"]
+        if "active" not in topic.tags:
+            topic.tags.append("active")
+        return True
 
     @staticmethod
     def _summarize_title(question_text: str) -> str:
