@@ -13,6 +13,7 @@ from src.core.decision_engine import DecisionEngine
 from src.skills.base_skill import SkillContext
 from src.skills.voice_io_skill import VoiceIOSkill
 from src.skills.llm_tutor_skill import LLMTutorSkill
+from src.agent.orchestrator import AgentOrchestrator
 from src.services.env_loader import load_project_env
 
 @dataclass
@@ -30,6 +31,7 @@ class SessionBackend:
         self.state_file = Path(os.getenv("STATE_FILE", "./data/state.json"))
         self.log_file = Path(os.getenv("DECISION_LOG_FILE", "./logs/decision_trace.jsonl"))
         self.audio_artifact_root = Path(os.getenv("AUDIO_ARTIFACT_ROOT", "./artifacts/audio"))
+        self.learning_arch_mode = os.getenv("LEARNING_ARCH_MODE", "legacy").strip().lower()
 
         fail_th = int(os.getenv("FSM_FAIL_THRESHOLD", "3"))
         master_st = int(os.getenv("FSM_MASTER_STREAK", "3"))
@@ -42,6 +44,7 @@ class SessionBackend:
             base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
             model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
         )
+        self.agent_orchestrator = AgentOrchestrator() if self.learning_arch_mode in {"agent", "hybrid"} else None
 
     def load_app_state(self) -> AppState:
         if self.state_file.exists():
@@ -135,7 +138,29 @@ class SessionBackend:
         return audio_bytes
 
     def evaluate_and_speak(self, user_text: str) -> tuple[str, int, bytes]:
+        if self.agent_orchestrator is not None:
+            return self._evaluate_and_speak_agent(user_text)
+
         reply_text, earned_points = self.evaluate_student_answer(user_text)
+        reply_audio = self.synthesize_reply_audio(reply_text)
+        return reply_text, earned_points, reply_audio
+
+    def _evaluate_and_speak_agent(self, user_text: str) -> tuple[str, int, bytes]:
+        state = self.load_app_state()
+        decision = self.agent_orchestrator.process_turn(state=state, user_text=user_text)
+
+        if decision.should_answer_directly:
+            earned_points = max(0, decision.earned_points)
+            if earned_points:
+                state.learning.total_score += earned_points
+            self.save_app_state(state)
+            reply_text = decision.reply_hint or "这个问题很有趣，我们先记下来，稍后深入探索。"
+        else:
+            self.save_app_state(state)
+            reply_text, earned_points = self.evaluate_student_answer(user_text)
+            if decision.reply_hint:
+                reply_text = f"{decision.reply_hint}\n\n{reply_text}"
+
         reply_audio = self.synthesize_reply_audio(reply_text)
         return reply_text, earned_points, reply_audio
 
