@@ -1,0 +1,31 @@
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import Home from './pages/Home';
+
+// 这两个是临时占位组件，防止我们点击主页按钮时报错
+// 等后续我们开发了具体的页面，再把它们替换掉
+const KidsLearning = () => (
+  <div className="flex items-center justify-center min-h-screen text-2xl text-primary font-bold">
+    魔法学习舱开发中，敬请期待...
+  </div>
+);
+
+const AdminDashboard = () => (
+  <div className="flex items-center justify-center min-h-screen text-2xl text-blue font-bold">
+    家长控制台开发中，敬请期待...
+  </div>
+);
+
+function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        {/* 默认访问根目录时，展示大厅主页 */}
+        <Route path="/" element={<Home />} />
+        <Route path="/kids" element={<KidsLearning />} />
+        <Route path="/admin" element={<AdminDashboard />} />
+      </Routes>
+    </BrowserRouter>
+  );
+}
+
+export default App;

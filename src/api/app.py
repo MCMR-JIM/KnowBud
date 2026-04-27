@@ -10,6 +10,7 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, AsyncIterator, Callable
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from src.api.schemas import (
@@ -53,6 +54,14 @@ app = FastAPI(
     description="Single-session frontend APIs with transactional state storage and on-demand memory retrieval.",
 )
 
+# 🌟 新增：配置跨域规则（允许前端跨域访问）
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 允许所有来源
+    allow_credentials=True,
+    allow_methods=["*"],  # 允许所有方法
+    allow_headers=["*"],  # 允许所有请求头
+)
 
 @dataclass
 class StreamJob:
