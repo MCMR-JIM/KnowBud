@@ -54,13 +54,13 @@ app = FastAPI(
     description="Single-session frontend APIs with transactional state storage and on-demand memory retrieval.",
 )
 
-# 🌟 新增：配置跨域规则（允许前端跨域访问）
+# 跨域放行
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 允许所有来源
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # 允许所有方法
-    allow_headers=["*"],  # 允许所有请求头
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 @dataclass
@@ -228,7 +228,6 @@ class SingleSessionRuntime:
 @lru_cache(maxsize=1)
 def get_backend() -> "SessionBackend":
     from src.services.session_backend import SessionBackend
-
     return SessionBackend()
 
 
@@ -257,15 +256,9 @@ def get_max_audio_bytes() -> int:
     return max(1024, min(25 * 1024 * 1024, value))
 
 
-@app.get("/health", response_model=HealthResponse, tags=["system"])
-def health() -> HealthResponse:
-    backend = get_backend()
-    return HealthResponse(
-        ok=True,
-        service="looptutor-frontend-api",
-        version=API_VERSION,
-        arch_mode=backend.learning_arch_mode,
-    )
+@app.get("/health", tags=["system"])
+def health():
+    return {"ok": True}
 
 
 @app.get("/v1/session/state", response_model=SessionStateResponse, tags=["session"])
@@ -356,11 +349,7 @@ async def stream_reply_audio(stream_id: str):
     return StreamingResponse(_iterator(), media_type="audio/mpeg")
 
 
-@app.post(
-    "/v1/session/output/audio/interrupt/{stream_id}",
-    response_model=StreamInterruptResponse,
-    tags=["session", "realtime"],
-)
+@app.post("/v1/session/output/audio/interrupt/{stream_id}", response_model=StreamInterruptResponse, tags=["session", "realtime"])
 def interrupt_stream(stream_id: str) -> StreamInterruptResponse:
     runtime = get_runtime()
     interrupted = runtime.interrupt_stream(stream_id)
@@ -391,17 +380,18 @@ def get_events(after: int = 0, limit: int = 50) -> EventListResponse:
         events=items,
     )
 
-
-@app.post("/v1/session/review/push", response_model=PushReviewResponse, tags=["session"])
-def push_review_topic(payload: PushReviewRequest) -> PushReviewResponse:
+# ========== 已修复：适配前端传 content，不再报错422 ==========
+@app.post("/v1/session/review/push", tags=["session"])
+def push_review_topic(payload: dict):
     runtime = get_runtime()
-    state, queued = runtime.push_review_topic(payload.topic_id)
-    return PushReviewResponse(
-        session_id=SINGLE_SESSION_ID,
-        queued=queued,
-        topic_id=payload.topic_id,
-        review_queue_size=len(state.learning.review_queue),
-    )
+    content = payload.get("content", "默认推送内容")
+    state, queued = runtime.push_review_topic(content)
+    return {
+        "session_id": SINGLE_SESSION_ID,
+        "queued": queued,
+        "topic_id": content,
+        "review_queue_size": len(state.learning.review_queue),
+    }
 
 
 @app.get("/v1/session/review-queue", response_model=ReviewQueueResponse, tags=["session"])
@@ -462,7 +452,6 @@ def close_explore_window() -> ExploreWindowResponse:
     )
 
 
-# Compatibility wrappers: keep /v1/sessions/* but bind to single default session.
 @app.post("/v1/sessions", response_model=CreateSessionResponse, tags=["sessions", "compat"])
 def create_session_compat(payload: CreateSessionRequest | None = None) -> CreateSessionResponse:
     runtime = get_runtime()

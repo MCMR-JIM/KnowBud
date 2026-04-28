@@ -14,6 +14,27 @@ export default function KidsLearning() {
   const [companion, setCompanion] = useState("星空兔");
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+
+  // ================= 🌟 新增：自动拉取家长推送的内容（只加了这一段，其他都没动） =================
+  const [todayTopic, setTodayTopic] = useState('恐龙的秘密');
+  useEffect(() => {
+    // 每2秒自动刷新一次，家长推送后立刻显示
+    const timer = setInterval(async () => {
+      try {
+        const res = await fetch("http://127.0.0.1:8090/v1/session/review-queue");
+        const data = await res.json();
+        if (data.topics && data.topics.length > 0) {
+          // 取最新推送的内容，更新标题
+          setTodayTopic(data.topics[data.topics.length - 1]);
+        }
+      } catch (e) {
+        // 静默失败，不影响其他功能
+      }
+    }, 2000);
+    return () => clearInterval(timer);
+  }, []);
+  // ================= 🌟 新增结束 =================
+
   const [messages, setMessages] = useState([
     { role: 'assistant', content: `小朋友你好呀！我是你的${companion}，今天我们要探索什么秘密呢？` }
   ]);
@@ -169,9 +190,11 @@ export default function KidsLearning() {
         
         {/* 左侧：视频区 */}
         <div className="flex-[6] bg-white/60 backdrop-blur-md rounded-[30px] p-6 shadow-sm border border-white/50 flex flex-col">
-          <h3 onMouseEnter={() => handleHoverRead("今日探索：恐龙的秘密")} className="text-2xl font-bold text-blue mb-4 cursor-help hover:text-primary transition-colors flex items-center gap-2 w-fit">
-            今日探索：恐龙的秘密 <Volume2 size={20} className="opacity-50" />
+          {/* ================= 🌟 只改了这一行：把硬编码的标题改成动态的 ================= */}
+          <h3 onMouseEnter={() => handleHoverRead("今日探索：" + todayTopic)} className="text-2xl font-bold text-blue mb-4 cursor-help hover:text-primary transition-colors flex items-center gap-2 w-fit">
+            今日探索：{todayTopic} <Volume2 size={20} className="opacity-50" />
           </h3>
+          {/* ================= 🌟 修改结束 ================= */}
           <div className="w-full flex-1 bg-black/5 rounded-2xl overflow-hidden flex items-center justify-center border-2 border-white/80">
             <video className="w-full h-full object-cover" controls src="https://www.w3schools.com/html/mov_bbb.mp4" />
           </div>
