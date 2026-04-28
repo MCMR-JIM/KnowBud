@@ -139,16 +139,11 @@ class SessionBackend:
     def synthesize_reply_audio(self, text: str) -> bytes:
         if not text:
             return b""
-
-        voice = os.getenv("EDGE_TTS_VOICE", "zh-CN-XiaoxiaoNeural")
-        try:
-            audio_bytes = self.voice_skill.synthesize_plain(text, voice=voice)
-        except Exception as exc:
-            print(f"语音合成失败: {exc}")
-            return b""
-
-        self._save_audio_artifact(audio_bytes, bucket="outgoing", suffix=".mp3")
-        return audio_bytes
+        
+        # ⚠️ 修复：移除原本导致 asyncio 冲突的同步调用
+        # 前端已切换至流式接口 (synthesize_reply_audio_stream)
+        # 此处仅作打桩兼容，直接返回空字节流即可避免事件循环崩溃
+        return b""
 
     async def synthesize_reply_audio_stream(
         self,

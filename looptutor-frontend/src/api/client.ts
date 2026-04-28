@@ -6,7 +6,7 @@ const API_BASE_URL = 'http://127.0.0.1:8090/v1';
 // 创建一个 Axios 实例
 export const apiClient = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 30000, // 语音处理可能较慢，超时时间设为 30 秒
+  timeout: 60000, // 语音处理可能较慢，超时时间设为 30 秒
 });
 
 // 封装会话相关的核心接口 (对接后端 v1.3 文档)
