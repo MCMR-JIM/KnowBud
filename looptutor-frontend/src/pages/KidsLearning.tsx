@@ -10,30 +10,94 @@ const COMPANIONS: Record<string, string> = {
 
 export default function KidsLearning() {
   const navigate = useNavigate();
+  const apiBaseUrl = 'http://127.0.0.1:8090/v1';
+
+  type TopicResource = {
+    resource_id: string;
+    resource_name: string;
+    media_type: string;
+    resource_url: string;
+  };
   
   const [companion, setCompanion] = useState("星空兔");
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
-  // ================= 🌟 新增：自动拉取家长推送的内容（只加了这一段，其他都没动） =================
+  // ================= 🌟 从复习队列/当前主线中同步 topic，并拉取节点资源 =================
   const [todayTopic, setTodayTopic] = useState('恐龙的秘密');
+  const [todayTopicId, setTodayTopicId] = useState('');
+  const [topicResources, setTopicResources] = useState<TopicResource[]>([]);
+  const [previewResource, setPreviewResource] = useState<TopicResource | null>(null);
+
   useEffect(() => {
-    // 每2秒自动刷新一次，家长推送后立刻显示
-    const timer = setInterval(async () => {
+    const syncTopic = async () => {
       try {
-        const res = await fetch("http://127.0.0.1:8090/v1/session/review-queue");
-        const data = await res.json();
-        if (data.topics && data.topics.length > 0) {
-          // 取最新推送的内容，更新标题
-          setTodayTopic(data.topics[data.topics.length - 1]);
+        const queueRes = await fetch(`${apiBaseUrl}/session/review-queue`);
+        if (queueRes.ok) {
+          const queueData = await queueRes.json();
+          const latestItem = queueData.items?.[queueData.items.length - 1];
+          if (latestItem?.topic_id) {
+            setTodayTopic(latestItem.title || latestItem.topic_id);
+            setTodayTopicId(latestItem.topic_id);
+            return;
+          }
         }
+
+        const stateRes = await fetch(`${apiBaseUrl}/session/state`);
+        if (!stateRes.ok) {
+          return;
+        }
+
+        const stateData = await stateRes.json();
+        const currentTopicId = stateData.learning?.current_topic_id || '';
+        if (!currentTopicId) {
+          return;
+        }
+
+        const currentTopic = stateData.topics?.find((topic: any) => topic.topic_id === currentTopicId);
+        setTodayTopic(currentTopic?.title || currentTopicId);
+        setTodayTopicId(currentTopicId);
       } catch (e) {
         // 静默失败，不影响其他功能
       }
+    };
+
+    const timer = setInterval(async () => {
+      await syncTopic();
     }, 2000);
+
+    void syncTopic();
     return () => clearInterval(timer);
   }, []);
-  // ================= 🌟 新增结束 =================
+
+  useEffect(() => {
+    const fetchTopicResources = async () => {
+      if (!todayTopicId) {
+        setTopicResources([]);
+        setPreviewResource(null);
+        return;
+      }
+
+      try {
+        const res = await fetch(`${apiBaseUrl}/resource/topics/${todayTopicId}`);
+        if (!res.ok) {
+          return;
+        }
+
+        const data = await res.json();
+        const resources = (data.resources || []) as TopicResource[];
+        setTopicResources(resources);
+
+        const previewable = resources.find((resource) => ['video', 'image', 'audio'].includes(resource.media_type));
+        setPreviewResource(previewable || null);
+      } catch (e) {
+        setTopicResources([]);
+        setPreviewResource(null);
+      }
+    };
+
+    void fetchTopicResources();
+  }, [todayTopicId]);
 
   const [messages, setMessages] = useState([
     { role: 'assistant', content: `小朋友你好呀！我是你的${companion}，今天我们要探索什么秘密呢？` }
@@ -63,6 +127,13 @@ export default function KidsLearning() {
     utterance.rate = 0.85;
     utterance.pitch = 1.1;
     window.speechSynthesis.speak(utterance);
+  };
+
+  const resolveResourceUrl = (resourceUrl: string) => {
+    if (resourceUrl.startsWith('http://') || resourceUrl.startsWith('https://')) {
+      return resourceUrl;
+    }
+    return `http://127.0.0.1:8090${resourceUrl}`;
   };
 
   // ================= 🎙️ 录音控制逻辑 =================
@@ -190,13 +261,65 @@ export default function KidsLearning() {
         
         {/* 左侧：视频区 */}
         <div className="flex-[6] bg-white/60 backdrop-blur-md rounded-[30px] p-6 shadow-sm border border-white/50 flex flex-col">
-          {/* ================= 🌟 只改了这一行：把硬编码的标题改成动态的 ================= */}
           <h3 onMouseEnter={() => handleHoverRead("今日探索：" + todayTopic)} className="text-2xl font-bold text-blue mb-4 cursor-help hover:text-primary transition-colors flex items-center gap-2 w-fit">
             今日探索：{todayTopic} <Volume2 size={20} className="opacity-50" />
           </h3>
-          {/* ================= 🌟 修改结束 ================= */}
           <div className="w-full flex-1 bg-black/5 rounded-2xl overflow-hidden flex items-center justify-center border-2 border-white/80">
-            <video className="w-full h-full object-cover" controls src="https://www.w3schools.com/html/mov_bbb.mp4" />
+            {previewResource?.media_type === 'video' ? (
+              <video className="w-full h-full object-cover" controls src={resolveResourceUrl(previewResource.resource_url)} />
+            ) : previewResource?.media_type === 'image' ? (
+              <img className="w-full h-full object-contain" src={resolveResourceUrl(previewResource.resource_url)} alt={previewResource.resource_name} />
+            ) : previewResource?.media_type === 'audio' ? (
+              <div className="w-full h-full flex items-center justify-center">
+                <audio controls src={resolveResourceUrl(previewResource.resource_url)} className="w-4/5" />
+              </div>
+            ) : (
+              <div className="text-center text-gray-500 px-6">
+                <p className="text-lg font-medium">当前节点暂无可预览媒体</p>
+                <p className="text-sm mt-2">下方资源列表已按知识节点同步，可直接打开文档或切换到其他素材。</p>
+              </div>
+            )}
+          </div>
+          <div className="mt-4 bg-white/70 rounded-2xl border border-white/70 p-4 max-h-48 overflow-y-auto">
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-sm font-bold text-dark">节点资源</p>
+              <p className="text-xs text-gray-500">{topicResources.length} 份</p>
+            </div>
+            {topicResources.length === 0 ? (
+              <p className="text-sm text-gray-400">这个知识节点下还没有上传资源。</p>
+            ) : (
+              <div className="space-y-2">
+                {topicResources.map((resource) => {
+                  const isPreviewable = ['video', 'image', 'audio'].includes(resource.media_type);
+                  return (
+                    <div key={resource.resource_id} className="flex items-center justify-between bg-white rounded-xl px-3 py-2 border border-white/80">
+                      <div>
+                        <p className="text-sm font-medium text-dark">{resource.resource_name}</p>
+                        <p className="text-xs text-gray-500 uppercase">{resource.media_type}</p>
+                      </div>
+                      <div className="flex gap-2">
+                        {isPreviewable && (
+                          <button
+                            onClick={() => setPreviewResource(resource)}
+                            className="text-xs px-3 py-1 rounded-full bg-sky-100 text-sky-700 hover:bg-sky-200 transition-colors"
+                          >
+                            预览
+                          </button>
+                        )}
+                        <a
+                          href={resolveResourceUrl(resource.resource_url)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-xs px-3 py-1 rounded-full bg-pink-100 text-pink-700 hover:bg-pink-200 transition-colors"
+                        >
+                          打开
+                        </a>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
 
