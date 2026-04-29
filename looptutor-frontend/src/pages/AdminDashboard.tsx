@@ -3,14 +3,18 @@ import { useNavigate } from 'react-router-dom';
 
 export default function AdminDashboard() {
   const navigate = useNavigate();
+  const apiBaseUrl = 'http://localhost:8090/v1';
   // 核心状态
   const [activeTab, setActiveTab] = useState('task');
   const [resourceName, setResourceName] = useState('');
-  const [pushInput, setPushInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [selectedUploadTopicId, setSelectedUploadTopicId] = useState('');
+  const [selectedPushTopicId, setSelectedPushTopicId] = useState('');
+  const [uploadCategory, setUploadCategory] = useState<'learn' | 'review'>('learn');
+  const [knowledgeTopics, setKnowledgeTopics] = useState<{ topicId: string; title: string }[]>([]);
 
   // 后端真实数据
   const [learningData, setLearningData] = useState({
@@ -27,7 +31,7 @@ export default function AdminDashboard() {
       knowledge: 0
     }
   });
-  const [knowledgePoints, setKnowledgePoints] = useState<{ id: number, name: string, lastReview: string }[]>([]);
+  const [knowledgePoints, setKnowledgePoints] = useState<{ id: number, topicId: string, name: string, lastReview: string, resourceCount: number }[]>([]);
   const [engineLogs, setEngineLogs] = useState<string[]>([]);
   const [dataLoading, setDataLoading] = useState(false);
 
@@ -41,17 +45,29 @@ export default function AdminDashboard() {
     setDataLoading(true);
     try {
       // 1. 获取当前状态
-      const stateRes = await fetch("http://localhost:8090/v1/session/state");
+      const stateRes = await fetch(`${apiBaseUrl}/session/state`);
       let stateData: any = null;
       if (stateRes.ok) {
         stateData = await stateRes.json();
       }
 
       // 2. 获取所有事件历史，用于计算真实数据
-      const eventsRes = await fetch("http://localhost:8090/v1/session/events");
+      const eventsRes = await fetch(`${apiBaseUrl}/session/events`);
       let eventsData: any = null;
       if (eventsRes.ok) {
         eventsData = await eventsRes.json();
+      }
+
+      const graphRes = await fetch(`${apiBaseUrl}/knowledge/graph`);
+      if (graphRes.ok) {
+        const graphData = await graphRes.json();
+        const topics = (graphData.topics || []).map((topic: any) => ({
+          topicId: topic.topic_id,
+          title: topic.title,
+        }));
+        setKnowledgeTopics(topics);
+        setSelectedUploadTopicId((prev) => topics.some((topic: { topicId: string }) => topic.topicId === prev) ? prev : (topics[0]?.topicId || ''));
+        setSelectedPushTopicId((prev) => topics.some((topic: { topicId: string }) => topic.topicId === prev) ? prev : (topics[0]?.topicId || ''));
       }
 
       // ================= 真实计算开始 =================
@@ -155,14 +171,16 @@ export default function AdminDashboard() {
       }
 
       // 3. 获取错题本数据
-      const reviewRes = await fetch("http://localhost:8090/v1/session/review-queue");
+      const reviewRes = await fetch(`${apiBaseUrl}/session/review-queue`);
       if (reviewRes.ok) {
         const reviewData = await reviewRes.json();
         setKnowledgePoints(
-          reviewData.topics?.map((topic: string, idx: number) => ({
+          (reviewData.items || []).map((item: any, idx: number) => ({
             id: idx + 1,
-            name: topic,
-            lastReview: new Date().toLocaleString()
+            topicId: item.topic_id,
+            name: item.title,
+            lastReview: new Date().toLocaleString(),
+            resourceCount: item.resource_count || 0,
           })) || []
         );
       }
@@ -250,13 +268,19 @@ export default function AdminDashboard() {
   const validateAndSetFile = (file: File) => {
     // 支持学习场景常用格式
     const allowedTypes = [
-      'video/mp4', 'video/mpeg', 'video/avi', 'video/mov',
+      'video/mp4', 'video/mpeg', 'video/avi', 'video/mov', 'video/quicktime',
+      'audio/mpeg', 'audio/wav', 'audio/x-wav', 'audio/mp4', 'audio/aac', 'audio/ogg',
       'image/jpeg', 'image/jpg', 'image/png', 'image/gif',
-      'application/pdf', 'text/plain'
+      'application/pdf', 'text/plain',
+      'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.ms-powerpoint', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
     ];
+    const allowedExtensions = ['.mp4', '.mpeg', '.avi', '.mov', '.mp3', '.wav', '.m4a', '.aac', '.ogg', '.jpg', '.jpeg', '.png', '.gif', '.pdf', '.txt', '.doc', '.docx', '.ppt', '.pptx'];
+    const lowerName = file.name.toLowerCase();
+    const isAllowed = allowedTypes.includes(file.type) || allowedExtensions.some((ext) => lowerName.endsWith(ext));
 
-    if (!allowedTypes.includes(file.type)) {
-      alert("仅支持视频、图片、PDF、TXT等学习常用格式");
+    if (!isAllowed) {
+      alert("仅支持视频、音频、图片、PDF、Word、PPT、TXT等学习常用格式");
       return false;
     }
 
@@ -309,8 +333,8 @@ export default function AdminDashboard() {
 
   // 提交文件上传
   const handleUploadSubmit = async () => {
-    if (!uploadFile || !resourceName.trim()) {
-      alert("请选择文件并填写资源名称");
+    if (!uploadFile || !resourceName.trim() || !selectedUploadTopicId) {
+      alert("请选择知识节点、文件并填写资源名称");
       return;
     }
 
@@ -318,15 +342,17 @@ export default function AdminDashboard() {
     try {
       const formData = new FormData();
       formData.append("file", uploadFile);
-      formData.append("resourceName", resourceName);
+      formData.append("topic_id", selectedUploadTopicId);
+      formData.append("resource_name", resourceName);
+      formData.append("category", uploadCategory);
 
-      const res = await fetch("http://localhost:8090/v1/resource/upload", {
+      const res = await fetch(`${apiBaseUrl}/resource/upload`, {
         method: "POST",
         body: formData
       });
 
       if (res.ok) {
-        alert("✅ 资源上传成功，题库已生成");
+        alert("✅ 资源上传成功，已绑定到知识节点");
         setUploadFile(null);
         setResourceName("");
         fetchAllData();
@@ -343,20 +369,19 @@ export default function AdminDashboard() {
 
   // 任务推送功能
   const handlePushTask = async () => {
-    if (!pushInput.trim()) {
-      alert("请先输入要推送的探索主题！");
+    if (!selectedPushTopicId) {
+      alert("请先选择要推送的知识节点！");
       return;
     }
     setIsLoading(true);
     try {
-      const res = await fetch("http://localhost:8090/v1/session/review/push", {
+      const res = await fetch(`${apiBaseUrl}/session/review/push`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: pushInput.trim() })
+        body: JSON.stringify({ topic_id: selectedPushTopicId })
       });
       if (res.ok) {
         alert("✅ 任务已成功推送至魔法舱！");
-        setPushInput("");
         fetchAllData();
       } else {
         alert("❌ 推送失败，请检查后端服务是否启动");
@@ -425,7 +450,7 @@ export default function AdminDashboard() {
           <div className="bg-white/80 backdrop-blur rounded-2xl p-6 shadow-sm space-y-6">
             <div>
               <h2 className="text-lg font-semibold text-pink-500 mb-4">上传今日学习资源</h2>
-              <p className="text-xs text-gray-400 mb-2">教学媒体文件（限视频/图片/PDF/TXT，单文件最大500MB）</p>
+              <p className="text-xs text-gray-400 mb-2">教学媒体文件（支持视频/音频/图片/PDF/Word/PPT/TXT，单文件最大500MB）</p>
               
               <div 
                 onClick={() => document.getElementById('file-upload')?.click()}
@@ -442,7 +467,7 @@ export default function AdminDashboard() {
                 <input
                   id="file-upload"
                   type="file"
-                  accept="video/*,image/*,.pdf,.txt"
+                  accept="video/*,audio/*,image/*,.pdf,.txt,.doc,.docx,.ppt,.pptx"
                   onChange={handleFileSelect}
                   className="hidden"
                 />
@@ -460,6 +485,19 @@ export default function AdminDashboard() {
               </div>
 
               <div className="mb-4">
+                <label className="text-sm text-gray-500 mb-1 block">知识节点</label>
+                <select
+                  value={selectedUploadTopicId}
+                  onChange={(e) => setSelectedUploadTopicId(e.target.value)}
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-pink-200"
+                >
+                  <option value="">请选择知识节点</option>
+                  {knowledgeTopics.map((topic) => (
+                    <option key={topic.topicId} value={topic.topicId}>{topic.title}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="mb-4">
                 <label className="text-sm text-gray-500 mb-1 block">资源名称</label>
                 <input
                   type="text"
@@ -468,6 +506,17 @@ export default function AdminDashboard() {
                   placeholder="请输入资源名称"
                   className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-pink-200"
                 />
+              </div>
+              <div className="mb-4">
+                <label className="text-sm text-gray-500 mb-1 block">资源用途</label>
+                <select
+                  value={uploadCategory}
+                  onChange={(e) => setUploadCategory(e.target.value as 'learn' | 'review')}
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-pink-200"
+                >
+                  <option value="learn">主线学习资源</option>
+                  <option value="review">复习资源并加入队列</option>
+                </select>
               </div>
               <button
                 onClick={handleUploadSubmit}
@@ -481,14 +530,17 @@ export default function AdminDashboard() {
             <div>
               <h2 className="text-lg font-semibold text-gray-700 mb-4">派发学习任务</h2>
               <div className="mb-3">
-                <label className="text-sm text-gray-500 mb-1 block">探索主题</label>
-                <input
-                  type="text"
-                  value={pushInput}
-                  onChange={(e) => setPushInput(e.target.value)}
-                  placeholder="例如：恐龙为什么会灭绝？"
+                <label className="text-sm text-gray-500 mb-1 block">知识节点</label>
+                <select
+                  value={selectedPushTopicId}
+                  onChange={(e) => setSelectedPushTopicId(e.target.value)}
                   className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-pink-200"
-                />
+                >
+                  <option value="">请选择知识节点</option>
+                  {knowledgeTopics.map((topic) => (
+                    <option key={topic.topicId} value={topic.topicId}>{topic.title}</option>
+                  ))}
+                </select>
               </div>
               <button
                 onClick={handlePushTask}
@@ -581,14 +633,15 @@ export default function AdminDashboard() {
                   {knowledgePoints.map((kp) => (
                     <div key={kp.id} className="bg-gray-50 rounded-lg p-3">
                       <p className="text-sm font-medium">{kp.name}</p>
+                      <p className="text-xs text-gray-500 mt-1">节点资源数：{kp.resourceCount}</p>
                       <p className="text-xs text-gray-400">首次出错时间：{kp.lastReview}</p>
                       <button 
                         onClick={async () => {
                           try {
-                            await fetch("http://localhost:8090/v1/session/review/push", {
+                            await fetch(`${apiBaseUrl}/session/review/push`, {
                               method: "POST",
                               headers: { "Content-Type": "application/json" },
-                              body: JSON.stringify({ content: kp.name })
+                              body: JSON.stringify({ topic_id: kp.topicId })
                             });
                             alert("✅ 已再次推送提问");
                           } catch (e) {
@@ -637,7 +690,7 @@ export default function AdminDashboard() {
                 onClick={async () => {
                   if(window.confirm("确定要清空本地上下文状态吗？此操作无法撤销！")) {
                     try {
-                      await fetch("http://localhost:8090/v1/session/reset", { method: "POST" });
+                      await fetch(`${apiBaseUrl}/session/reset`, { method: "POST" });
                       alert("✅ 已清空本地上下文状态");
                       fetchAllData();
                     } catch (e) {
