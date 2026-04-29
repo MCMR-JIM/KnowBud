@@ -49,6 +49,28 @@ class LearningEvent(BaseModel):
     audio_file_path: str | None = None  # 🚀 新增：保存孩子录音的本地路径
 
 
+class ResourceSegment(BaseModel):
+    segment_id: str
+    start_ms: int = 0
+    end_ms: int | None = None
+    label: str = "full"
+    status: str = "confirmed"
+
+
+class ResourceRecord(BaseModel):
+    resource_id: str
+    topic_id: str
+    resource_name: str
+    category: str = "learn"
+    media_type: str
+    mime_type: str
+    original_filename: str
+    stored_path: str
+    size_bytes: int
+    created_ts: str
+    segments: list[ResourceSegment] = Field(default_factory=list)
+
+
 class GraphProposalRecord(BaseModel):
     proposal_id: str
     title: str

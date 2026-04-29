@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import base64
+import mimetypes
 import os
+import shutil
 import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
+from pathlib import Path
 from typing import TYPE_CHECKING, AsyncIterator, Callable
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from src.api.schemas import (
     AudioTurnResponse,
@@ -28,6 +31,9 @@ from src.api.schemas import (
     ProposalInfo,
     PushReviewRequest,
     PushReviewResponse,
+    ResourceInfo,
+    ResourceSegmentInfo,
+    ResourceUploadResponse,
     ReviewQueueResponse,
     SessionLearningState,
     SessionListResponse,
@@ -37,6 +43,7 @@ from src.api.schemas import (
     StreamInterruptResponse,
     StreamTurnInitResponse,
     TextTurnRequest,
+    TopicResourceListResponse,
     TopicInfo,
     TurnResponse,
 )
@@ -405,6 +412,114 @@ def get_review_queue() -> ReviewQueueResponse:
     )
 
 
+@app.post("/v1/resource/upload", response_model=ResourceUploadResponse, tags=["resource"])
+async def upload_resource(
+    file: UploadFile = File(...),
+    topic_id: str = Form(...),
+    resource_name: str = Form(...),
+    category: str = Form("learn"),
+) -> ResourceUploadResponse:
+    normalized_topic_id = topic_id.strip()
+    if not normalized_topic_id:
+        raise HTTPException(status_code=400, detail="topic_id is required")
+
+    normalized_resource_name = resource_name.strip()
+    if not normalized_resource_name:
+        raise HTTPException(status_code=400, detail="resource_name is required")
+
+    normalized_category = category.strip().lower() or "learn"
+    if normalized_category not in {"learn", "review"}:
+        raise HTTPException(status_code=400, detail="category must be learn or review")
+
+    backend = get_backend()
+    topic = backend.get_topic(normalized_topic_id)
+    if topic is None:
+        raise HTTPException(status_code=404, detail=f"topic_id not found: {normalized_topic_id}")
+
+    original_name = (file.filename or "resource.bin").strip() or "resource.bin"
+    safe_name = original_name.replace("/", "_").replace("\\", "_")
+
+    data_root = Path(os.getenv("DATA_ROOT", "./data"))
+    resource_dir = data_root / "resources"
+    resource_dir.mkdir(parents=True, exist_ok=True)
+    stored_name = f"{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}_{safe_name}"
+    stored_path = resource_dir / stored_name
+
+    with stored_path.open("wb") as out:
+        shutil.copyfileobj(file.file, out)
+
+    mime_type = (file.content_type or "").strip() or (mimetypes.guess_type(original_name)[0] or "application/octet-stream")
+    media_type = _infer_media_type(original_name, mime_type)
+    record = backend.create_resource_record(
+        topic_id=normalized_topic_id,
+        resource_name=normalized_resource_name,
+        category=normalized_category,
+        media_type=media_type,
+        mime_type=mime_type,
+        original_filename=original_name,
+        stored_path=str(stored_path.resolve()),
+        size_bytes=stored_path.stat().st_size,
+    )
+
+    runtime = get_runtime()
+    if normalized_category == "review":
+        state, queued = runtime.push_review_topic(normalized_topic_id)
+    else:
+        state = runtime.load_state()
+        queued = False
+
+    backend.append_learning_event(
+        kind="resource_uploaded",
+        payload={
+            "resource_id": record.resource_id,
+            "topic_id": normalized_topic_id,
+            "resource_name": normalized_resource_name,
+            "category": normalized_category,
+            "media_type": media_type,
+            "original_filename": original_name,
+            "stored_path": str(stored_path),
+            "queued": queued,
+        },
+    )
+
+    return ResourceUploadResponse(
+        session_id=SINGLE_SESSION_ID,
+        queued=queued,
+        review_queue_size=len(state.learning.review_queue),
+        resource=_resource_info(record, topic.title),
+    )
+
+
+@app.get("/v1/resource/topics/{topic_id}", response_model=TopicResourceListResponse, tags=["resource"])
+def get_topic_resources(topic_id: str) -> TopicResourceListResponse:
+    backend = get_backend()
+    topic = backend.get_topic(topic_id)
+    if topic is None:
+        raise HTTPException(status_code=404, detail=f"topic_id not found: {topic_id}")
+
+    resources = backend.list_resources_by_topic(topic_id)
+    return TopicResourceListResponse(
+        session_id=SINGLE_SESSION_ID,
+        topic_id=topic.topic_id,
+        topic_title=topic.title,
+        resources=[_resource_info(resource, topic.title) for resource in resources],
+    )
+
+
+@app.get("/v1/resource/files/{resource_id}", tags=["resource"])
+def get_resource_file(resource_id: str):
+    backend = get_backend()
+    record = backend.get_resource(resource_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"resource_id not found: {resource_id}")
+
+    file_path = Path(record.stored_path)
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="resource file missing")
+
+    return FileResponse(path=file_path, media_type=record.mime_type, filename=record.original_filename)
+
+
 @app.get("/v1/knowledge/graph", response_model=KnowledgeGraphResponse, tags=["knowledge"])
 def get_knowledge_graph() -> KnowledgeGraphResponse:
     runtime = get_runtime()
@@ -695,6 +810,55 @@ def _mastery_info(topic_id: str, mastery) -> MasteryInfo:
         spaced_success_count=mastery.spaced_success_count,
         last_success_ts=mastery.last_success_ts,
     )
+
+
+def _resource_info(record, topic_title: str) -> ResourceInfo:
+    return ResourceInfo(
+        resource_id=record.resource_id,
+        topic_id=record.topic_id,
+        topic_title=topic_title,
+        resource_name=record.resource_name,
+        category=record.category,
+        media_type=record.media_type,
+        mime_type=record.mime_type,
+        original_filename=record.original_filename,
+        resource_url=f"/v1/resource/files/{record.resource_id}",
+        size_bytes=record.size_bytes,
+        created_ts=record.created_ts,
+        segments=[
+            ResourceSegmentInfo(
+                segment_id=segment.segment_id,
+                start_ms=segment.start_ms,
+                end_ms=segment.end_ms,
+                label=segment.label,
+                status=segment.status,
+            )
+            for segment in record.segments
+        ],
+    )
+
+
+def _infer_media_type(filename: str, mime_type: str) -> str:
+    ext = Path(filename).suffix.lower()
+    if mime_type.startswith("video/") or ext in {".mp4", ".mov", ".avi", ".mkv", ".webm"}:
+        return "video"
+    if mime_type.startswith("audio/") or ext in {".mp3", ".wav", ".m4a", ".aac", ".ogg"}:
+        return "audio"
+    if mime_type.startswith("image/") or ext in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
+        return "image"
+    if ext == ".pdf":
+        return "pdf"
+    if ext == ".docx":
+        return "docx"
+    if ext == ".doc":
+        return "doc"
+    if ext == ".pptx":
+        return "pptx"
+    if ext == ".ppt":
+        return "ppt"
+    if ext in {".txt", ".md"}:
+        return "txt"
+    return "binary"
 
 
 def _validate_text(text: str) -> None:

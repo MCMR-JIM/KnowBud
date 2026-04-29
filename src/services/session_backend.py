@@ -11,7 +11,7 @@ from datetime import timezone
 from typing import AsyncIterator
 
 from src.core.enums import UserIntent, LearningPhase
-from src.core.models import AppState, UserProfile, LearningState, CurriculumConfig, TopicNode, PendingQuestion, ErrorRecord, LearningEvent, GraphProposalRecord
+from src.core.models import AppState, UserProfile, LearningState, CurriculumConfig, TopicNode, PendingQuestion, ErrorRecord, LearningEvent, GraphProposalRecord, ResourceRecord, ResourceSegment
 from src.core.decision_engine import DecisionEngine
 from src.skills.base_skill import SkillContext
 from src.skills.voice_io_skill import VoiceIOSkill
@@ -126,6 +126,79 @@ class SessionBackend:
         if topic_id not in state.learning.review_queue:
             state.learning.review_queue.append(topic_id)
             self.save_app_state(state)
+
+    def get_topic(self, topic_id: str) -> TopicNode | None:
+        state = self.load_app_state(include_history=False)
+        return next((topic for topic in state.curriculum.topics if topic.topic_id == topic_id), None)
+
+    def create_resource_record(
+        self,
+        *,
+        topic_id: str,
+        resource_name: str,
+        category: str,
+        media_type: str,
+        mime_type: str,
+        original_filename: str,
+        stored_path: str,
+        size_bytes: int,
+    ) -> ResourceRecord:
+        record = ResourceRecord(
+            resource_id=f"res_{int(time.time() * 1000)}",
+            topic_id=topic_id,
+            resource_name=resource_name,
+            category=category,
+            media_type=media_type,
+            mime_type=mime_type,
+            original_filename=original_filename,
+            stored_path=stored_path,
+            size_bytes=size_bytes,
+            created_ts=datetime.datetime.now(timezone.utc).isoformat(),
+            segments=[
+                ResourceSegment(
+                    segment_id="seg_full",
+                    start_ms=0,
+                    end_ms=None,
+                    label="full",
+                    status="confirmed",
+                )
+            ],
+        )
+        with self._db_connection() as conn:
+            self._ensure_storage_initialized(conn)
+            self._insert_resource_row(conn, record)
+        return record
+
+    def list_resources_by_topic(self, topic_id: str) -> list[ResourceRecord]:
+        with self._db_connection() as conn:
+            self._ensure_storage_initialized(conn)
+            rows = conn.execute(
+                """
+                SELECT resource_id, topic_id, resource_name, category, media_type, mime_type,
+                       original_filename, stored_path, size_bytes, created_ts, segments_json
+                FROM resource_library
+                WHERE topic_id = ?
+                ORDER BY created_ts DESC, resource_id DESC
+                """,
+                (topic_id,),
+            ).fetchall()
+        return [self._resource_from_row(row) for row in rows]
+
+    def get_resource(self, resource_id: str) -> ResourceRecord | None:
+        with self._db_connection() as conn:
+            self._ensure_storage_initialized(conn)
+            row = conn.execute(
+                """
+                SELECT resource_id, topic_id, resource_name, category, media_type, mime_type,
+                       original_filename, stored_path, size_bytes, created_ts, segments_json
+                FROM resource_library
+                WHERE resource_id = ?
+                """,
+                (resource_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._resource_from_row(row)
 
     def transcribe_audio(self, audio_bytes: bytes) -> str:
         if not audio_bytes:
@@ -698,6 +771,29 @@ class SessionBackend:
             ON learning_events(kind)
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS resource_library (
+                resource_id TEXT PRIMARY KEY,
+                topic_id TEXT NOT NULL,
+                resource_name TEXT NOT NULL,
+                category TEXT NOT NULL,
+                media_type TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                original_filename TEXT NOT NULL,
+                stored_path TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                created_ts TEXT NOT NULL,
+                segments_json TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_resource_library_topic
+            ON resource_library(topic_id, created_ts DESC)
+            """
+        )
         conn.commit()
 
     def _load_state_row(self, conn: sqlite3.Connection) -> AppState | None:
@@ -781,6 +877,31 @@ class SessionBackend:
         conn.commit()
         return int(cursor.lastrowid)
 
+    def _insert_resource_row(self, conn: sqlite3.Connection, record: ResourceRecord) -> None:
+        conn.execute(
+            """
+            INSERT INTO resource_library(
+                resource_id, topic_id, resource_name, category, media_type, mime_type,
+                original_filename, stored_path, size_bytes, created_ts, segments_json
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record.resource_id,
+                record.topic_id,
+                record.resource_name,
+                record.category,
+                record.media_type,
+                record.mime_type,
+                record.original_filename,
+                record.stored_path,
+                record.size_bytes,
+                record.created_ts,
+                json.dumps([segment.model_dump() for segment in record.segments], ensure_ascii=False),
+            ),
+        )
+        conn.commit()
+
     @staticmethod
     def _event_from_row(row: sqlite3.Row) -> LearningEvent:
         payload_obj = {}
@@ -798,6 +919,32 @@ class SessionBackend:
             kind=str(row["kind"]),
             payload=payload_obj,
             audio_file_path=row["audio_file_path"],
+        )
+
+    @staticmethod
+    def _resource_from_row(row: sqlite3.Row) -> ResourceRecord:
+        segments: list[ResourceSegment] = []
+        segments_text = row["segments_json"]
+        if segments_text:
+            try:
+                parsed = json.loads(segments_text)
+                if isinstance(parsed, list):
+                    segments = [ResourceSegment.model_validate(item) for item in parsed if isinstance(item, dict)]
+            except Exception:
+                segments = []
+
+        return ResourceRecord(
+            resource_id=str(row["resource_id"]),
+            topic_id=str(row["topic_id"]),
+            resource_name=str(row["resource_name"]),
+            category=str(row["category"]),
+            media_type=str(row["media_type"]),
+            mime_type=str(row["mime_type"]),
+            original_filename=str(row["original_filename"]),
+            stored_path=str(row["stored_path"]),
+            size_bytes=int(row["size_bytes"]),
+            created_ts=str(row["created_ts"]),
+            segments=segments,
         )
 
     def _next_cooldown_until(self) -> str | None:

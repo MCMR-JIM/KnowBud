@@ -111,6 +111,43 @@ class PushReviewResponse(BaseModel):
     review_queue_size: int
 
 
+class ResourceSegmentInfo(BaseModel):
+    segment_id: str
+    start_ms: int = 0
+    end_ms: int | None = None
+    label: str
+    status: str
+
+
+class ResourceInfo(BaseModel):
+    resource_id: str
+    topic_id: str
+    topic_title: str
+    resource_name: str
+    category: str
+    media_type: str
+    mime_type: str
+    original_filename: str
+    resource_url: str
+    size_bytes: int
+    created_ts: str
+    segments: list[ResourceSegmentInfo] = Field(default_factory=list)
+
+
+class ResourceUploadResponse(BaseModel):
+    session_id: str
+    queued: bool
+    review_queue_size: int
+    resource: ResourceInfo
+
+
+class TopicResourceListResponse(BaseModel):
+    session_id: str
+    topic_id: str
+    topic_title: str
+    resources: list[ResourceInfo] = Field(default_factory=list)
+
+
 class CreateSessionRequest(BaseModel):
     student_id: str | None = None
     display_name: str | None = None
