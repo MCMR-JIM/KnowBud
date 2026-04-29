@@ -31,6 +31,7 @@ from src.api.schemas import (
     ProposalInfo,
     PushReviewRequest,
     PushReviewResponse,
+    ReviewQueueItem,
     ResourceInfo,
     ResourceSegmentInfo,
     ResourceUploadResponse,
@@ -387,28 +388,50 @@ def get_events(after: int = 0, limit: int = 50) -> EventListResponse:
         events=items,
     )
 
-# ========== 已修复：适配前端传 content，不再报错422 ==========
-@app.post("/v1/session/review/push", tags=["session"])
-def push_review_topic(payload: dict):
+# ========== review queue now prefers topic_id and keeps content as compatibility alias ==========
+@app.post("/v1/session/review/push", response_model=PushReviewResponse, tags=["session"])
+def push_review_topic(payload: PushReviewRequest) -> PushReviewResponse:
+    backend = get_backend()
+    requested_topic_id = (payload.topic_id or payload.content or "").strip()
+    if not requested_topic_id:
+        raise HTTPException(status_code=400, detail="topic_id is required")
+
+    topic = backend.get_topic(requested_topic_id)
+    if topic is None:
+        raise HTTPException(status_code=404, detail=f"topic_id not found: {requested_topic_id}")
+
     runtime = get_runtime()
-    content = payload.get("content", "默认推送内容")
-    state, queued = runtime.push_review_topic(content)
-    return {
-        "session_id": SINGLE_SESSION_ID,
-        "queued": queued,
-        "topic_id": content,
-        "review_queue_size": len(state.learning.review_queue),
-    }
+    state, queued = runtime.push_review_topic(requested_topic_id)
+    return PushReviewResponse(
+        session_id=SINGLE_SESSION_ID,
+        queued=queued,
+        topic_id=requested_topic_id,
+        review_queue_size=len(state.learning.review_queue),
+    )
 
 
 @app.get("/v1/session/review-queue", response_model=ReviewQueueResponse, tags=["session"])
 def get_review_queue() -> ReviewQueueResponse:
+    backend = get_backend()
     runtime = get_runtime()
     state = runtime.load_state()
+    items: list[ReviewQueueItem] = []
+    for topic_id in state.learning.review_queue:
+        topic = backend.get_topic(topic_id)
+        resources = backend.list_resources_by_topic(topic_id)
+        items.append(
+            ReviewQueueItem(
+                topic_id=topic_id,
+                title=topic.title if topic is not None else topic_id,
+                resource_count=len(resources),
+            )
+        )
+
     return ReviewQueueResponse(
         session_id=SINGLE_SESSION_ID,
         topics=list(state.learning.review_queue),
         size=len(state.learning.review_queue),
+        items=items,
     )
 
 

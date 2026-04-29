@@ -66,6 +66,9 @@ uvicorn src.api.app:app --host 0.0.0.0 --port 8090 --reload
 - `POST /v1/session/review/push`
 - `GET /v1/session/review-queue`
 - `GET /v1/knowledge/graph`
+- `POST /v1/resource/upload`
+- `GET /v1/resource/topics/{topic_id}`
+- `GET /v1/resource/files/{resource_id}`
 - `GET /v1/session/mastery`
 - `GET /v1/session/explore-window`
 - `POST /v1/session/explore-window/open`
@@ -128,6 +131,57 @@ uvicorn src.api.app:app --host 0.0.0.0 --port 8090 --reload
 - `explore_window_closed`
 - `graph_shadow_rollback`
 - 学习引擎事件（如 `mastery_update`、`graph_proposal`、`topic_transition`）
+
+### Review push
+
+请求优先使用 `topic_id`，兼容旧字段 `content` 作为别名：
+
+```json
+{
+  "topic_id": "topic_demo_01"
+}
+```
+
+返回关键字段：
+
+- `queued`
+- `topic_id`
+- `review_queue_size`
+
+### Review queue
+
+`GET /v1/session/review-queue` 仍保留 `topics` 字段，同时新增 `items`：
+
+- `topic_id`
+- `title`
+- `resource_count`
+
+### Resource upload
+
+`multipart/form-data`：
+
+- `file`：资源文件
+- `topic_id`：必须命中当前知识图谱节点
+- `resource_name`：家长命名
+- `category`：`learn` 或 `review`，默认 `learn`
+
+行为：
+
+1. 校验 `topic_id` 是否存在于当前 curriculum。
+2. 文件落盘到 `DATA_ROOT/resources`。
+3. 资源元数据写入 SQLite `resource_library`。
+4. 自动创建默认片段 `seg_full`。
+5. 当 `category=review` 时，同时进入复习队列。
+
+### Topic resources
+
+`GET /v1/resource/topics/{topic_id}` 返回该知识节点下的全部资源，当前字段包括：
+
+- `resource_id`
+- `resource_name`
+- `media_type`
+- `resource_url`
+- `segments`
 
 ### Explore window response
 

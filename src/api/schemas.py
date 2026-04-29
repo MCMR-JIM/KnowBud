@@ -101,7 +101,8 @@ class AudioTurnResponse(TurnResponse):
 
 
 class PushReviewRequest(BaseModel):
-    topic_id: str
+    topic_id: str | None = None
+    content: str | None = None
 
 
 class PushReviewResponse(BaseModel):
@@ -109,6 +110,12 @@ class PushReviewResponse(BaseModel):
     queued: bool
     topic_id: str
     review_queue_size: int
+
+
+class ReviewQueueItem(BaseModel):
+    topic_id: str
+    title: str
+    resource_count: int = 0
 
 
 class ResourceSegmentInfo(BaseModel):
@@ -188,6 +195,7 @@ class ReviewQueueResponse(BaseModel):
     session_id: str
     topics: list[str] = Field(default_factory=list)
     size: int
+    items: list[ReviewQueueItem] = Field(default_factory=list)
 
 
 class ExploreWindowOpenRequest(BaseModel):
