@@ -43,14 +43,37 @@ def _make_client(monkeypatch, tmp_path: Path, backend: SessionBackend) -> TestCl
 def test_upload_txt_ingests_segments_and_records_events(monkeypatch, tmp_path: Path) -> None:
     backend = _build_backend(tmp_path)
 
-    def fake_classify(*, chunk_text: str, topics: list[TopicNode]) -> dict[str, object]:
+    def fake_classify_or_propose(*, chunk_text: str, topics: list[TopicNode], default_parent_topic_id: str | None = None) -> dict[str, object]:
         if "恐龙" in chunk_text:
-            return {"topic_id": "demo_01", "confidence": 0.9, "reason": "片段讨论恐龙灭绝原因"}
+            return {
+                "decision": "link",
+                "topic_id": "demo_01",
+                "confidence": 0.9,
+                "reason": "片段讨论恐龙灭绝",
+                "proposed_topic": None,
+            }
         if "苹果" in chunk_text or "加" in chunk_text:
-            return {"topic_id": "math_01", "confidence": 0.85, "reason": "片段讲一位数加法"}
-        return {"topic_id": None, "confidence": 0.3, "reason": "内容过泛"}
+            return {
+                "decision": "propose",
+                "topic_id": None,
+                "confidence": 0.82,
+                "reason": "片段讲小行星撞击后的气候链式变化，现有节点不够细",
+                "proposed_topic": {
+                    "title": "小行星撞击导致的气候变化",
+                    "summary": "理解小行星撞击如何引发遮光、降温和生态变化",
+                    "parent_node_ids": ["demo_01"],
+                    "edge_type": "requires",
+                },
+            }
+        return {
+            "decision": "unclassified",
+            "topic_id": None,
+            "confidence": 0.3,
+            "reason": "内容过泛",
+            "proposed_topic": None,
+        }
 
-    backend.llm_skill.classify_resource_chunk = fake_classify
+    backend.llm_skill.classify_or_propose_resource_chunk = fake_classify_or_propose
     client = _make_client(monkeypatch, tmp_path, backend)
 
     content = (
@@ -79,9 +102,12 @@ def test_upload_txt_ingests_segments_and_records_events(monkeypatch, tmp_path: P
 
     second = segments[1]
     assert second["sequence_index"] == 1
-    assert second["status"] == "classified"
-    assert second["topic_id"] == "math_01"
-    assert second["confidence"] == 0.85
+    assert second["status"] == "proposed"
+    assert second["decision"] == "propose"
+    assert second["topic_id"] is None
+    assert second["proposal_id"]
+    assert second["proposed_topic_title"] == "小行星撞击导致的气候变化"
+    assert second["confidence"] == 0.82
     assert second["locator"] == {"kind": "txt", "line_start": 3, "line_end": 3}
     assert "3 加 2 等于 5" in second["text"]
 
@@ -102,23 +128,55 @@ def test_upload_txt_ingests_segments_and_records_events(monkeypatch, tmp_path: P
     assert ingested_payload == {
         "resource_id": resource_id,
         "segment_count": 2,
-        "classified_count": 2,
+        "classified_count": 1,
+        "proposed_count": 1,
         "unclassified_count": 0,
+        "parse_failed_count": 0,
+        "unsupported_count": 0,
         "media_type": "txt",
     }
+
+    graph_response = client.get("/v1/knowledge/graph")
+    assert graph_response.status_code == 200
+    proposals = graph_response.json()["proposals"]
+    proposal = next((item for item in proposals if item["proposal_id"] == second["proposal_id"]), None)
+    assert proposal is not None
+    assert proposal["title"] == "小行星撞击导致的气候变化"
+    assert proposal["summary"] == "理解小行星撞击如何引发遮光、降温和生态变化"
+    assert proposal["trigger"] == "resource_ingest"
+    assert proposal["parent_node_ids"] == ["demo_01"]
+    assert proposal["edge_type"] == "requires"
+    assert proposal["status"] == "proposed"
+
+    state = backend.load_app_state(include_history=False)
+    proposal_record = next(rec for rec in state.learning.graph_proposals if rec.proposal_id == second["proposal_id"])
+    assert proposal_record.trigger == "resource_ingest"
+    assert proposal_record.status == "proposed"
+    assert proposal_record.parent_node_ids == ["demo_01"]
 
 
 def test_document_ingestion_marks_null_and_low_confidence_as_unclassified(tmp_path: Path) -> None:
     backend = _build_backend(tmp_path)
 
-    def fake_classify(*, chunk_text: str, topics: list[TopicNode]) -> dict[str, object]:
+    def fake_classify_or_propose(*, chunk_text: str, topics: list[TopicNode], default_parent_topic_id: str | None = None) -> dict[str, object]:
         if "泛泛" in chunk_text:
-            return {"topic_id": None, "confidence": 0.3, "reason": "内容过泛"}
+            return {"decision": "unclassified", "topic_id": None, "confidence": 0.3, "reason": "内容过泛", "proposed_topic": None}
         if "加" in chunk_text:
-            return {"topic_id": "math_01", "confidence": 0.4, "reason": "置信度不足"}
-        return {"topic_id": None, "confidence": 0.2, "reason": "无法判断"}
+            return {
+                "decision": "propose",
+                "topic_id": None,
+                "confidence": 0.4,
+                "reason": "置信度不足",
+                "proposed_topic": {
+                    "title": "低置信度提案",
+                    "summary": "不应创建",
+                    "parent_node_ids": ["demo_01"],
+                    "edge_type": "requires",
+                },
+            }
+        return {"decision": "unclassified", "topic_id": None, "confidence": 0.2, "reason": "无法判断", "proposed_topic": None}
 
-    backend.llm_skill.classify_resource_chunk = fake_classify
+    backend.llm_skill.classify_or_propose_resource_chunk = fake_classify_or_propose
 
     source_path = tmp_path / "sample.txt"
     source_path.write_text("这是一段泛泛而谈的内容。\n\n3 加 2 等于 5。", encoding="utf-8")
@@ -140,7 +198,10 @@ def test_document_ingestion_marks_null_and_low_confidence_as_unclassified(tmp_pa
     assert all(segment.status == "unclassified" for segment in segments)
     assert segments[0].topic_id is None
     assert segments[1].topic_id is None
+    assert segments[1].decision == "unclassified"
+    assert segments[1].proposal_id is None
     assert segments[1].confidence == 0.4
+    assert backend.load_app_state(include_history=False).learning.graph_proposals == []
 
     stored_segments = backend.list_resource_segments(record.resource_id)
     assert [segment.status for segment in stored_segments] == ["unclassified", "unclassified"]
@@ -148,7 +209,13 @@ def test_document_ingestion_marks_null_and_low_confidence_as_unclassified(tmp_pa
 
 def test_upload_doc_does_not_fail_and_creates_unsupported_segment(monkeypatch, tmp_path: Path) -> None:
     backend = _build_backend(tmp_path)
-    backend.llm_skill.classify_resource_chunk = lambda **_: {"topic_id": None, "confidence": 0.0, "reason": "不需要分类"}
+    backend.llm_skill.classify_or_propose_resource_chunk = lambda **_: {
+        "decision": "unclassified",
+        "topic_id": None,
+        "confidence": 0.0,
+        "reason": "不需要分类",
+        "proposed_topic": None,
+    }
     client = _make_client(monkeypatch, tmp_path, backend)
 
     response = client.post(
@@ -167,14 +234,14 @@ def test_upload_doc_does_not_fail_and_creates_unsupported_segment(monkeypatch, t
 def test_get_topic_resources_includes_resources_matched_by_segment_topic(monkeypatch, tmp_path: Path) -> None:
     backend = _build_backend(tmp_path)
 
-    def fake_classify(*, chunk_text: str, topics: list[TopicNode]) -> dict[str, object]:
+    def fake_classify_or_propose(*, chunk_text: str, topics: list[TopicNode], default_parent_topic_id: str | None = None) -> dict[str, object]:
         if "恐龙" in chunk_text:
-            return {"topic_id": "demo_01", "confidence": 0.9, "reason": "片段讨论恐龙灭绝原因"}
+            return {"decision": "link", "topic_id": "demo_01", "confidence": 0.9, "reason": "片段讨论恐龙灭绝原因", "proposed_topic": None}
         if "加" in chunk_text or "苹果" in chunk_text:
-            return {"topic_id": "math_01", "confidence": 0.85, "reason": "片段讲一位数加法"}
-        return {"topic_id": None, "confidence": 0.3, "reason": "内容过泛"}
+            return {"decision": "link", "topic_id": "math_01", "confidence": 0.85, "reason": "片段讲一位数加法", "proposed_topic": None}
+        return {"decision": "unclassified", "topic_id": None, "confidence": 0.3, "reason": "内容过泛", "proposed_topic": None}
 
-    backend.llm_skill.classify_resource_chunk = fake_classify
+    backend.llm_skill.classify_or_propose_resource_chunk = fake_classify_or_propose
     client = _make_client(monkeypatch, tmp_path, backend)
 
     content = (
@@ -199,3 +266,78 @@ def test_get_topic_resources_includes_resources_matched_by_segment_topic(monkeyp
     assert resource is not None
     assert any(segment["topic_id"] == "math_01" for segment in resource["segments"])
     assert any(segment["topic_id"] == "demo_01" for segment in resource["segments"])
+
+
+def test_document_ingestion_links_existing_topic(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+
+    backend.llm_skill.classify_or_propose_resource_chunk = lambda **_: {
+        "decision": "link",
+        "topic_id": "demo_01",
+        "confidence": 0.9,
+        "reason": "片段讨论恐龙灭绝",
+        "proposed_topic": None,
+    }
+
+    source_path = tmp_path / "sample.txt"
+    source_path.write_text("恐龙为什么会灭绝？", encoding="utf-8")
+    record = backend.create_resource_record(
+        topic_id="demo_01",
+        resource_name="链接测试",
+        category="learn",
+        media_type="txt",
+        mime_type="text/plain",
+        original_filename="sample.txt",
+        stored_path=str(source_path),
+        size_bytes=source_path.stat().st_size,
+    )
+
+    topics = backend.load_app_state(include_history=False).curriculum.topics
+    segments = ingest_document_resource(backend=backend, record=record, topics=topics, default_topic_id="demo_01")
+
+    assert len(segments) == 1
+    assert segments[0].status == "classified"
+    assert segments[0].decision == "link"
+    assert segments[0].topic_id == "demo_01"
+    assert segments[0].proposal_id is None
+
+
+def test_document_ingestion_cleans_invalid_parent_ids_with_default_parent(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+
+    backend.llm_skill.classify_or_propose_resource_chunk = lambda **_: {
+        "decision": "propose",
+        "topic_id": None,
+        "confidence": 0.82,
+        "reason": "片段讲小行星撞击后的气候链式变化，现有节点不够细",
+        "proposed_topic": {
+            "title": "小行星撞击导致的气候变化",
+            "summary": "理解小行星撞击如何引发遮光、降温和生态变化",
+            "parent_node_ids": ["missing_topic"],
+            "edge_type": "requires",
+        },
+    }
+
+    source_path = tmp_path / "sample.txt"
+    source_path.write_text("小行星撞击会改变气候。", encoding="utf-8")
+    record = backend.create_resource_record(
+        topic_id="demo_01",
+        resource_name="父节点清理测试",
+        category="learn",
+        media_type="txt",
+        mime_type="text/plain",
+        original_filename="sample.txt",
+        stored_path=str(source_path),
+        size_bytes=source_path.stat().st_size,
+    )
+
+    topics = backend.load_app_state(include_history=False).curriculum.topics
+    segments = ingest_document_resource(backend=backend, record=record, topics=topics, default_topic_id="demo_01")
+
+    assert len(segments) == 1
+    assert segments[0].status == "proposed"
+    assert segments[0].proposal_id is not None
+
+    state = backend.load_app_state(include_history=False)
+    proposal = next(rec for rec in state.learning.graph_proposals if rec.proposal_id == segments[0].proposal_id)
+    assert proposal.parent_node_ids == ["demo_01"]

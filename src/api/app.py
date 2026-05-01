@@ -497,7 +497,12 @@ async def upload_resource(
 
     if media_type in {"txt", "pdf", "docx", "pptx", "doc"}:
         topics = backend.load_app_state(include_history=False).curriculum.topics
-        segments = ingest_document_resource(backend=backend, record=record, topics=topics)
+        segments = ingest_document_resource(
+            backend=backend,
+            record=record,
+            topics=topics,
+            default_topic_id=normalized_topic_id,
+        )
         record = record.model_copy(update={"segments": segments})
 
     runtime = get_runtime()
@@ -523,14 +528,20 @@ async def upload_resource(
 
     if media_type in {"txt", "pdf", "docx", "pptx", "doc"}:
         classified_count = sum(1 for segment in record.segments if segment.status == "classified")
+        proposed_count = sum(1 for segment in record.segments if segment.status == "proposed")
         unclassified_count = sum(1 for segment in record.segments if segment.status == "unclassified")
+        parse_failed_count = sum(1 for segment in record.segments if segment.status == "parse_failed")
+        unsupported_count = sum(1 for segment in record.segments if segment.status == "unsupported")
         backend.append_learning_event(
             kind="resource_ingested",
             payload={
                 "resource_id": record.resource_id,
                 "segment_count": len(record.segments),
                 "classified_count": classified_count,
+                "proposed_count": proposed_count,
                 "unclassified_count": unclassified_count,
+                "parse_failed_count": parse_failed_count,
+                "unsupported_count": unsupported_count,
                 "media_type": media_type,
             },
         )
@@ -857,7 +868,10 @@ def _proposal_info(record) -> ProposalInfo:
     return ProposalInfo(
         proposal_id=record.proposal_id,
         title=record.title,
+        summary=record.summary,
         trigger=record.trigger,
+        parent_node_ids=list(record.parent_node_ids),
+        edge_type=record.edge_type,
         status=record.status,
         reason=record.reason,
         created_topic_id=record.created_topic_id,
@@ -906,6 +920,9 @@ def _resource_segment_info(segment) -> ResourceSegmentInfo:
         text=segment.text,
         locator=segment.locator,
         topic_id=segment.topic_id,
+        proposal_id=segment.proposal_id,
+        proposed_topic_title=segment.proposed_topic_title,
+        decision=segment.decision,
         confidence=segment.confidence,
         reason=segment.reason,
     )

@@ -12,6 +12,7 @@ from typing import AsyncIterator
 
 from src.core.enums import UserIntent, LearningPhase
 from src.core.models import AppState, UserProfile, LearningState, CurriculumConfig, TopicNode, PendingQuestion, ErrorRecord, LearningEvent, GraphProposalRecord, ResourceRecord, ResourceSegment
+from src.agent.models import EdgeType, GraphMutationProposal
 from src.core.decision_engine import DecisionEngine
 from src.skills.base_skill import SkillContext
 from src.skills.voice_io_skill import VoiceIOSkill
@@ -224,6 +225,34 @@ class SessionBackend:
                 (json.dumps([segment.model_dump() for segment in segments], ensure_ascii=False), resource_id),
             )
             conn.commit()
+
+    def create_graph_proposal_from_resource(
+        self,
+        *,
+        title: str,
+        summary: str,
+        parent_node_ids: list[str],
+        edge_type: str,
+        reason: str,
+    ) -> GraphProposalRecord:
+        state = self.load_app_state(include_history=False)
+        now = datetime.datetime.now(timezone.utc).isoformat()
+        safe_edge_type = edge_type if edge_type in {"requires", "supports", "related"} else "requires"
+        proposal = GraphMutationProposal(
+            proposal_id=f"proposal_{int(time.time() * 1000)}_{os.urandom(4).hex()}",
+            trigger="resource_ingest",
+            title=title.strip(),
+            summary=summary.strip(),
+            parent_node_ids=list(parent_node_ids),
+            edge_type=EdgeType(safe_edge_type),
+            reason=reason[:80],
+        )
+        self._upsert_graph_proposal(state=state, proposal=proposal)
+        record = next(rec for rec in state.learning.graph_proposals if rec.proposal_id == proposal.proposal_id)
+        record.created_ts = now
+        record.updated_ts = now
+        self.save_app_state(state)
+        return record
 
     def transcribe_audio(self, audio_bytes: bytes) -> str:
         if not audio_bytes:
@@ -828,6 +857,9 @@ class SessionBackend:
                 text TEXT NOT NULL,
                 locator_json TEXT NOT NULL,
                 topic_id TEXT,
+                proposal_id TEXT,
+                proposed_topic_title TEXT,
+                decision TEXT NOT NULL DEFAULT 'link',
                 confidence REAL NOT NULL,
                 status TEXT NOT NULL,
                 reason TEXT NOT NULL,
@@ -841,7 +873,22 @@ class SessionBackend:
             ON resource_segments(resource_id, sequence_index)
             """
         )
+        self._ensure_resource_segment_columns(conn)
         conn.commit()
+
+    @staticmethod
+    def _ensure_resource_segment_columns(conn: sqlite3.Connection) -> None:
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(resource_segments)").fetchall()
+            if row["name"] is not None
+        }
+        if "proposal_id" not in columns:
+            conn.execute("ALTER TABLE resource_segments ADD COLUMN proposal_id TEXT")
+        if "proposed_topic_title" not in columns:
+            conn.execute("ALTER TABLE resource_segments ADD COLUMN proposed_topic_title TEXT")
+        if "decision" not in columns:
+            conn.execute("ALTER TABLE resource_segments ADD COLUMN decision TEXT NOT NULL DEFAULT 'link'")
 
     def _load_state_row(self, conn: sqlite3.Connection) -> AppState | None:
         row = conn.execute("SELECT state_json FROM app_state WHERE state_id = 1").fetchone()
@@ -954,9 +1001,10 @@ class SessionBackend:
             """
             INSERT INTO resource_segments(
                 segment_id, resource_id, sequence_index, text, locator_json,
-                topic_id, confidence, status, reason, created_ts
+                topic_id, proposal_id, proposed_topic_title, decision,
+                confidence, status, reason, created_ts
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 segment.segment_id,
@@ -965,6 +1013,9 @@ class SessionBackend:
                 segment.text or "",
                 json.dumps(segment.locator, ensure_ascii=False),
                 segment.topic_id,
+                segment.proposal_id,
+                segment.proposed_topic_title,
+                segment.decision,
                 segment.confidence,
                 segment.status,
                 segment.reason,
@@ -976,7 +1027,8 @@ class SessionBackend:
         rows = conn.execute(
             """
             SELECT segment_id, resource_id, sequence_index, text, locator_json,
-                   topic_id, confidence, status, reason
+                   topic_id, proposal_id, proposed_topic_title, decision,
+                   confidence, status, reason
             FROM resource_segments
             WHERE resource_id = ?
             ORDER BY sequence_index ASC, segment_id ASC
@@ -1053,6 +1105,11 @@ class SessionBackend:
             text=str(row["text"]),
             locator=locator,
             topic_id=str(row["topic_id"]) if row["topic_id"] is not None else None,
+            proposal_id=str(row["proposal_id"]) if row["proposal_id"] is not None else None,
+            proposed_topic_title=(
+                str(row["proposed_topic_title"]) if row["proposed_topic_title"] is not None else None
+            ),
+            decision=str(row["decision"] or "link"),
             confidence=float(row["confidence"]),
             reason=str(row["reason"]),
         )

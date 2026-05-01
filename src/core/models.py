@@ -61,6 +61,9 @@ class ResourceSegment(BaseModel):
     text: Optional[str] = None
     locator: dict[str, Any] = Field(default_factory=dict)
     topic_id: Optional[str] = None
+    proposal_id: Optional[str] = None
+    proposed_topic_title: Optional[str] = None
+    decision: str = "link"
     confidence: float = 0.0
     reason: str = ""
 

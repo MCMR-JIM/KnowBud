@@ -41,7 +41,10 @@ class TopicInfo(BaseModel):
 class ProposalInfo(BaseModel):
     proposal_id: str
     title: str
+    summary: str = ""
     trigger: str
+    parent_node_ids: list[str] = Field(default_factory=list)
+    edge_type: str = "requires"
     status: str
     reason: str
     created_topic_id: Optional[str] = None
@@ -128,6 +131,9 @@ class ResourceSegmentInfo(BaseModel):
     text: Optional[str] = None
     locator: dict[str, Any] = Field(default_factory=dict)
     topic_id: Optional[str] = None
+    proposal_id: Optional[str] = None
+    proposed_topic_title: Optional[str] = None
+    decision: str = "link"
     confidence: float = 0.0
     reason: str = ""
 

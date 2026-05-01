@@ -27,6 +27,7 @@ def ingest_document_resource(
     backend: "SessionBackend",
     record: ResourceRecord,
     topics: list[TopicNode],
+    default_topic_id: str | None = None,
 ) -> list[ResourceSegment]:
     parser = _select_parser(record)
     if parser is None:
@@ -73,7 +74,16 @@ def ingest_document_resource(
 
     segments: list[ResourceSegment] = []
     for index, chunk in enumerate(chunks):
-        segments.append(_classify_chunk(backend=backend, resource_id=record.resource_id, sequence_index=index, chunk=chunk, topics=topics))
+        segments.append(
+            _classify_chunk(
+                backend=backend,
+                resource_id=record.resource_id,
+                sequence_index=index,
+                chunk=chunk,
+                topics=topics,
+                default_topic_id=default_topic_id or record.topic_id,
+            )
+        )
 
     backend.replace_resource_segments(record.resource_id, segments)
     return segments
@@ -271,37 +281,66 @@ def _classify_chunk(
     sequence_index: int,
     chunk: TextUnit,
     topics: list[TopicNode],
+    default_topic_id: str | None,
 ) -> ResourceSegment:
     text = chunk.text.strip()
-    topic_id: str | None = None
-    confidence = 0.0
-    reason = "未找到合适知识点"
     status = "unclassified"
+    normalized = {
+        "decision": "unclassified",
+        "topic_id": None,
+        "confidence": 0.0,
+        "reason": "未找到合适知识点",
+        "proposed_topic": None,
+    }
+    proposal_id: str | None = None
+    proposed_topic_title: str | None = None
 
     try:
-        result = backend.llm_skill.classify_resource_chunk(chunk_text=text, topics=topics)
+        result = backend.llm_skill.classify_or_propose_resource_chunk(
+            chunk_text=text,
+            topics=topics,
+            default_parent_topic_id=default_topic_id,
+        )
         if isinstance(result, dict):
-            raw_topic_id = result.get("topic_id")
-            topic_id = raw_topic_id if isinstance(raw_topic_id, str) and raw_topic_id else None
-            raw_confidence = result.get("confidence", 0.0)
-            try:
-                confidence = max(0.0, min(1.0, float(raw_confidence)))
-            except (TypeError, ValueError):
-                confidence = 0.0
-            raw_reason = result.get("reason", reason)
-            if isinstance(raw_reason, str) and raw_reason.strip():
-                reason = raw_reason.strip()[:80]
+            normalized = _normalize_chunk_decision(result=result, topics=topics, default_topic_id=default_topic_id)
+            if normalized["decision"] == "propose":
+                proposed_topic = normalized["proposed_topic"]
+                if isinstance(proposed_topic, dict):
+                    try:
+                        proposal = backend.create_graph_proposal_from_resource(
+                            title=str(proposed_topic["title"]),
+                            summary=str(proposed_topic.get("summary", "")),
+                            parent_node_ids=[str(item) for item in proposed_topic.get("parent_node_ids", [])],
+                            edge_type=str(proposed_topic.get("edge_type", "requires")),
+                            reason=str(normalized["reason"]),
+                        )
+                        proposal_id = proposal.proposal_id
+                        proposed_topic_title = proposal.title
+                    except Exception:
+                        normalized = {
+                            "decision": "unclassified",
+                            "topic_id": None,
+                            "confidence": float(normalized["confidence"]),
+                            "reason": str(normalized["reason"]),
+                            "proposed_topic": None,
+                        }
     except Exception as exc:
-        reason = f"分类失败: {str(exc)[:60]}"
+        normalized = {
+            "decision": "unclassified",
+            "topic_id": None,
+            "confidence": 0.0,
+            "reason": f"分类失败: {str(exc)[:60]}",
+            "proposed_topic": None,
+        }
 
-    valid_topic_ids = {topic.topic_id for topic in topics}
-    if topic_id not in valid_topic_ids:
-        topic_id = None
-    if topic_id and confidence >= CLASSIFIED_THRESHOLD:
+    if normalized["decision"] == "link" and normalized["topic_id"]:
         status = "classified"
+    elif normalized["decision"] == "propose" and proposal_id:
+        status = "proposed"
     else:
-        topic_id = None
         status = "unclassified"
+        proposal_id = None
+        proposed_topic_title = None
 
     return ResourceSegment(
         segment_id=_segment_id(resource_id, sequence_index),
@@ -312,10 +351,87 @@ def _classify_chunk(
         sequence_index=sequence_index,
         text=text,
         locator=dict(chunk.locator),
-        topic_id=topic_id,
-        confidence=confidence,
-        reason=reason,
+        topic_id=str(normalized["topic_id"]) if normalized["topic_id"] is not None else None,
+        proposal_id=proposal_id,
+        proposed_topic_title=proposed_topic_title,
+        decision=str(normalized["decision"]),
+        confidence=float(normalized["confidence"]),
+        reason=str(normalized["reason"]),
     )
+
+
+def _normalize_chunk_decision(
+    *,
+    result: dict[str, object],
+    topics: list[TopicNode],
+    default_topic_id: str | None,
+) -> dict[str, object]:
+    valid_topic_ids = {topic.topic_id for topic in topics}
+    allowed_decisions = {"link", "propose", "unclassified"}
+    allowed_edge_types = {"requires", "supports", "related"}
+
+    raw_decision = result.get("decision")
+    decision = raw_decision if isinstance(raw_decision, str) and raw_decision in allowed_decisions else "unclassified"
+    raw_topic_id = result.get("topic_id")
+    topic_id = raw_topic_id if isinstance(raw_topic_id, str) and raw_topic_id in valid_topic_ids else None
+    raw_reason = result.get("reason")
+    reason = raw_reason.strip()[:80] if isinstance(raw_reason, str) and raw_reason.strip() else "未找到合适知识点"
+
+    raw_confidence = result.get("confidence", 0.0)
+    try:
+        confidence = max(0.0, min(1.0, float(raw_confidence)))
+    except (TypeError, ValueError):
+        confidence = 0.0
+
+    proposed_topic: dict[str, object] | None = None
+    if decision == "propose":
+        raw_proposed_topic = result.get("proposed_topic")
+        if isinstance(raw_proposed_topic, dict):
+            raw_title = raw_proposed_topic.get("title")
+            title = raw_title.strip()[:120] if isinstance(raw_title, str) else ""
+            raw_summary = raw_proposed_topic.get("summary")
+            summary = raw_summary.strip()[:500] if isinstance(raw_summary, str) else ""
+            raw_parent_ids = raw_proposed_topic.get("parent_node_ids")
+            parent_node_ids = [
+                item for item in raw_parent_ids if isinstance(item, str) and item in valid_topic_ids
+            ] if isinstance(raw_parent_ids, list) else []
+            if not parent_node_ids and default_topic_id in valid_topic_ids:
+                parent_node_ids = [default_topic_id]
+            raw_edge_type = raw_proposed_topic.get("edge_type")
+            edge_type = raw_edge_type if isinstance(raw_edge_type, str) and raw_edge_type in allowed_edge_types else "requires"
+            if title:
+                proposed_topic = {
+                    "title": title,
+                    "summary": summary,
+                    "parent_node_ids": parent_node_ids,
+                    "edge_type": edge_type,
+                }
+
+    if confidence < CLASSIFIED_THRESHOLD:
+        decision = "unclassified"
+
+    if decision == "link":
+        if topic_id is None:
+            decision = "unclassified"
+    elif decision == "propose":
+        topic_id = None
+        if proposed_topic is None:
+            decision = "unclassified"
+    else:
+        topic_id = None
+        proposed_topic = None
+
+    if decision == "unclassified":
+        topic_id = None
+        proposed_topic = None
+
+    return {
+        "decision": decision,
+        "topic_id": topic_id,
+        "confidence": confidence,
+        "reason": reason,
+        "proposed_topic": proposed_topic,
+    }
 
 
 def _status_segment(
@@ -336,6 +452,7 @@ def _status_segment(
         text="",
         locator=locator,
         topic_id=None,
+        decision="unclassified",
         confidence=0.0,
         reason=reason[:80],
     )
