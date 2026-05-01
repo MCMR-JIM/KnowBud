@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { BookOpen, AlertCircle, Clock, Video, Info } from 'lucide-react';
 
 export default function AdminDashboard() {
   const navigate = useNavigate();
@@ -34,6 +35,10 @@ export default function AdminDashboard() {
   const [knowledgePoints, setKnowledgePoints] = useState<{ id: number, topicId: string, name: string, lastReview: string, resourceCount: number }[]>([]);
   const [engineLogs, setEngineLogs] = useState<string[]>([]);
   const [dataLoading, setDataLoading] = useState(false);
+  // 知识图谱状态
+  const [graphNodes, setGraphNodes] = useState<any[]>([]);
+  const [selectedNode, setSelectedNode] = useState<any | null>(null);
+  const [isModalOpen, setIsModalOpen] = useState(false);
 
   // 页面加载时自动获取后端数据
   useEffect(() => {
@@ -61,6 +66,7 @@ export default function AdminDashboard() {
       const graphRes = await fetch(`${apiBaseUrl}/knowledge/graph`);
       if (graphRes.ok) {
         const graphData = await graphRes.json();
+        // 原来的处理逻辑
         const topics = (graphData.topics || []).map((topic: any) => ({
           topicId: topic.topic_id,
           title: topic.title,
@@ -68,6 +74,9 @@ export default function AdminDashboard() {
         setKnowledgeTopics(topics);
         setSelectedUploadTopicId((prev) => topics.some((topic: { topicId: string }) => topic.topicId === prev) ? prev : (topics[0]?.topicId || ''));
         setSelectedPushTopicId((prev) => topics.some((topic: { topicId: string }) => topic.topicId === prev) ? prev : (topics[0]?.topicId || ''));
+        
+        // 【新增】保存完整的知识图谱节点，供右侧渲染使用
+        setGraphNodes(graphData.topics || []);
       }
 
       // ================= 真实计算开始 =================
@@ -618,23 +627,50 @@ export default function AdminDashboard() {
           </div>
         )}
 
-        {/* 3. 错题本与回放 */}
+        {/* 3. 错题本与回放 (已重构版) */}
         {activeTab === 'mistake' && (
-          <div className="grid grid-cols-2 gap-6">
-            <div className="bg-white/80 backdrop-blur rounded-2xl p-6 shadow-sm">
-              <h2 className="text-lg font-semibold text-pink-500 mb-4">📚 AI 智能错题本</h2>
-              <p className="text-xs text-gray-400 mb-4">系统依据 FSM 状态机，自动抓取未掌握的知识点。</p>
-              {dataLoading ? (
-                <div className="text-center py-6 text-gray-500">加载错题数据中...</div>
-              ) : knowledgePoints.length === 0 ? (
-                <div className="text-center py-6 text-gray-400">暂无错题数据，孩子表现很棒！</div>
-              ) : (
-                <div className="space-y-3">
-                  {knowledgePoints.map((kp) => (
-                    <div key={kp.id} className="bg-gray-50 rounded-lg p-3">
-                      <p className="text-sm font-medium">{kp.name}</p>
-                      <p className="text-xs text-gray-500 mt-1">节点资源数：{kp.resourceCount}</p>
-                      <p className="text-xs text-gray-400">首次出错时间：{kp.lastReview}</p>
+          <div className="flex flex-col md:flex-row gap-6 h-[600px]">
+            
+            {/* 左侧：智能错题流 (重构排版) */}
+            <div className="flex-[4] bg-white/80 backdrop-blur rounded-2xl p-6 shadow-sm flex flex-col h-full border-t-4 border-pink-400">
+              <div className="flex items-center gap-2 mb-2">
+                <BookOpen className="text-pink-500" size={24} />
+                <h2 className="text-xl font-bold text-gray-800">智能错题流</h2>
+              </div>
+              <p className="text-xs text-gray-500 mb-6 pb-4 border-b border-gray-100">
+                系统依据 FSM 状态机自动抓取，拒绝无效刷题
+              </p>
+              
+              <div className="flex-1 overflow-y-auto space-y-4 pr-2 scrollbar-hide">
+                {dataLoading ? (
+                  <div className="text-center py-6 text-gray-400 animate-pulse">正在从底层读取错题本...</div>
+                ) : knowledgePoints.length === 0 ? (
+                  <div className="text-center py-10 bg-gray-50 rounded-xl border border-dashed border-gray-200">
+                    <span className="text-4xl block mb-2">🏆</span>
+                    <p className="text-gray-500 font-medium">太棒了，暂无错题记录！</p>
+                  </div>
+                ) : (
+                  knowledgePoints.map((kp) => (
+                    <div key={kp.id} className="bg-white border border-gray-100 rounded-xl p-4 shadow-sm hover:shadow-md transition-shadow relative overflow-hidden group">
+                      <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-gradient-to-b from-pink-300 to-pink-500"></div>
+                      <div className="flex justify-between items-start mb-3">
+                        <h3 className="font-bold text-gray-800 text-base">{kp.name}</h3>
+                        <span className="bg-pink-50 text-pink-600 text-xs px-2 py-1 rounded-md font-medium flex items-center gap-1">
+                          <AlertCircle size={12} /> 待攻克
+                        </span>
+                      </div>
+                      
+                      <div className="grid grid-cols-2 gap-2 mb-4">
+                        <div className="flex items-center gap-2 text-xs text-gray-500 bg-gray-50 p-2 rounded-lg">
+                          <Video size={14} className="text-blue-400" />
+                          <span>相关视频: <strong className="text-gray-700">{kp.resourceCount}</strong></span>
+                        </div>
+                        <div className="flex items-center gap-2 text-xs text-gray-500 bg-gray-50 p-2 rounded-lg">
+                          <Clock size={14} className="text-orange-400" />
+                          <span className="truncate" title={kp.lastReview}>首错: {kp.lastReview.split(' ')[0]}</span>
+                        </div>
+                      </div>
+                      
                       <button 
                         onClick={async () => {
                           try {
@@ -643,27 +679,125 @@ export default function AdminDashboard() {
                               headers: { "Content-Type": "application/json" },
                               body: JSON.stringify({ topic_id: kp.topicId })
                             });
-                            alert("✅ 已再次推送提问");
+                            alert("✅ 任务已推送到孩子的魔法舱！");
                           } catch (e) {
-                            alert("❌ 推送失败");
+                            alert("❌ 推送失败，请检查网络");
                           }
                         }}
-                        className="mt-2 text-xs text-blue-500 cursor-pointer hover:underline"
+                        className="w-full py-2.5 bg-gray-900 text-white text-sm font-bold rounded-lg hover:bg-pink-500 transition-colors cursor-pointer"
                       >
-                        再次推送提问
+                        ⚡ 立即派发重测任务
                       </button>
                     </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="bg-white/80 backdrop-blur rounded-2xl p-6 shadow-sm">
-              <h2 className="text-lg font-semibold text-gray-700 mb-4">🎙️ 交互原声与回放库</h2>
-              <div className="text-center py-6 text-gray-400">
-                回放功能需对接后端音频存储接口
+                  ))
+                )}
               </div>
             </div>
+
+            {/* 右侧：全局知识图谱 (新增) */}
+            <div className="flex-[6] bg-white/80 backdrop-blur rounded-2xl p-6 shadow-sm flex flex-col h-full border-t-4 border-blue-400 relative">
+              <div className="flex justify-between items-center mb-6">
+                <div>
+                  <h2 className="text-xl font-bold text-gray-800">全局知识拓扑图</h2>
+                  <p className="text-xs text-gray-500 mt-1">点击知识节点查看详细掌握度</p>
+                </div>
+                <div className="bg-blue-50 text-blue-600 px-3 py-1 rounded-full text-xs font-medium border border-blue-100">
+                  全自动生成
+                </div>
+              </div>
+
+              {/* 画布区域 */}
+              <div className="flex-1 bg-gray-50/50 border border-gray-100 rounded-xl overflow-auto p-8 relative flex items-center justify-center">
+                {graphNodes.length === 0 ? (
+                  <p className="text-gray-400">图谱生成中...</p>
+                ) : (
+                  <div className="flex flex-col items-center gap-8 relative">
+                    {/* 一条贯穿的连接主线 */}
+                    <div className="absolute top-10 bottom-10 w-1 bg-gradient-to-b from-blue-300 via-pink-300 to-purple-300 z-0"></div>
+                    
+                    {graphNodes.map((node, idx) => (
+                      <div 
+                        key={node.topic_id}
+                        onClick={() => {
+                          setSelectedNode(node);
+                          setIsModalOpen(true);
+                        }}
+                        className="relative z-10 flex flex-col items-center cursor-pointer group"
+                      >
+                        <div className={`w-16 h-16 rounded-full flex items-center justify-center shadow-md border-4 transition-transform group-hover:scale-110 ${
+                          idx === 0 ? 'bg-blue-100 border-blue-400 text-blue-700' :
+                          idx === graphNodes.length - 1 ? 'bg-purple-100 border-purple-400 text-purple-700' :
+                          'bg-white border-gray-300 text-gray-600'
+                        }`}>
+                          <span className="font-bold">{idx + 1}</span>
+                        </div>
+                        <div className="bg-white px-4 py-1.5 rounded-full shadow-sm border border-gray-200 mt-2 text-sm font-bold text-gray-700 group-hover:border-blue-400 group-hover:text-blue-600 transition-colors">
+                          {node.title}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* 弹窗组件 (Modal) */}
+            {isModalOpen && selectedNode && (
+              <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in duration-200">
+                  <div className="bg-gradient-to-r from-blue-500 to-blue-600 p-6 text-white relative">
+                    <button 
+                      onClick={() => setIsModalOpen(false)}
+                      className="absolute top-4 right-4 text-white/70 hover:text-white cursor-pointer"
+                    >
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                    </button>
+                    <div className="flex items-center gap-3">
+                      <div className="bg-white/20 p-2 rounded-lg">
+                        <Info size={24} />
+                      </div>
+                      <div>
+                        <p className="text-blue-100 text-xs font-medium uppercase tracking-wider">Node Details</p>
+                        <h2 className="text-2xl font-bold">{selectedNode.title}</h2>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div className="p-6 space-y-4">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="bg-gray-50 p-4 rounded-xl border border-gray-100 text-center">
+                        <p className="text-xs text-gray-500 mb-1">绑定学习资源</p>
+                        <p className="text-3xl font-black text-gray-800">{selectedNode.resources?.length || 0}</p>
+                      </div>
+                      <div className="bg-pink-50 p-4 rounded-xl border border-pink-100 text-center">
+                        <p className="text-xs text-pink-600 mb-1">累积错题数</p>
+                        <p className="text-3xl font-black text-pink-600">{knowledgePoints.find(k => k.topicId === selectedNode.topic_id) ? '1' : '0'}</p>
+                      </div>
+                    </div>
+                    
+                    <div className="bg-blue-50/50 border border-blue-100 p-4 rounded-xl">
+                      <h4 className="text-sm font-bold text-gray-700 mb-2 flex items-center gap-2">
+                        <Clock size={16} className="text-blue-500" /> 近期动态
+                      </h4>
+                      <p className="text-sm text-gray-600">
+                        {knowledgePoints.find(k => k.topicId === selectedNode.topic_id) 
+                          ? `最后出错时间: ${knowledgePoints.find(k => k.topicId === selectedNode.topic_id)?.lastReview}`
+                          : "目前掌握良好，暂无报错记录。"}
+                      </p>
+                    </div>
+                  </div>
+                  
+                  <div className="p-4 bg-gray-50 border-t border-gray-100 text-right">
+                    <button 
+                      onClick={() => setIsModalOpen(false)}
+                      className="px-6 py-2 bg-gray-200 text-gray-700 font-medium rounded-lg hover:bg-gray-300 transition-colors cursor-pointer"
+                    >
+                      关闭
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
 

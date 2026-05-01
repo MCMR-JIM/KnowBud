@@ -41,4 +41,7 @@ export const SessionAPI = {
   // 开启/关闭自由探索奖励时间窗
   openExploreWindow: (minutes: number = 5) => apiClient.post('/session/explore-window/open', { minutes }),
   closeExploreWindow: () => apiClient.post('/session/explore-window/close'),
-};  
+
+  // ================= 5. 知识图谱 (新增) =================
+  getKnowledgeGraph: () => apiClient.get('/knowledge/graph'),
+};
