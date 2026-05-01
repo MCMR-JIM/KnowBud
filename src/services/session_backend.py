@@ -170,6 +170,9 @@ class SessionBackend:
         return record
 
     def list_resources_by_topic(self, topic_id: str) -> list[ResourceRecord]:
+        return self.list_resources_related_to_topic(topic_id)
+
+    def list_resources_related_to_topic(self, topic_id: str) -> list[ResourceRecord]:
         with self._db_connection() as conn:
             self._ensure_storage_initialized(conn)
             rows = conn.execute(
@@ -177,12 +180,17 @@ class SessionBackend:
                 SELECT resource_id, topic_id, resource_name, category, media_type, mime_type,
                        original_filename, stored_path, size_bytes, created_ts, segments_json
                 FROM resource_library
-                WHERE topic_id = ?
+                WHERE resource_id IN (
+                    SELECT DISTINCT r.resource_id
+                    FROM resource_library r
+                    LEFT JOIN resource_segments s ON s.resource_id = r.resource_id
+                    WHERE r.topic_id = ? OR s.topic_id = ?
+                )
                 ORDER BY created_ts DESC, resource_id DESC
                 """,
-                (topic_id,),
+                (topic_id, topic_id),
             ).fetchall()
-        return [self._resource_from_row(row) for row in rows]
+            return [self._resource_from_row(conn, row) for row in rows]
 
     def get_resource(self, resource_id: str) -> ResourceRecord | None:
         with self._db_connection() as conn:
@@ -196,9 +204,26 @@ class SessionBackend:
                 """,
                 (resource_id,),
             ).fetchone()
-        if row is None:
-            return None
-        return self._resource_from_row(row)
+            if row is None:
+                return None
+            return self._resource_from_row(conn, row)
+
+    def list_resource_segments(self, resource_id: str) -> list[ResourceSegment]:
+        with self._db_connection() as conn:
+            self._ensure_storage_initialized(conn)
+            return self._load_resource_segments(conn, resource_id)
+
+    def replace_resource_segments(self, resource_id: str, segments: list[ResourceSegment]) -> None:
+        with self._db_connection() as conn:
+            self._ensure_storage_initialized(conn)
+            conn.execute("DELETE FROM resource_segments WHERE resource_id = ?", (resource_id,))
+            for segment in segments:
+                self._insert_resource_segment_row(conn, resource_id, segment)
+            conn.execute(
+                "UPDATE resource_library SET segments_json = ? WHERE resource_id = ?",
+                (json.dumps([segment.model_dump() for segment in segments], ensure_ascii=False), resource_id),
+            )
+            conn.commit()
 
     def transcribe_audio(self, audio_bytes: bytes) -> str:
         if not audio_bytes:
@@ -794,6 +819,28 @@ class SessionBackend:
             ON resource_library(topic_id, created_ts DESC)
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS resource_segments (
+                segment_id TEXT PRIMARY KEY,
+                resource_id TEXT NOT NULL,
+                sequence_index INTEGER NOT NULL,
+                text TEXT NOT NULL,
+                locator_json TEXT NOT NULL,
+                topic_id TEXT,
+                confidence REAL NOT NULL,
+                status TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                created_ts TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_resource_segments_resource
+            ON resource_segments(resource_id, sequence_index)
+            """
+        )
         conn.commit()
 
     def _load_state_row(self, conn: sqlite3.Connection) -> AppState | None:
@@ -902,6 +949,44 @@ class SessionBackend:
         )
         conn.commit()
 
+    def _insert_resource_segment_row(self, conn: sqlite3.Connection, resource_id: str, segment: ResourceSegment) -> None:
+        conn.execute(
+            """
+            INSERT INTO resource_segments(
+                segment_id, resource_id, sequence_index, text, locator_json,
+                topic_id, confidence, status, reason, created_ts
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                segment.segment_id,
+                resource_id,
+                segment.sequence_index,
+                segment.text or "",
+                json.dumps(segment.locator, ensure_ascii=False),
+                segment.topic_id,
+                segment.confidence,
+                segment.status,
+                segment.reason,
+                datetime.datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+
+    def _load_resource_segments(self, conn: sqlite3.Connection, resource_id: str) -> list[ResourceSegment]:
+        rows = conn.execute(
+            """
+            SELECT segment_id, resource_id, sequence_index, text, locator_json,
+                   topic_id, confidence, status, reason
+            FROM resource_segments
+            WHERE resource_id = ?
+            ORDER BY sequence_index ASC, segment_id ASC
+            """,
+            (resource_id,),
+        ).fetchall()
+        if rows:
+            return [self._resource_segment_from_row(row) for row in rows]
+        return []
+
     @staticmethod
     def _event_from_row(row: sqlite3.Row) -> LearningEvent:
         payload_obj = {}
@@ -921,11 +1006,10 @@ class SessionBackend:
             audio_file_path=row["audio_file_path"],
         )
 
-    @staticmethod
-    def _resource_from_row(row: sqlite3.Row) -> ResourceRecord:
-        segments: list[ResourceSegment] = []
+    def _resource_from_row(self, conn: sqlite3.Connection, row: sqlite3.Row) -> ResourceRecord:
+        segments = self._load_resource_segments(conn, str(row["resource_id"]))
         segments_text = row["segments_json"]
-        if segments_text:
+        if not segments and segments_text:
             try:
                 parsed = json.loads(segments_text)
                 if isinstance(parsed, list):
@@ -945,6 +1029,32 @@ class SessionBackend:
             size_bytes=int(row["size_bytes"]),
             created_ts=str(row["created_ts"]),
             segments=segments,
+        )
+
+    @staticmethod
+    def _resource_segment_from_row(row: sqlite3.Row) -> ResourceSegment:
+        locator: dict[str, object] = {}
+        locator_text = row["locator_json"]
+        if locator_text:
+            try:
+                parsed = json.loads(locator_text)
+                if isinstance(parsed, dict):
+                    locator = parsed
+            except Exception:
+                locator = {}
+
+        return ResourceSegment(
+            segment_id=str(row["segment_id"]),
+            start_ms=0,
+            end_ms=None,
+            label="chunk",
+            status=str(row["status"]),
+            sequence_index=int(row["sequence_index"]),
+            text=str(row["text"]),
+            locator=locator,
+            topic_id=str(row["topic_id"]) if row["topic_id"] is not None else None,
+            confidence=float(row["confidence"]),
+            reason=str(row["reason"]),
         )
 
     def _next_cooldown_until(self) -> str | None:

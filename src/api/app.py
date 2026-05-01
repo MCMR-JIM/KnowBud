@@ -33,6 +33,7 @@ from src.api.schemas import (
     PushReviewResponse,
     ReviewQueueItem,
     ResourceInfo,
+    ResourceSegmentListResponse,
     ResourceSegmentInfo,
     ResourceUploadResponse,
     ReviewQueueResponse,
@@ -48,6 +49,7 @@ from src.api.schemas import (
     TopicInfo,
     TurnResponse,
 )
+from src.services.document_ingestion import ingest_document_resource
 
 if TYPE_CHECKING:
     from src.services.session_backend import SessionBackend
@@ -266,7 +268,13 @@ def get_max_audio_bytes() -> int:
 
 @app.get("/health", tags=["system"])
 def health():
-    return {"ok": True}
+    backend = get_backend()
+    return {
+        "ok": True,
+        "service": "looptutor-api",
+        "version": API_VERSION,
+        "arch_mode": getattr(backend, "learning_arch_mode", "unknown"),
+    }
 
 
 @app.get("/v1/session/state", response_model=SessionStateResponse, tags=["session"])
@@ -392,15 +400,18 @@ def get_events(after: int = 0, limit: int = 50) -> EventListResponse:
 @app.post("/v1/session/review/push", response_model=PushReviewResponse, tags=["session"])
 def push_review_topic(payload: PushReviewRequest) -> PushReviewResponse:
     backend = get_backend()
+    runtime = get_runtime()
     requested_topic_id = (payload.topic_id or payload.content or "").strip()
     if not requested_topic_id:
         raise HTTPException(status_code=400, detail="topic_id is required")
 
-    topic = backend.get_topic(requested_topic_id)
+    topic = backend.get_topic(requested_topic_id) if hasattr(backend, "get_topic") else None
+    if topic is None:
+        state = runtime.load_state()
+        topic = next((item for item in state.curriculum.topics if item.topic_id == requested_topic_id), None)
     if topic is None:
         raise HTTPException(status_code=404, detail=f"topic_id not found: {requested_topic_id}")
 
-    runtime = get_runtime()
     state, queued = runtime.push_review_topic(requested_topic_id)
     return PushReviewResponse(
         session_id=SINGLE_SESSION_ID,
@@ -484,6 +495,11 @@ async def upload_resource(
         size_bytes=stored_path.stat().st_size,
     )
 
+    if media_type in {"txt", "pdf", "docx", "pptx", "doc"}:
+        topics = backend.load_app_state(include_history=False).curriculum.topics
+        segments = ingest_document_resource(backend=backend, record=record, topics=topics)
+        record = record.model_copy(update={"segments": segments})
+
     runtime = get_runtime()
     if normalized_category == "review":
         state, queued = runtime.push_review_topic(normalized_topic_id)
@@ -505,6 +521,20 @@ async def upload_resource(
         },
     )
 
+    if media_type in {"txt", "pdf", "docx", "pptx", "doc"}:
+        classified_count = sum(1 for segment in record.segments if segment.status == "classified")
+        unclassified_count = sum(1 for segment in record.segments if segment.status == "unclassified")
+        backend.append_learning_event(
+            kind="resource_ingested",
+            payload={
+                "resource_id": record.resource_id,
+                "segment_count": len(record.segments),
+                "classified_count": classified_count,
+                "unclassified_count": unclassified_count,
+                "media_type": media_type,
+            },
+        )
+
     return ResourceUploadResponse(
         session_id=SINGLE_SESSION_ID,
         queued=queued,
@@ -520,12 +550,25 @@ def get_topic_resources(topic_id: str) -> TopicResourceListResponse:
     if topic is None:
         raise HTTPException(status_code=404, detail=f"topic_id not found: {topic_id}")
 
-    resources = backend.list_resources_by_topic(topic_id)
+    resources = backend.list_resources_related_to_topic(topic_id)
     return TopicResourceListResponse(
         session_id=SINGLE_SESSION_ID,
         topic_id=topic.topic_id,
         topic_title=topic.title,
         resources=[_resource_info(resource, topic.title) for resource in resources],
+    )
+
+
+@app.get("/v1/resource/{resource_id}/segments", response_model=ResourceSegmentListResponse, tags=["resource"])
+def get_resource_segments(resource_id: str) -> ResourceSegmentListResponse:
+    backend = get_backend()
+    record = backend.get_resource(resource_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"resource_id not found: {resource_id}")
+
+    return ResourceSegmentListResponse(
+        resource_id=resource_id,
+        segments=[_resource_segment_info(segment) for segment in record.segments],
     )
 
 
@@ -848,16 +891,23 @@ def _resource_info(record, topic_title: str) -> ResourceInfo:
         resource_url=f"/v1/resource/files/{record.resource_id}",
         size_bytes=record.size_bytes,
         created_ts=record.created_ts,
-        segments=[
-            ResourceSegmentInfo(
-                segment_id=segment.segment_id,
-                start_ms=segment.start_ms,
-                end_ms=segment.end_ms,
-                label=segment.label,
-                status=segment.status,
-            )
-            for segment in record.segments
-        ],
+        segments=[_resource_segment_info(segment) for segment in record.segments],
+    )
+
+
+def _resource_segment_info(segment) -> ResourceSegmentInfo:
+    return ResourceSegmentInfo(
+        segment_id=segment.segment_id,
+        start_ms=segment.start_ms,
+        end_ms=segment.end_ms,
+        label=segment.label,
+        status=segment.status,
+        sequence_index=segment.sequence_index,
+        text=segment.text,
+        locator=segment.locator,
+        topic_id=segment.topic_id,
+        confidence=segment.confidence,
+        reason=segment.reason,
     )
 
 

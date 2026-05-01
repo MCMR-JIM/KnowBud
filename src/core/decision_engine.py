@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from src.core.enums import LearningPhase, MediaKind, UserIntent
 from src.core.models import LearningState, CurriculumConfig
 from src.core.actions import (

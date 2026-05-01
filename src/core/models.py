@@ -1,4 +1,6 @@
-from typing import Literal, Any
+from __future__ import annotations
+
+from typing import Literal, Any, Optional
 from pydantic import BaseModel, Field
 from src.core.enums import LearningPhase
 import datetime
@@ -6,7 +8,7 @@ import datetime
 class UserProfile(BaseModel):
     student_id: str
     display_name: str
-    grade_level: str | None = None
+    grade_level: Optional[str] = None
     locale: str = "zh-CN"
 
 class TopicNode(BaseModel):
@@ -19,12 +21,12 @@ class TopicNode(BaseModel):
 class PendingQuestion(BaseModel):
     question_id: str
     stem: str
-    choices: list[str] | None = None
+    choices: Optional[list[str]] = None
     expected_format: Literal["open", "single_choice", "multi_choice"]
 
 class EvaluationResult(BaseModel):
     is_correct: bool
-    error_type: str | None = None
+    error_type: Optional[str] = None
     feedback_text: str
 
 # 🚀 新增：雷达图数据模型
@@ -46,15 +48,21 @@ class LearningEvent(BaseModel):
     ts: str
     kind: str
     payload: dict[str, Any]
-    audio_file_path: str | None = None  # 🚀 新增：保存孩子录音的本地路径
+    audio_file_path: Optional[str] = None  # 🚀 新增：保存孩子录音的本地路径
 
 
 class ResourceSegment(BaseModel):
     segment_id: str
     start_ms: int = 0
-    end_ms: int | None = None
+    end_ms: Optional[int] = None
     label: str = "full"
     status: str = "confirmed"
+    sequence_index: int = 0
+    text: Optional[str] = None
+    locator: dict[str, Any] = Field(default_factory=dict)
+    topic_id: Optional[str] = None
+    confidence: float = 0.0
+    reason: str = ""
 
 
 class ResourceRecord(BaseModel):
@@ -80,7 +88,7 @@ class GraphProposalRecord(BaseModel):
     edge_type: str = "requires"
     status: str = "proposed"
     reason: str = ""
-    created_topic_id: str | None = None
+    created_topic_id: Optional[str] = None
     observation_count: int = 0
     created_ts: str
     updated_ts: str
@@ -93,12 +101,12 @@ class NodeMastery(BaseModel):
     success_count: int = 0
     success_streak: int = 0
     spaced_success_count: int = 0
-    last_success_ts: str | None = None
-    last_state_ts: str | None = None
+    last_success_ts: Optional[str] = None
+    last_state_ts: Optional[str] = None
     reward_window_granted: bool = False
 
 class LearningState(BaseModel):
-    current_topic_id: str | None = None
+    current_topic_id: Optional[str] = None
     current_phase: LearningPhase
     error_rate: float = Field(default=0.0, description="最近 window_size 次答题错误比例")
     error_window_size: int = 10
@@ -110,16 +118,16 @@ class LearningState(BaseModel):
     radar_data: RadarScore = Field(default_factory=RadarScore)
     error_book: list[ErrorRecord] = Field(default_factory=list)
     review_queue: list[str] = Field(default_factory=list) # 等待家长强推的复习队列
-    explore_window_until: str | None = None
-    explore_window_cooldown_until: str | None = None
+    explore_window_until: Optional[str] = None
+    explore_window_cooldown_until: Optional[str] = None
     mastery_map: dict[str, NodeMastery] = Field(default_factory=dict)
     graph_proposals: list[GraphProposalRecord] = Field(default_factory=list)
     shadow_observation_map: dict[str, int] = Field(default_factory=dict)
     shadow_wrong_streak_map: dict[str, int] = Field(default_factory=dict)
     
     history_logs: list[LearningEvent] = Field(default_factory=list)
-    pending_question: PendingQuestion | None = None
-    last_evaluation: EvaluationResult | None = None
+    pending_question: Optional[PendingQuestion] = None
+    last_evaluation: Optional[EvaluationResult] = None
 
 class CurriculumConfig(BaseModel):
     topics: list[TopicNode]

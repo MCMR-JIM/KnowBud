@@ -1,10 +1,20 @@
+from __future__ import annotations
+
 import json
 import httpx  # 🚀 新增这一行：用于配置底层网络
-from pydantic import ValidationError
+from typing import Optional
+
+from pydantic import BaseModel, ValidationError
 from openai import OpenAI
 
 from src.skills.base_skill import BaseSkill, SkillContext
-from src.core.models import PendingQuestion, EvaluationResult, RadarScore
+from src.core.models import PendingQuestion, EvaluationResult, RadarScore, TopicNode
+
+
+class ResourceChunkClassification(BaseModel):
+    topic_id: Optional[str] = None
+    confidence: float = 0.0
+    reason: str = ""
 
 class LLMTutorSkill(BaseSkill):
     """大模型导师技能：负责根据知识点出题，以及批改儿童的答案"""
@@ -105,6 +115,50 @@ class LLMTutorSkill(BaseSkill):
             model_class=EvaluationResult,
             fallback_obj=fallback
         )
+
+    def classify_resource_chunk(self, *, chunk_text: str, topics: list[TopicNode]) -> dict[str, object]:
+        text = chunk_text.strip()
+        fallback = ResourceChunkClassification(topic_id=None, confidence=0.0, reason="未找到合适知识点")
+        if not text or not topics:
+            return fallback.model_dump()
+
+        topic_payload = [
+            {
+                "topic_id": topic.topic_id,
+                "title": topic.title,
+                "tags": topic.tags,
+                "prerequisite_ids": topic.prerequisite_ids,
+            }
+            for topic in topics
+        ]
+        system_prompt = (
+            "你是儿童学习资源分类器。你的任务是把教学资源片段归类到最合适的知识节点。"
+            "只能使用给定知识节点，不要编造节点。若片段过泛、无法判断、或多个节点都不明确，返回 topic_id=null。\n"
+            "请只返回合法 JSON，不要附加解释。"
+        )
+        user_prompt = (
+            "给定知识节点列表：\n"
+            f"{json.dumps(topic_payload, ensure_ascii=False)}\n\n"
+            "待分类资源片段：\n"
+            f"```text\n{text[:4000]}\n```\n"
+            '请只返回 JSON：{"topic_id": string|null, "confidence": number, "reason": string}'
+        )
+
+        result = self._call_and_parse(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model_class=ResourceChunkClassification,
+            fallback_obj=fallback,
+        )
+        valid_topic_ids = {topic.topic_id for topic in topics}
+        topic_id = result.topic_id if result.topic_id in valid_topic_ids else None
+        confidence = max(0.0, min(1.0, float(result.confidence)))
+        reason = (result.reason or fallback.reason).strip()[:80]
+        return {
+            "topic_id": topic_id,
+            "confidence": confidence,
+            "reason": reason,
+        }
 
     def _call_and_parse(self, system_prompt: str, user_prompt: str, model_class, fallback_obj):
         messages = [

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -26,8 +27,8 @@ class TopicMatch(BaseModel):
 
 
 class TopicRoutingResult(BaseModel):
-    current_topic_id: str | None = None
-    target_topic_id: str | None = None
+    current_topic_id: Optional[str] = None
+    target_topic_id: Optional[str] = None
     switched: bool = False
     off_topic: bool = False
     candidates: list[TopicMatch] = Field(default_factory=list)
@@ -43,7 +44,7 @@ class GraphMutationProposal(BaseModel):
     edge_type: EdgeType = EdgeType.REQUIRES
     status: ProposalStatus = ProposalStatus.PROPOSED
     reason: str = ""
-    created_topic_id: str | None = None
+    created_topic_id: Optional[str] = None
 
 
 class AgentTurnDecision(BaseModel):
@@ -51,7 +52,7 @@ class AgentTurnDecision(BaseModel):
     reply_hint: str = ""
     earned_points: int = 0
     should_answer_directly: bool = False
-    proposal: GraphMutationProposal | None = None
+    proposal: Optional[GraphMutationProposal] = None
     explore_window_active: bool = False
-    transition_from_topic_id: str | None = None
-    transition_to_topic_id: str | None = None
+    transition_from_topic_id: Optional[str] = None
+    transition_to_topic_id: Optional[str] = None

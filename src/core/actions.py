@@ -1,4 +1,6 @@
-from typing import Annotated, Union, Literal, Any
+from __future__ import annotations
+
+from typing import Annotated, Union, Literal, Any, Optional
 from pydantic import BaseModel, Field
 
 # 导入我们之前写的枚举和模型
@@ -71,9 +73,9 @@ ActionCommand = Annotated[
 
 class StateDelta(BaseModel):
     """不可变补丁：描述系统状态需要发生什么改变"""
-    patch_learning: dict[str, Any] | None = None
+    patch_learning: Optional[dict[str, Any]] = None
     clear_pending_question: bool = False
-    append_event: LearningEvent | None = None
+    append_event: Optional[LearningEvent] = None
 
 class DecisionResult(BaseModel):
     """这是引擎大脑最终吐出来的完整结果"""

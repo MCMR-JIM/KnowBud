@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -19,13 +19,13 @@ class SessionProfile(BaseModel):
 
 
 class SessionLearningState(BaseModel):
-    current_topic_id: str | None = None
+    current_topic_id: Optional[str] = None
     current_phase: str
     total_score: int
     consecutive_correct: int
     consecutive_wrong: int
-    explore_window_until: str | None = None
-    explore_window_cooldown_until: str | None = None
+    explore_window_until: Optional[str] = None
+    explore_window_cooldown_until: Optional[str] = None
     review_queue_size: int = 0
     history_event_count: int = 0
 
@@ -44,7 +44,7 @@ class ProposalInfo(BaseModel):
     trigger: str
     status: str
     reason: str
-    created_topic_id: str | None = None
+    created_topic_id: Optional[str] = None
     updated_ts: str
 
 
@@ -56,7 +56,7 @@ class MasteryInfo(BaseModel):
     success_count: int
     success_streak: int
     spaced_success_count: int
-    last_success_ts: str | None = None
+    last_success_ts: Optional[str] = None
 
 
 class KnowledgeGraphResponse(BaseModel):
@@ -87,12 +87,12 @@ class TurnResponse(BaseModel):
     user_text: str
     reply_text: str
     earned_points: int
-    reply_audio_base64: str | None = None
+    reply_audio_base64: Optional[str] = None
     reply_audio_mime: str = "audio/mpeg"
-    current_topic_id: str | None = None
+    current_topic_id: Optional[str] = None
     current_phase: str
     total_score: int
-    explore_window_until: str | None = None
+    explore_window_until: Optional[str] = None
     events_cursor: int = 0
 
 
@@ -101,8 +101,8 @@ class AudioTurnResponse(TurnResponse):
 
 
 class PushReviewRequest(BaseModel):
-    topic_id: str | None = None
-    content: str | None = None
+    topic_id: Optional[str] = None
+    content: Optional[str] = None
 
 
 class PushReviewResponse(BaseModel):
@@ -121,9 +121,15 @@ class ReviewQueueItem(BaseModel):
 class ResourceSegmentInfo(BaseModel):
     segment_id: str
     start_ms: int = 0
-    end_ms: int | None = None
-    label: str
+    end_ms: Optional[int] = None
+    label: str = "full"
     status: str
+    sequence_index: int = 0
+    text: Optional[str] = None
+    locator: dict[str, Any] = Field(default_factory=dict)
+    topic_id: Optional[str] = None
+    confidence: float = 0.0
+    reason: str = ""
 
 
 class ResourceInfo(BaseModel):
@@ -155,10 +161,15 @@ class TopicResourceListResponse(BaseModel):
     resources: list[ResourceInfo] = Field(default_factory=list)
 
 
+class ResourceSegmentListResponse(BaseModel):
+    resource_id: str
+    segments: list[ResourceSegmentInfo] = Field(default_factory=list)
+
+
 class CreateSessionRequest(BaseModel):
-    student_id: str | None = None
-    display_name: str | None = None
-    locale: str | None = None
+    student_id: Optional[str] = None
+    display_name: Optional[str] = None
+    locale: Optional[str] = None
 
 
 class SessionSummary(BaseModel):
@@ -204,11 +215,11 @@ class ExploreWindowOpenRequest(BaseModel):
 
 class ExploreWindowResponse(BaseModel):
     session_id: str
-    explore_window_until: str | None = None
+    explore_window_until: Optional[str] = None
     active: bool
-    remaining_seconds: int | None = None
-    cooldown_until: str | None = None
-    cooldown_remaining_seconds: int | None = None
+    remaining_seconds: Optional[int] = None
+    cooldown_until: Optional[str] = None
+    cooldown_remaining_seconds: Optional[int] = None
 
 
 class MasteryListResponse(BaseModel):
@@ -221,10 +232,10 @@ class StreamTurnInitResponse(BaseModel):
     turn_id: str
     reply_text: str
     earned_points: int
-    current_topic_id: str | None = None
+    current_topic_id: Optional[str] = None
     current_phase: str
     total_score: int
-    explore_window_until: str | None = None
+    explore_window_until: Optional[str] = None
     stream_id: str
     events_cursor: int = 0
 
