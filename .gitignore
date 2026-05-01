@@ -16,6 +16,7 @@ dist/
 build/
 
 # Runtime / local data (generated)
+data/
 data/state.json
 data/resource_index.json
 data/state.tmp
