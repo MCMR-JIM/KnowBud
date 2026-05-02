@@ -1,7 +1,8 @@
 import axios from 'axios';
+import { API_BASE } from './config';
 
 // 统一指向后端的 FastAPI 接口地址
-const API_BASE_URL = 'http://127.0.0.1:8090/v1';
+const API_BASE_URL = API_BASE;
 
 // 创建一个 Axios 实例
 export const apiClient = axios.create({
@@ -41,4 +42,27 @@ export const SessionAPI = {
   // 开启/关闭自由探索奖励时间窗
   openExploreWindow: (minutes: number = 5) => apiClient.post('/session/explore-window/open', { minutes }),
   closeExploreWindow: () => apiClient.post('/session/explore-window/close'),
-};  
+
+  // ================= 5. 知识图谱 (新增) =================
+  getKnowledgeGraph: () => apiClient.get('/knowledge/graph'),
+};
+
+export const ResourceAPI = {
+  uploadResource: (payload: {
+    file: File | Blob;
+    topicId: string;
+    resourceName: string;
+    category?: 'learn' | 'review';
+  }) => {
+    const formData = new FormData();
+    formData.append('file', payload.file);
+    formData.append('topic_id', payload.topicId);
+    formData.append('resource_name', payload.resourceName);
+    formData.append('category', payload.category || 'learn');
+    return apiClient.post('/resource/upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    });
+  },
+  getTopicResources: (topicId: string) => apiClient.get(`/resource/topics/${topicId}`),
+  getResourceSegments: (resourceId: string) => apiClient.get(`/resource/${resourceId}/segments`),
+};

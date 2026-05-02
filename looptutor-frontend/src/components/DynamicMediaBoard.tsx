@@ -1,5 +1,3 @@
-import { Volume2 } from 'lucide-react';
-
 interface MediaBoardProps {
   type: 'video' | 'iframe' | 'whiteboard';
   url?: string;
