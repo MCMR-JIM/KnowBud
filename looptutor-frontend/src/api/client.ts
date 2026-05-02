@@ -66,3 +66,11 @@ export const ResourceAPI = {
   getTopicResources: (topicId: string) => apiClient.get(`/resource/topics/${topicId}`),
   getResourceSegments: (resourceId: string) => apiClient.get(`/resource/${resourceId}/segments`),
 };
+
+export const KnowledgeAPI = {
+  getProposals: (params?: { status?: string; trigger?: string }) => apiClient.get('/knowledge/proposals', { params }),
+  approveProposal: (proposalId: string, payload: Record<string, unknown> = {}) =>
+    apiClient.post(`/knowledge/proposals/${proposalId}/approve`, payload),
+  rejectProposal: (proposalId: string, reason?: string) =>
+    apiClient.post(`/knowledge/proposals/${proposalId}/reject`, { reason }),
+};

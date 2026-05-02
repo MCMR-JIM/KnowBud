@@ -29,6 +29,8 @@ from src.api.schemas import (
     MasteryInfo,
     MasteryListResponse,
     ProposalInfo,
+    ProposalReviewRequest,
+    ProposalReviewResponse,
     PushReviewRequest,
     PushReviewResponse,
     ReviewQueueItem,
@@ -604,6 +606,61 @@ def get_knowledge_graph() -> KnowledgeGraphResponse:
     return _build_graph_response(state)
 
 
+@app.get("/v1/knowledge/proposals", response_model=list[ProposalInfo], tags=["knowledge"])
+def list_knowledge_proposals(status: str | None = None, trigger: str | None = None) -> list[ProposalInfo]:
+    runtime = get_runtime()
+    state = runtime.load_state()
+    proposals = state.learning.graph_proposals
+    if status:
+        proposals = [proposal for proposal in proposals if proposal.status == status]
+    if trigger:
+        proposals = [proposal for proposal in proposals if proposal.trigger == trigger]
+    return [_proposal_info(proposal) for proposal in proposals]
+
+
+@app.post("/v1/knowledge/proposals/{proposal_id}/approve", response_model=ProposalReviewResponse, tags=["knowledge"])
+def approve_knowledge_proposal(proposal_id: str, payload: ProposalReviewRequest) -> ProposalReviewResponse:
+    backend = get_backend()
+    try:
+        _state, proposal, topic, relinked_count, rescanned_count = backend.approve_graph_proposal(
+            proposal_id=proposal_id,
+            title=payload.title,
+            summary=payload.summary,
+            parent_node_ids=payload.parent_node_ids,
+            edge_type=payload.edge_type,
+            difficulty=payload.difficulty,
+            tags=payload.tags,
+            reason=payload.reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400 if "required" in str(exc) else 404, detail=str(exc)) from exc
+    return ProposalReviewResponse(
+        session_id=SINGLE_SESSION_ID,
+        proposal=_proposal_info(proposal),
+        topic=_topic_info(topic),
+        relinked_segment_count=relinked_count,
+        rescanned_segment_count=rescanned_count,
+    )
+
+
+@app.post("/v1/knowledge/proposals/{proposal_id}/reject", response_model=ProposalReviewResponse, tags=["knowledge"])
+def reject_knowledge_proposal(proposal_id: str, payload: ProposalReviewRequest | None = None) -> ProposalReviewResponse:
+    backend = get_backend()
+    try:
+        _state, proposal, updated_count = backend.reject_graph_proposal(
+            proposal_id=proposal_id,
+            reason=payload.reason if payload else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return ProposalReviewResponse(
+        session_id=SINGLE_SESSION_ID,
+        proposal=_proposal_info(proposal),
+        relinked_segment_count=updated_count,
+        rescanned_segment_count=0,
+    )
+
+
 @app.get("/v1/session/mastery", response_model=MasteryListResponse, tags=["session"])
 def get_mastery() -> MasteryListResponse:
     runtime = get_runtime()
@@ -925,6 +982,8 @@ def _resource_segment_info(segment) -> ResourceSegmentInfo:
         decision=segment.decision,
         confidence=segment.confidence,
         reason=segment.reason,
+        guiding_question=segment.guiding_question,
+        teaching_hint=segment.teaching_hint,
     )
 
 

@@ -4,6 +4,7 @@ import os
 import json
 import time
 import sqlite3
+import re
 from pathlib import Path
 from dataclasses import dataclass, field
 import datetime
@@ -11,7 +12,7 @@ from datetime import timezone
 from typing import AsyncIterator
 
 from src.core.enums import UserIntent, LearningPhase
-from src.core.models import AppState, UserProfile, LearningState, CurriculumConfig, TopicNode, PendingQuestion, ErrorRecord, LearningEvent, GraphProposalRecord, ResourceRecord, ResourceSegment
+from src.core.models import AppState, UserProfile, LearningState, CurriculumConfig, TopicNode, PendingQuestion, ErrorRecord, LearningEvent, GraphProposalRecord, ResourceRecord, ResourceSegment, NodeMastery
 from src.agent.models import EdgeType, GraphMutationProposal
 from src.core.decision_engine import DecisionEngine
 from src.skills.base_skill import SkillContext
@@ -226,6 +227,19 @@ class SessionBackend:
             )
             conn.commit()
 
+    def list_all_resources(self) -> list[ResourceRecord]:
+        with self._db_connection() as conn:
+            self._ensure_storage_initialized(conn)
+            rows = conn.execute(
+                """
+                SELECT resource_id, topic_id, resource_name, category, media_type, mime_type,
+                       original_filename, stored_path, size_bytes, created_ts, segments_json
+                FROM resource_library
+                ORDER BY created_ts DESC, resource_id DESC
+                """
+            ).fetchall()
+            return [self._resource_from_row(conn, row) for row in rows]
+
     def create_graph_proposal_from_resource(
         self,
         *,
@@ -253,6 +267,205 @@ class SessionBackend:
         record.updated_ts = now
         self.save_app_state(state)
         return record
+
+    def approve_graph_proposal(
+        self,
+        *,
+        proposal_id: str,
+        title: str | None = None,
+        summary: str | None = None,
+        parent_node_ids: list[str] | None = None,
+        edge_type: str | None = None,
+        difficulty: int = 1,
+        tags: list[str] | None = None,
+        reason: str | None = None,
+    ) -> tuple[AppState, GraphProposalRecord, TopicNode, int, int]:
+        state = self.load_app_state(include_history=False)
+        proposal = self._find_graph_proposal(state, proposal_id)
+        if proposal is None:
+            raise ValueError(f"proposal not found: {proposal_id}")
+        if proposal.status == "rejected":
+            raise ValueError("rejected proposal cannot be approved")
+
+        now = datetime.datetime.now(timezone.utc).isoformat()
+        valid_topic_ids = {topic.topic_id for topic in state.curriculum.topics}
+        approved_title = (title or proposal.title).strip()
+        if not approved_title:
+            raise ValueError("title is required")
+        approved_summary = (summary if summary is not None else proposal.summary).strip()
+        approved_parents = [item for item in (parent_node_ids if parent_node_ids is not None else proposal.parent_node_ids) if item in valid_topic_ids]
+        approved_edge_type = edge_type if edge_type in {"requires", "supports", "related"} else proposal.edge_type
+        if approved_edge_type not in {"requires", "supports", "related"}:
+            approved_edge_type = "requires"
+
+        created_topic_id = proposal.created_topic_id
+        topic = next((item for item in state.curriculum.topics if item.topic_id == created_topic_id), None) if created_topic_id else None
+        if topic is None:
+            created_topic_id = self._new_topic_id(state, approved_title)
+            topic = TopicNode(
+                topic_id=created_topic_id,
+                title=approved_title,
+                difficulty=max(1, min(5, difficulty)),
+                prerequisite_ids=approved_parents if approved_edge_type == "requires" else [],
+                tags=list(dict.fromkeys([*(tags or []), "resource-approved", "active"])),
+            )
+            state.curriculum.topics.append(topic)
+            state.learning.mastery_map.setdefault(created_topic_id, NodeMastery(mastery_state="unknown"))
+        else:
+            topic.title = approved_title
+            topic.difficulty = max(1, min(5, difficulty))
+            if approved_edge_type == "requires":
+                topic.prerequisite_ids = approved_parents
+            topic.tags = list(dict.fromkeys([*topic.tags, *(tags or []), "resource-approved", "active"]))
+
+        proposal.title = approved_title
+        proposal.summary = approved_summary
+        proposal.parent_node_ids = approved_parents
+        proposal.edge_type = approved_edge_type
+        proposal.created_topic_id = created_topic_id
+        self._activate_proposal_record(proposal, reason=(reason or "approved resource proposal")[:80])
+        proposal.updated_ts = now
+        self.save_app_state(state)
+
+        relinked_count = self._relink_segments_for_approved_proposal(proposal_id=proposal_id, topic_id=created_topic_id)
+        rescanned_count = self._rescan_segments_for_topic(topic_id=created_topic_id)
+        self.append_learning_event(
+            kind="graph_proposal_approved",
+            payload={
+                "proposal_id": proposal_id,
+                "topic_id": created_topic_id,
+                "title": approved_title,
+                "relinked_segment_count": relinked_count,
+                "rescanned_segment_count": rescanned_count,
+            },
+        )
+        return self.load_app_state(include_history=False), proposal, topic, relinked_count, rescanned_count
+
+    def reject_graph_proposal(self, *, proposal_id: str, reason: str | None = None) -> tuple[AppState, GraphProposalRecord, int]:
+        state = self.load_app_state(include_history=False)
+        proposal = self._find_graph_proposal(state, proposal_id)
+        if proposal is None:
+            raise ValueError(f"proposal not found: {proposal_id}")
+        if proposal.status != "rejected":
+            self._transition_proposal_record(proposal, to_status="rejected", reason=(reason or "rejected resource proposal")[:80])
+            proposal.updated_ts = datetime.datetime.now(timezone.utc).isoformat()
+            self.save_app_state(state)
+        updated_count = self._mark_segments_for_rejected_proposal(proposal_id=proposal_id, reason=proposal.reason)
+        self.append_learning_event(
+            kind="graph_proposal_rejected",
+            payload={"proposal_id": proposal_id, "updated_segment_count": updated_count, "reason": proposal.reason},
+        )
+        return self.load_app_state(include_history=False), proposal, updated_count
+
+    @staticmethod
+    def _find_graph_proposal(state: AppState, proposal_id: str) -> GraphProposalRecord | None:
+        return next((rec for rec in state.learning.graph_proposals if rec.proposal_id == proposal_id), None)
+
+    def _activate_proposal_record(self, rec: GraphProposalRecord, *, reason: str) -> None:
+        if rec.status == "proposed":
+            self._transition_proposal_record(rec, to_status="validated", reason=reason)
+        if rec.status == "validated":
+            self._transition_proposal_record(rec, to_status="shadow", reason=reason)
+        if rec.status == "shadow":
+            self._transition_proposal_record(rec, to_status="active", reason=reason)
+        if rec.status == "active":
+            rec.reason = reason
+
+    @staticmethod
+    def _new_topic_id(state: AppState, title: str) -> str:
+        slug = re.sub(r"[^a-zA-Z0-9\u4e00-\u9fff]+", "_", title).strip("_").lower()[:32]
+        base = f"auto_{slug}" if slug else "auto_topic"
+        existing = {topic.topic_id for topic in state.curriculum.topics}
+        if base not in existing:
+            return base
+        index = 2
+        while f"{base}_{index}" in existing:
+            index += 1
+        return f"{base}_{index}"
+
+    def _relink_segments_for_approved_proposal(self, *, proposal_id: str, topic_id: str) -> int:
+        updated = 0
+        for resource in self.list_all_resources():
+            changed = False
+            for segment in resource.segments:
+                if segment.proposal_id != proposal_id:
+                    continue
+                segment.status = "classified"
+                segment.decision = "link"
+                segment.topic_id = topic_id
+                segment.confidence = max(segment.confidence, 0.75)
+                segment.reason = "proposal approved and linked to new topic"
+                changed = True
+                updated += 1
+            if changed:
+                self.replace_resource_segments(resource.resource_id, resource.segments)
+        return updated
+
+    def _mark_segments_for_rejected_proposal(self, *, proposal_id: str, reason: str) -> int:
+        updated = 0
+        for resource in self.list_all_resources():
+            changed = False
+            for segment in resource.segments:
+                if segment.proposal_id != proposal_id:
+                    continue
+                segment.status = "unclassified"
+                segment.decision = "unclassified"
+                segment.topic_id = None
+                segment.proposal_id = None
+                segment.reason = reason or "proposal rejected"
+                changed = True
+                updated += 1
+            if changed:
+                self.replace_resource_segments(resource.resource_id, resource.segments)
+        return updated
+
+    def _rescan_segments_for_topic(self, *, topic_id: str) -> int:
+        state = self.load_app_state(include_history=False)
+        topics = state.curriculum.topics
+        if not any(topic.topic_id == topic_id for topic in topics):
+            return 0
+
+        updated = 0
+        for resource in self.list_all_resources():
+            changed = False
+            for segment in resource.segments:
+                if segment.topic_id or segment.status not in {"unclassified", "proposed"}:
+                    continue
+                text = (segment.text or "").strip()
+                if not text:
+                    continue
+                try:
+                    result = self.llm_skill.classify_or_propose_resource_chunk(
+                        chunk_text=text,
+                        topics=topics,
+                        default_parent_topic_id=topic_id,
+                    )
+                except Exception:
+                    continue
+                if not isinstance(result, dict):
+                    continue
+                if result.get("decision") != "link" or result.get("topic_id") != topic_id:
+                    continue
+                try:
+                    confidence = max(0.0, min(1.0, float(result.get("confidence", 0.0))))
+                except (TypeError, ValueError):
+                    confidence = 0.0
+                if confidence < 0.55:
+                    continue
+                segment.status = "classified"
+                segment.decision = "link"
+                segment.topic_id = topic_id
+                segment.confidence = confidence
+                segment.reason = str(result.get("reason") or "linked after proposal approval")[:80]
+                if isinstance(result.get("guiding_question"), str):
+                    segment.guiding_question = str(result["guiding_question"]).strip()[:60] or segment.guiding_question
+                if isinstance(result.get("teaching_hint"), str):
+                    segment.teaching_hint = str(result["teaching_hint"]).strip()[:80] or segment.teaching_hint
+                changed = True
+                updated += 1
+            if changed:
+                self.replace_resource_segments(resource.resource_id, resource.segments)
+        return updated
 
     def transcribe_audio(self, audio_bytes: bytes) -> str:
         if not audio_bytes:
@@ -860,6 +1073,8 @@ class SessionBackend:
                 proposal_id TEXT,
                 proposed_topic_title TEXT,
                 decision TEXT NOT NULL DEFAULT 'link',
+                guiding_question TEXT,
+                teaching_hint TEXT,
                 confidence REAL NOT NULL,
                 status TEXT NOT NULL,
                 reason TEXT NOT NULL,
@@ -889,6 +1104,10 @@ class SessionBackend:
             conn.execute("ALTER TABLE resource_segments ADD COLUMN proposed_topic_title TEXT")
         if "decision" not in columns:
             conn.execute("ALTER TABLE resource_segments ADD COLUMN decision TEXT NOT NULL DEFAULT 'link'")
+        if "guiding_question" not in columns:
+            conn.execute("ALTER TABLE resource_segments ADD COLUMN guiding_question TEXT")
+        if "teaching_hint" not in columns:
+            conn.execute("ALTER TABLE resource_segments ADD COLUMN teaching_hint TEXT")
 
     def _load_state_row(self, conn: sqlite3.Connection) -> AppState | None:
         row = conn.execute("SELECT state_json FROM app_state WHERE state_id = 1").fetchone()
@@ -1002,9 +1221,9 @@ class SessionBackend:
             INSERT INTO resource_segments(
                 segment_id, resource_id, sequence_index, text, locator_json,
                 topic_id, proposal_id, proposed_topic_title, decision,
-                confidence, status, reason, created_ts
+                guiding_question, teaching_hint, confidence, status, reason, created_ts
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 segment.segment_id,
@@ -1016,6 +1235,8 @@ class SessionBackend:
                 segment.proposal_id,
                 segment.proposed_topic_title,
                 segment.decision,
+                segment.guiding_question,
+                segment.teaching_hint,
                 segment.confidence,
                 segment.status,
                 segment.reason,
@@ -1028,7 +1249,7 @@ class SessionBackend:
             """
             SELECT segment_id, resource_id, sequence_index, text, locator_json,
                    topic_id, proposal_id, proposed_topic_title, decision,
-                   confidence, status, reason
+                   guiding_question, teaching_hint, confidence, status, reason
             FROM resource_segments
             WHERE resource_id = ?
             ORDER BY sequence_index ASC, segment_id ASC
@@ -1110,6 +1331,8 @@ class SessionBackend:
                 str(row["proposed_topic_title"]) if row["proposed_topic_title"] is not None else None
             ),
             decision=str(row["decision"] or "link"),
+            guiding_question=str(row["guiding_question"]) if row["guiding_question"] is not None else None,
+            teaching_hint=str(row["teaching_hint"]) if row["teaching_hint"] is not None else None,
             confidence=float(row["confidence"]),
             reason=str(row["reason"]),
         )

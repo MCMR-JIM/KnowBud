@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { BookOpen, AlertCircle, Clock, Video, Info } from 'lucide-react';
 import { API_BASE } from '../api/config';
-import { ResourceAPI } from '../api/client';
+import { KnowledgeAPI, ResourceAPI } from '../api/client';
 
 export default function AdminDashboard() {
   const navigate = useNavigate();
@@ -45,6 +45,8 @@ export default function AdminDashboard() {
     }
   });
   const [knowledgePoints, setKnowledgePoints] = useState<{ id: number, topicId: string, name: string, lastReview: string, resourceCount: number }[]>([]);
+  const [graphProposals, setGraphProposals] = useState<any[]>([]);
+  const [reviewingProposalId, setReviewingProposalId] = useState('');
   const [engineLogs, setEngineLogs] = useState<string[]>([]);
   const [dataLoading, setDataLoading] = useState(false);
   // 知识图谱状态
@@ -89,6 +91,7 @@ export default function AdminDashboard() {
         
         // 【新增】保存完整的知识图谱节点，供右侧渲染使用
         setGraphNodes(graphData.topics || []);
+        setGraphProposals((graphData.proposals || []).filter((proposal: any) => proposal.trigger === 'resource_ingest' && proposal.status === 'proposed'));
       }
 
       // ================= 真实计算开始 =================
@@ -423,6 +426,41 @@ export default function AdminDashboard() {
     }
   };
 
+  const handleApproveProposal = async (proposal: any) => {
+    setReviewingProposalId(proposal.proposal_id);
+    try {
+      await KnowledgeAPI.approveProposal(proposal.proposal_id, {
+        title: proposal.title,
+        summary: proposal.summary,
+        parent_node_ids: proposal.parent_node_ids,
+        edge_type: proposal.edge_type,
+        tags: ['parent-approved'],
+        reason: '家长确认 AI 建议节点',
+      });
+      alert('✅ 已新增知识节点，并回挂相关资源片段');
+      await fetchAllData();
+    } catch (error) {
+      console.error(error);
+      alert('❌ 审核失败，请检查后端服务');
+    } finally {
+      setReviewingProposalId('');
+    }
+  };
+
+  const handleRejectProposal = async (proposal: any) => {
+    setReviewingProposalId(proposal.proposal_id);
+    try {
+      await KnowledgeAPI.rejectProposal(proposal.proposal_id, '家长拒绝该新增节点');
+      alert('已拒绝该知识节点建议');
+      await fetchAllData();
+    } catch (error) {
+      console.error(error);
+      alert('❌ 拒绝失败，请检查后端服务');
+    } finally {
+      setReviewingProposalId('');
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-50 to-pink-50 p-6">
       {/* 顶部导航 */}
@@ -588,6 +626,56 @@ export default function AdminDashboard() {
               >
                 {isLoading ? "推送中..." : "推送至魔法舱"}
               </button>
+            </div>
+
+            <div className="border-t border-gray-100 pt-6">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h2 className="text-lg font-semibold text-gray-700">AI 建议新增知识点</h2>
+                  <p className="text-xs text-gray-400 mt-1">来自资源切片入库，确认后会加入知识图谱并回挂相关资源。</p>
+                </div>
+                <span className="text-xs px-3 py-1 rounded-full bg-blue-50 text-blue-600 border border-blue-100">
+                  {graphProposals.length} 条待审核
+                </span>
+              </div>
+
+              {graphProposals.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 p-4 text-sm text-gray-400 text-center">
+                  暂无待审核的知识节点建议。
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {graphProposals.slice(0, 5).map((proposal) => (
+                    <div key={proposal.proposal_id} className="rounded-xl border border-blue-100 bg-white p-4 shadow-sm">
+                      <div className="flex justify-between gap-4">
+                        <div className="min-w-0">
+                          <p className="text-sm font-bold text-gray-800">{proposal.title}</p>
+                          <p className="text-xs text-gray-500 mt-1 line-clamp-2">{proposal.summary || proposal.reason}</p>
+                          <p className="text-xs text-blue-500 mt-2">
+                            父节点：{(proposal.parent_node_ids || []).join(', ') || '待系统补齐'} · 关系：{proposal.edge_type}
+                          </p>
+                        </div>
+                        <div className="flex flex-col gap-2 shrink-0">
+                          <button
+                            onClick={() => handleApproveProposal(proposal)}
+                            disabled={reviewingProposalId === proposal.proposal_id}
+                            className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-bold hover:bg-blue-700 disabled:opacity-50"
+                          >
+                            确认新增
+                          </button>
+                          <button
+                            onClick={() => handleRejectProposal(proposal)}
+                            disabled={reviewingProposalId === proposal.proposal_id}
+                            className="px-3 py-1.5 rounded-lg bg-gray-100 text-gray-600 text-xs font-medium hover:bg-gray-200 disabled:opacity-50"
+                          >
+                            拒绝
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}

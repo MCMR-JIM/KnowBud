@@ -30,6 +30,8 @@ class ResourceChunkProposalDecision(BaseModel):
     confidence: float = 0.0
     reason: str = "未找到合适知识点"
     proposed_topic: Optional[ProposedTopicPayload] = None
+    guiding_question: str = ""
+    teaching_hint: str = ""
 
 class LLMTutorSkill(BaseSkill):
     """大模型导师技能：负责根据知识点出题，以及批改儿童的答案"""
@@ -174,7 +176,10 @@ class LLMTutorSkill(BaseSkill):
             f"```text\n{text[:4000]}\n```\n"
             '只返回 JSON：{ "decision": "link" | "propose" | "unclassified", "topic_id": string|null, '
             '"confidence": number, "reason": string, "proposed_topic": { "title": string, '
-            '"summary": string, "parent_node_ids": [string], "edge_type": "requires" | "supports" | "related" } | null }'
+            '"summary": string, "parent_node_ids": [string], "edge_type": "requires" | "supports" | "related" } | null, '
+            '"guiding_question": string, "teaching_hint": string }\n'
+            "guiding_question 是老师可以直接用来引出学习的儿童友好问题，不超过 60 字。"
+            "teaching_hint 是老师讲解该片段的简短提示，不超过 80 字。"
         )
 
         result = self._call_and_parse(
@@ -207,6 +212,8 @@ class LLMTutorSkill(BaseSkill):
         except (TypeError, ValueError):
             confidence = 0.0
         reason = (result.reason or "未找到合适知识点").strip()[:80]
+        guiding_question = (result.guiding_question or "").strip()[:60]
+        teaching_hint = (result.teaching_hint or "").strip()[:80]
 
         proposed_topic: dict[str, object] | None = None
         if decision == "propose" and result.proposed_topic is not None:
@@ -250,6 +257,8 @@ class LLMTutorSkill(BaseSkill):
             "confidence": confidence,
             "reason": reason,
             "proposed_topic": proposed_topic,
+            "guiding_question": guiding_question,
+            "teaching_hint": teaching_hint,
         }
 
     def _call_and_parse(self, system_prompt: str, user_prompt: str, model_class, fallback_obj):

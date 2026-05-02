@@ -51,6 +51,8 @@ def test_upload_txt_ingests_segments_and_records_events(monkeypatch, tmp_path: P
                 "confidence": 0.9,
                 "reason": "片段讨论恐龙灭绝",
                 "proposed_topic": None,
+                "guiding_question": "你觉得恐龙为什么没能适应环境变化？",
+                "teaching_hint": "从气候变化和适应能力引导孩子理解灭绝。",
             }
         if "苹果" in chunk_text or "加" in chunk_text:
             return {
@@ -64,6 +66,8 @@ def test_upload_txt_ingests_segments_and_records_events(monkeypatch, tmp_path: P
                     "parent_node_ids": ["demo_01"],
                     "edge_type": "requires",
                 },
+                "guiding_question": "如果天空长期变暗，地球上的动物会遇到什么困难？",
+                "teaching_hint": "用遮光、降温、食物减少串起链式影响。",
             }
         return {
             "decision": "unclassified",
@@ -71,6 +75,8 @@ def test_upload_txt_ingests_segments_and_records_events(monkeypatch, tmp_path: P
             "confidence": 0.3,
             "reason": "内容过泛",
             "proposed_topic": None,
+            "guiding_question": "",
+            "teaching_hint": "",
         }
 
     backend.llm_skill.classify_or_propose_resource_chunk = fake_classify_or_propose
@@ -97,6 +103,8 @@ def test_upload_txt_ingests_segments_and_records_events(monkeypatch, tmp_path: P
     assert first["status"] == "classified"
     assert first["topic_id"] == "demo_01"
     assert first["confidence"] == 0.9
+    assert first["guiding_question"] == "你觉得恐龙为什么没能适应环境变化？"
+    assert first["teaching_hint"] == "从气候变化和适应能力引导孩子理解灭绝。"
     assert first["locator"] == {"kind": "txt", "line_start": 1, "line_end": 1}
     assert "恐龙生活在很久以前" in first["text"]
 
@@ -108,6 +116,8 @@ def test_upload_txt_ingests_segments_and_records_events(monkeypatch, tmp_path: P
     assert second["proposal_id"]
     assert second["proposed_topic_title"] == "小行星撞击导致的气候变化"
     assert second["confidence"] == 0.82
+    assert second["guiding_question"] == "如果天空长期变暗，地球上的动物会遇到什么困难？"
+    assert second["teaching_hint"] == "用遮光、降温、食物减少串起链式影响。"
     assert second["locator"] == {"kind": "txt", "line_start": 3, "line_end": 3}
     assert "3 加 2 等于 5" in second["text"]
 
@@ -341,3 +351,91 @@ def test_document_ingestion_cleans_invalid_parent_ids_with_default_parent(tmp_pa
     state = backend.load_app_state(include_history=False)
     proposal = next(rec for rec in state.learning.graph_proposals if rec.proposal_id == segments[0].proposal_id)
     assert proposal.parent_node_ids == ["demo_01"]
+
+
+def test_approve_resource_proposal_creates_topic_and_relinks_segments(monkeypatch, tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    backend.llm_skill.classify_or_propose_resource_chunk = lambda **_: {
+        "decision": "propose",
+        "topic_id": None,
+        "confidence": 0.82,
+        "reason": "现有节点不够细",
+        "proposed_topic": {
+            "title": "小行星撞击导致的气候变化",
+            "summary": "理解小行星撞击如何引发遮光、降温和生态变化",
+            "parent_node_ids": ["demo_01"],
+            "edge_type": "requires",
+        },
+        "guiding_question": "如果天空长期变暗，会发生什么？",
+        "teaching_hint": "引导孩子把遮光、降温和食物链连接起来。",
+    }
+    client = _make_client(monkeypatch, tmp_path, backend)
+
+    response = client.post(
+        "/v1/resource/upload",
+        data={"topic_id": "demo_01", "resource_name": "气候链式变化", "category": "learn"},
+        files={"file": ("sample.txt", "小行星撞击会让天空变暗，气候变冷。".encode("utf-8"), "text/plain")},
+    )
+    assert response.status_code == 200
+    segment = response.json()["resource"]["segments"][0]
+    proposal_id = segment["proposal_id"]
+    assert proposal_id
+
+    approve = client.post(
+        f"/v1/knowledge/proposals/{proposal_id}/approve",
+        json={"tags": ["恐龙", "气候"], "reason": "家长确认新增节点"},
+    )
+    assert approve.status_code == 200
+    approve_payload = approve.json()
+    topic_id = approve_payload["topic"]["topic_id"]
+    assert approve_payload["proposal"]["status"] == "active"
+    assert approve_payload["proposal"]["created_topic_id"] == topic_id
+    assert approve_payload["relinked_segment_count"] == 1
+
+    graph = client.get("/v1/knowledge/graph").json()
+    assert any(topic["topic_id"] == topic_id for topic in graph["topics"])
+
+    segments_response = client.get(f"/v1/resource/{response.json()['resource']['resource_id']}/segments")
+    updated_segment = segments_response.json()["segments"][0]
+    assert updated_segment["status"] == "classified"
+    assert updated_segment["decision"] == "link"
+    assert updated_segment["topic_id"] == topic_id
+    assert updated_segment["guiding_question"] == "如果天空长期变暗，会发生什么？"
+
+
+def test_reject_resource_proposal_marks_segments_unclassified(monkeypatch, tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    backend.llm_skill.classify_or_propose_resource_chunk = lambda **_: {
+        "decision": "propose",
+        "topic_id": None,
+        "confidence": 0.82,
+        "reason": "现有节点不够细",
+        "proposed_topic": {
+            "title": "临时提案",
+            "summary": "稍后拒绝",
+            "parent_node_ids": ["demo_01"],
+            "edge_type": "requires",
+        },
+        "guiding_question": "我们要不要新增这个知识点？",
+        "teaching_hint": "等待家长判断。",
+    }
+    client = _make_client(monkeypatch, tmp_path, backend)
+
+    response = client.post(
+        "/v1/resource/upload",
+        data={"topic_id": "demo_01", "resource_name": "待拒绝提案", "category": "learn"},
+        files={"file": ("sample.txt", "这是一段待审核新知识。".encode("utf-8"), "text/plain")},
+    )
+    proposal_id = response.json()["resource"]["segments"][0]["proposal_id"]
+
+    rejected = client.post(f"/v1/knowledge/proposals/{proposal_id}/reject", json={"reason": "不需要新增"})
+    assert rejected.status_code == 200
+    assert rejected.json()["proposal"]["status"] == "rejected"
+    assert rejected.json()["relinked_segment_count"] == 1
+
+    segments_response = client.get(f"/v1/resource/{response.json()['resource']['resource_id']}/segments")
+    updated_segment = segments_response.json()["segments"][0]
+    assert updated_segment["status"] == "unclassified"
+    assert updated_segment["decision"] == "unclassified"
+    assert updated_segment["topic_id"] is None
+    assert updated_segment["proposal_id"] is None

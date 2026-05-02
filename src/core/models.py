@@ -66,6 +66,8 @@ class ResourceSegment(BaseModel):
     decision: str = "link"
     confidence: float = 0.0
     reason: str = ""
+    guiding_question: Optional[str] = None
+    teaching_hint: Optional[str] = None
 
 
 class ResourceRecord(BaseModel):

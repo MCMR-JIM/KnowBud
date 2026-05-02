@@ -51,6 +51,24 @@ class ProposalInfo(BaseModel):
     updated_ts: str
 
 
+class ProposalReviewRequest(BaseModel):
+    title: Optional[str] = None
+    summary: Optional[str] = None
+    parent_node_ids: Optional[list[str]] = None
+    edge_type: Optional[str] = None
+    difficulty: int = Field(default=1, ge=1, le=5)
+    tags: list[str] = Field(default_factory=list)
+    reason: Optional[str] = None
+
+
+class ProposalReviewResponse(BaseModel):
+    session_id: str
+    proposal: ProposalInfo
+    topic: Optional[TopicInfo] = None
+    relinked_segment_count: int = 0
+    rescanned_segment_count: int = 0
+
+
 class MasteryInfo(BaseModel):
     topic_id: str
     mastery_state: str
@@ -136,6 +154,8 @@ class ResourceSegmentInfo(BaseModel):
     decision: str = "link"
     confidence: float = 0.0
     reason: str = ""
+    guiding_question: Optional[str] = None
+    teaching_hint: Optional[str] = None
 
 
 class ResourceInfo(BaseModel):

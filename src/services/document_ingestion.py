@@ -291,6 +291,8 @@ def _classify_chunk(
         "confidence": 0.0,
         "reason": "未找到合适知识点",
         "proposed_topic": None,
+        "guiding_question": "",
+        "teaching_hint": "",
     }
     proposal_id: str | None = None
     proposed_topic_title: str | None = None
@@ -323,6 +325,8 @@ def _classify_chunk(
                             "confidence": float(normalized["confidence"]),
                             "reason": str(normalized["reason"]),
                             "proposed_topic": None,
+                            "guiding_question": str(normalized.get("guiding_question", "")),
+                            "teaching_hint": str(normalized.get("teaching_hint", "")),
                         }
     except Exception as exc:
         normalized = {
@@ -331,6 +335,8 @@ def _classify_chunk(
             "confidence": 0.0,
             "reason": f"分类失败: {str(exc)[:60]}",
             "proposed_topic": None,
+            "guiding_question": "",
+            "teaching_hint": "",
         }
 
     if normalized["decision"] == "link" and normalized["topic_id"]:
@@ -357,6 +363,8 @@ def _classify_chunk(
         decision=str(normalized["decision"]),
         confidence=float(normalized["confidence"]),
         reason=str(normalized["reason"]),
+        guiding_question=str(normalized.get("guiding_question", "")) or None,
+        teaching_hint=str(normalized.get("teaching_hint", "")) or None,
     )
 
 
@@ -376,6 +384,10 @@ def _normalize_chunk_decision(
     topic_id = raw_topic_id if isinstance(raw_topic_id, str) and raw_topic_id in valid_topic_ids else None
     raw_reason = result.get("reason")
     reason = raw_reason.strip()[:80] if isinstance(raw_reason, str) and raw_reason.strip() else "未找到合适知识点"
+    raw_guiding_question = result.get("guiding_question")
+    guiding_question = raw_guiding_question.strip()[:60] if isinstance(raw_guiding_question, str) else ""
+    raw_teaching_hint = result.get("teaching_hint")
+    teaching_hint = raw_teaching_hint.strip()[:80] if isinstance(raw_teaching_hint, str) else ""
 
     raw_confidence = result.get("confidence", 0.0)
     try:
@@ -431,6 +443,8 @@ def _normalize_chunk_decision(
         "confidence": confidence,
         "reason": reason,
         "proposed_topic": proposed_topic,
+        "guiding_question": guiding_question,
+        "teaching_hint": teaching_hint,
     }
 
 
@@ -455,6 +469,8 @@ def _status_segment(
         decision="unclassified",
         confidence=0.0,
         reason=reason[:80],
+        guiding_question=None,
+        teaching_hint=None,
     )
 
 
