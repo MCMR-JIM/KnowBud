@@ -268,7 +268,13 @@ def get_max_audio_bytes() -> int:
 
 @app.get("/health", tags=["system"])
 def health():
-    return {"ok": True}
+    backend = get_backend()
+    return {
+        "ok": True,
+        "service": "looptutor-api",
+        "version": API_VERSION,
+        "arch_mode": getattr(backend, "learning_arch_mode", "unknown"),
+    }
 
 
 @app.get("/v1/session/state", response_model=SessionStateResponse, tags=["session"])
@@ -394,15 +400,18 @@ def get_events(after: int = 0, limit: int = 50) -> EventListResponse:
 @app.post("/v1/session/review/push", response_model=PushReviewResponse, tags=["session"])
 def push_review_topic(payload: PushReviewRequest) -> PushReviewResponse:
     backend = get_backend()
+    runtime = get_runtime()
     requested_topic_id = (payload.topic_id or payload.content or "").strip()
     if not requested_topic_id:
         raise HTTPException(status_code=400, detail="topic_id is required")
 
-    topic = backend.get_topic(requested_topic_id)
+    topic = backend.get_topic(requested_topic_id) if hasattr(backend, "get_topic") else None
+    if topic is None:
+        state = runtime.load_state()
+        topic = next((item for item in state.curriculum.topics if item.topic_id == requested_topic_id), None)
     if topic is None:
         raise HTTPException(status_code=404, detail=f"topic_id not found: {requested_topic_id}")
 
-    runtime = get_runtime()
     state, queued = runtime.push_review_topic(requested_topic_id)
     return PushReviewResponse(
         session_id=SINGLE_SESSION_ID,
