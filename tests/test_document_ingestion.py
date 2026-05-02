@@ -278,6 +278,41 @@ def test_get_topic_resources_includes_resources_matched_by_segment_topic(monkeyp
     assert any(segment["topic_id"] == "demo_01" for segment in resource["segments"])
 
 
+def test_get_topic_teaching_cues_returns_guiding_questions(monkeypatch, tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    backend.llm_skill.classify_or_propose_resource_chunk = lambda **_: {
+        "decision": "link",
+        "topic_id": "demo_01",
+        "confidence": 0.9,
+        "reason": "片段讨论恐龙灭绝",
+        "proposed_topic": None,
+        "guiding_question": "你觉得恐龙为什么没能适应环境变化？",
+        "teaching_hint": "从气候变化和适应能力引导孩子理解灭绝。",
+    }
+    client = _make_client(monkeypatch, tmp_path, backend)
+
+    upload_response = client.post(
+        "/v1/resource/upload",
+        data={"topic_id": "demo_01", "resource_name": "引导问题测试", "category": "learn"},
+        files={"file": ("sample.txt", "恐龙没能适应环境变化。".encode("utf-8"), "text/plain")},
+    )
+    assert upload_response.status_code == 200
+    resource_id = upload_response.json()["resource"]["resource_id"]
+
+    response = client.get("/v1/resource/topics/demo_01/teaching-cues")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["topic_id"] == "demo_01"
+    assert len(payload["cues"]) == 1
+    cue = payload["cues"][0]
+    assert cue["resource_id"] == resource_id
+    assert cue["resource_name"] == "引导问题测试"
+    assert cue["guiding_question"] == "你觉得恐龙为什么没能适应环境变化？"
+    assert cue["teaching_hint"] == "从气候变化和适应能力引导孩子理解灭绝。"
+    assert "恐龙没能适应环境变化" in cue["text"]
+
+
 def test_document_ingestion_links_existing_topic(tmp_path: Path) -> None:
     backend = _build_backend(tmp_path)
 

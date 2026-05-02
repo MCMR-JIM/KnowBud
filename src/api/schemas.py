@@ -173,6 +173,19 @@ class ResourceInfo(BaseModel):
     segments: list[ResourceSegmentInfo] = Field(default_factory=list)
 
 
+class ResourceTeachingCueInfo(BaseModel):
+    resource_id: str
+    resource_name: str
+    media_type: str
+    segment_id: str
+    sequence_index: int = 0
+    text: Optional[str] = None
+    locator: dict[str, Any] = Field(default_factory=dict)
+    guiding_question: Optional[str] = None
+    teaching_hint: Optional[str] = None
+    confidence: float = 0.0
+
+
 class ResourceUploadResponse(BaseModel):
     session_id: str
     queued: bool
@@ -185,6 +198,13 @@ class TopicResourceListResponse(BaseModel):
     topic_id: str
     topic_title: str
     resources: list[ResourceInfo] = Field(default_factory=list)
+
+
+class TopicTeachingCueListResponse(BaseModel):
+    session_id: str
+    topic_id: str
+    topic_title: str
+    cues: list[ResourceTeachingCueInfo] = Field(default_factory=list)
 
 
 class ResourceSegmentListResponse(BaseModel):

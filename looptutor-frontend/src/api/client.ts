@@ -64,6 +64,7 @@ export const ResourceAPI = {
     });
   },
   getTopicResources: (topicId: string) => apiClient.get(`/resource/topics/${topicId}`),
+  getTopicTeachingCues: (topicId: string) => apiClient.get(`/resource/topics/${topicId}/teaching-cues`),
   getResourceSegments: (resourceId: string) => apiClient.get(`/resource/${resourceId}/segments`),
 };
 

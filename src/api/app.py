@@ -37,6 +37,7 @@ from src.api.schemas import (
     ResourceInfo,
     ResourceSegmentListResponse,
     ResourceSegmentInfo,
+    ResourceTeachingCueInfo,
     ResourceUploadResponse,
     ReviewQueueResponse,
     SessionLearningState,
@@ -47,6 +48,7 @@ from src.api.schemas import (
     StreamInterruptResponse,
     StreamTurnInitResponse,
     TextTurnRequest,
+    TopicTeachingCueListResponse,
     TopicResourceListResponse,
     TopicInfo,
     TurnResponse,
@@ -569,6 +571,43 @@ def get_topic_resources(topic_id: str) -> TopicResourceListResponse:
         topic_id=topic.topic_id,
         topic_title=topic.title,
         resources=[_resource_info(resource, topic.title) for resource in resources],
+    )
+
+
+@app.get("/v1/resource/topics/{topic_id}/teaching-cues", response_model=TopicTeachingCueListResponse, tags=["resource"])
+def get_topic_teaching_cues(topic_id: str) -> TopicTeachingCueListResponse:
+    backend = get_backend()
+    topic = backend.get_topic(topic_id)
+    if topic is None:
+        raise HTTPException(status_code=404, detail=f"topic_id not found: {topic_id}")
+
+    cues: list[ResourceTeachingCueInfo] = []
+    for resource in backend.list_resources_related_to_topic(topic_id):
+        for segment in resource.segments:
+            if segment.status != "classified" or segment.topic_id != topic_id:
+                continue
+            if not segment.guiding_question and not segment.teaching_hint:
+                continue
+            cues.append(
+                ResourceTeachingCueInfo(
+                    resource_id=resource.resource_id,
+                    resource_name=resource.resource_name,
+                    media_type=resource.media_type,
+                    segment_id=segment.segment_id,
+                    sequence_index=segment.sequence_index,
+                    text=segment.text,
+                    locator=segment.locator,
+                    guiding_question=segment.guiding_question,
+                    teaching_hint=segment.teaching_hint,
+                    confidence=segment.confidence,
+                )
+            )
+
+    return TopicTeachingCueListResponse(
+        session_id=SINGLE_SESSION_ID,
+        topic_id=topic.topic_id,
+        topic_title=topic.title,
+        cues=cues,
     )
 
 
