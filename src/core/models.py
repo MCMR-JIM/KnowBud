@@ -55,6 +55,15 @@ class ResourceSegment(BaseModel):
     end_ms: int | None = None
     label: str = "full"
     status: str = "confirmed"
+    sequence_index: int = 0
+    text: str | None = None
+    locator: dict[str, Any] = Field(default_factory=dict)
+    topic_id: str | None = None
+    proposal_id: str | None = None
+    proposed_topic_title: str | None = None
+    decision: str = "link"
+    confidence: float = 0.0
+    reason: str = ""
 
 
 class ResourceRecord(BaseModel):

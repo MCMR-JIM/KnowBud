@@ -41,7 +41,10 @@ class TopicInfo(BaseModel):
 class ProposalInfo(BaseModel):
     proposal_id: str
     title: str
+    summary: str = ""
     trigger: str
+    parent_node_ids: list[str] = Field(default_factory=list)
+    edge_type: str = "requires"
     status: str
     reason: str
     created_topic_id: str | None = None
@@ -124,6 +127,15 @@ class ResourceSegmentInfo(BaseModel):
     end_ms: int | None = None
     label: str
     status: str
+    sequence_index: int = 0
+    text: str | None = None
+    locator: dict[str, Any] = Field(default_factory=dict)
+    topic_id: str | None = None
+    proposal_id: str | None = None
+    proposed_topic_title: str | None = None
+    decision: str = "link"
+    confidence: float = 0.0
+    reason: str = ""
 
 
 class ResourceInfo(BaseModel):
@@ -153,6 +165,11 @@ class TopicResourceListResponse(BaseModel):
     topic_id: str
     topic_title: str
     resources: list[ResourceInfo] = Field(default_factory=list)
+
+
+class ResourceSegmentListResponse(BaseModel):
+    resource_id: str
+    segments: list[ResourceSegmentInfo] = Field(default_factory=list)
 
 
 class CreateSessionRequest(BaseModel):

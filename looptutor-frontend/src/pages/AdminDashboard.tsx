@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { BookOpen, AlertCircle, Clock, Video, Info } from 'lucide-react';
 import { API_BASE } from '../api/config';
+import { ResourceAPI } from '../api/client';
 
 export default function AdminDashboard() {
   const navigate = useNavigate();
@@ -17,6 +18,16 @@ export default function AdminDashboard() {
   const [selectedPushTopicId, setSelectedPushTopicId] = useState('');
   const [uploadCategory, setUploadCategory] = useState<'learn' | 'review'>('learn');
   const [knowledgeTopics, setKnowledgeTopics] = useState<{ topicId: string; title: string }[]>([]);
+  const [lastUploadSummary, setLastUploadSummary] = useState<{
+    resourceId: string;
+    mediaType: string;
+    segmentCount: number;
+    classifiedCount: number;
+    proposedCount: number;
+    unclassifiedCount: number;
+    parseFailedCount: number;
+    unsupportedCount: number;
+  } | null>(null);
 
   // 后端真实数据
   const [learningData, setLearningData] = useState({
@@ -301,6 +312,7 @@ export default function AdminDashboard() {
 
     setUploadFile(file);
     setResourceName(file.name.split('.')[0]);
+    setLastUploadSummary(null);
     return true;
   };
 
@@ -350,25 +362,32 @@ export default function AdminDashboard() {
 
     setUploading(true);
     try {
-      const formData = new FormData();
-      formData.append("file", uploadFile);
-      formData.append("topic_id", selectedUploadTopicId);
-      formData.append("resource_name", resourceName);
-      formData.append("category", uploadCategory);
-
-      const res = await fetch(`${apiBaseUrl}/resource/upload`, {
-        method: "POST",
-        body: formData
+      const res = await ResourceAPI.uploadResource({
+        file: uploadFile,
+        topicId: selectedUploadTopicId,
+        resourceName,
+        category: uploadCategory,
       });
 
-      if (res.ok) {
-        alert("✅ 资源上传成功，已绑定到知识节点");
-        setUploadFile(null);
-        setResourceName("");
-        fetchAllData();
-      } else {
-        alert("❌ 上传失败，请检查后端接口");
-      }
+      const resource = res.data?.resource;
+      const resourceId = resource?.resource_id;
+      const segmentRes = resourceId ? await ResourceAPI.getResourceSegments(resourceId) : null;
+      const segments = segmentRes?.data?.segments || resource?.segments || [];
+      setLastUploadSummary({
+        resourceId: resourceId || '',
+        mediaType: resource?.media_type || '',
+        segmentCount: segments.length,
+        classifiedCount: segments.filter((segment: any) => segment.status === 'classified').length,
+        proposedCount: segments.filter((segment: any) => segment.status === 'proposed').length,
+        unclassifiedCount: segments.filter((segment: any) => segment.status === 'unclassified').length,
+        parseFailedCount: segments.filter((segment: any) => segment.status === 'parse_failed').length,
+        unsupportedCount: segments.filter((segment: any) => segment.status === 'unsupported').length,
+      });
+
+      alert("✅ 资源上传成功，已绑定到知识节点");
+      setUploadFile(null);
+      setResourceName("");
+      fetchAllData();
     } catch (error) {
       console.error("上传失败", error);
       alert("❌ 无法连接后端上传服务");
@@ -535,6 +554,16 @@ export default function AdminDashboard() {
               >
                 {uploading ? "上传中..." : "保存配置并生成题库"}
               </button>
+              {lastUploadSummary && (
+                <div className="mt-4 rounded-lg border border-pink-100 bg-pink-50 p-3 text-xs text-gray-700 space-y-1">
+                  <p className="font-medium text-pink-600">文档处理结果</p>
+                  <p>资源 ID：{lastUploadSummary.resourceId}</p>
+                  <p>类型：{lastUploadSummary.mediaType || 'unknown'}</p>
+                  <p>分段总数：{lastUploadSummary.segmentCount}</p>
+                  <p>已归类：{lastUploadSummary.classifiedCount}，候选提案：{lastUploadSummary.proposedCount}</p>
+                  <p>未归类：{lastUploadSummary.unclassifiedCount}，解析失败：{lastUploadSummary.parseFailedCount}，暂不支持：{lastUploadSummary.unsupportedCount}</p>
+                </div>
+              )}
             </div>
 
             <div>

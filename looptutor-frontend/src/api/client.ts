@@ -46,3 +46,23 @@ export const SessionAPI = {
   // ================= 5. 知识图谱 (新增) =================
   getKnowledgeGraph: () => apiClient.get('/knowledge/graph'),
 };
+
+export const ResourceAPI = {
+  uploadResource: (payload: {
+    file: File | Blob;
+    topicId: string;
+    resourceName: string;
+    category?: 'learn' | 'review';
+  }) => {
+    const formData = new FormData();
+    formData.append('file', payload.file);
+    formData.append('topic_id', payload.topicId);
+    formData.append('resource_name', payload.resourceName);
+    formData.append('category', payload.category || 'learn');
+    return apiClient.post('/resource/upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    });
+  },
+  getTopicResources: (topicId: string) => apiClient.get(`/resource/topics/${topicId}`),
+  getResourceSegments: (resourceId: string) => apiClient.get(`/resource/${resourceId}/segments`),
+};

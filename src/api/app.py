@@ -33,6 +33,7 @@ from src.api.schemas import (
     PushReviewResponse,
     ReviewQueueItem,
     ResourceInfo,
+    ResourceSegmentListResponse,
     ResourceSegmentInfo,
     ResourceUploadResponse,
     ReviewQueueResponse,
@@ -48,6 +49,7 @@ from src.api.schemas import (
     TopicInfo,
     TurnResponse,
 )
+from src.services.document_ingestion import ingest_document_resource
 
 if TYPE_CHECKING:
     from src.services.session_backend import SessionBackend
@@ -484,6 +486,16 @@ async def upload_resource(
         size_bytes=stored_path.stat().st_size,
     )
 
+    if media_type in {"txt", "pdf", "docx", "pptx", "doc"}:
+        topics = backend.load_app_state(include_history=False).curriculum.topics
+        segments = ingest_document_resource(
+            backend=backend,
+            record=record,
+            topics=topics,
+            default_topic_id=normalized_topic_id,
+        )
+        record = record.model_copy(update={"segments": segments})
+
     runtime = get_runtime()
     if normalized_category == "review":
         state, queued = runtime.push_review_topic(normalized_topic_id)
@@ -505,6 +517,26 @@ async def upload_resource(
         },
     )
 
+    if media_type in {"txt", "pdf", "docx", "pptx", "doc"}:
+        classified_count = sum(1 for segment in record.segments if segment.status == "classified")
+        proposed_count = sum(1 for segment in record.segments if segment.status == "proposed")
+        unclassified_count = sum(1 for segment in record.segments if segment.status == "unclassified")
+        parse_failed_count = sum(1 for segment in record.segments if segment.status == "parse_failed")
+        unsupported_count = sum(1 for segment in record.segments if segment.status == "unsupported")
+        backend.append_learning_event(
+            kind="resource_ingested",
+            payload={
+                "resource_id": record.resource_id,
+                "segment_count": len(record.segments),
+                "classified_count": classified_count,
+                "proposed_count": proposed_count,
+                "unclassified_count": unclassified_count,
+                "parse_failed_count": parse_failed_count,
+                "unsupported_count": unsupported_count,
+                "media_type": media_type,
+            },
+        )
+
     return ResourceUploadResponse(
         session_id=SINGLE_SESSION_ID,
         queued=queued,
@@ -520,12 +552,25 @@ def get_topic_resources(topic_id: str) -> TopicResourceListResponse:
     if topic is None:
         raise HTTPException(status_code=404, detail=f"topic_id not found: {topic_id}")
 
-    resources = backend.list_resources_by_topic(topic_id)
+    resources = backend.list_resources_related_to_topic(topic_id)
     return TopicResourceListResponse(
         session_id=SINGLE_SESSION_ID,
         topic_id=topic.topic_id,
         topic_title=topic.title,
         resources=[_resource_info(resource, topic.title) for resource in resources],
+    )
+
+
+@app.get("/v1/resource/{resource_id}/segments", response_model=ResourceSegmentListResponse, tags=["resource"])
+def get_resource_segments(resource_id: str) -> ResourceSegmentListResponse:
+    backend = get_backend()
+    record = backend.get_resource(resource_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"resource_id not found: {resource_id}")
+
+    return ResourceSegmentListResponse(
+        resource_id=resource_id,
+        segments=[_resource_segment_info(segment) for segment in record.segments],
     )
 
 
@@ -814,7 +859,10 @@ def _proposal_info(record) -> ProposalInfo:
     return ProposalInfo(
         proposal_id=record.proposal_id,
         title=record.title,
+        summary=record.summary,
         trigger=record.trigger,
+        parent_node_ids=list(record.parent_node_ids),
+        edge_type=record.edge_type,
         status=record.status,
         reason=record.reason,
         created_topic_id=record.created_topic_id,
@@ -848,16 +896,26 @@ def _resource_info(record, topic_title: str) -> ResourceInfo:
         resource_url=f"/v1/resource/files/{record.resource_id}",
         size_bytes=record.size_bytes,
         created_ts=record.created_ts,
-        segments=[
-            ResourceSegmentInfo(
-                segment_id=segment.segment_id,
-                start_ms=segment.start_ms,
-                end_ms=segment.end_ms,
-                label=segment.label,
-                status=segment.status,
-            )
-            for segment in record.segments
-        ],
+        segments=[_resource_segment_info(segment) for segment in record.segments],
+    )
+
+
+def _resource_segment_info(segment) -> ResourceSegmentInfo:
+    return ResourceSegmentInfo(
+        segment_id=segment.segment_id,
+        start_ms=segment.start_ms,
+        end_ms=segment.end_ms,
+        label=segment.label,
+        status=segment.status,
+        sequence_index=segment.sequence_index,
+        text=segment.text,
+        locator=segment.locator,
+        topic_id=segment.topic_id,
+        proposal_id=segment.proposal_id,
+        proposed_topic_title=segment.proposed_topic_title,
+        decision=segment.decision,
+        confidence=segment.confidence,
+        reason=segment.reason,
     )
 
 

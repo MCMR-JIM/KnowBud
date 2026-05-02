@@ -1,10 +1,27 @@
+from __future__ import annotations
+
 import json
 import httpx  # 🚀 新增这一行：用于配置底层网络
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from openai import OpenAI
 
 from src.skills.base_skill import BaseSkill, SkillContext
-from src.core.models import PendingQuestion, EvaluationResult, RadarScore
+from src.core.models import PendingQuestion, EvaluationResult, RadarScore, TopicNode
+
+
+class ProposedTopicPayload(BaseModel):
+    title: str = ""
+    summary: str = ""
+    parent_node_ids: list[str] = Field(default_factory=list)
+    edge_type: str = "requires"
+
+
+class ResourceChunkProposalDecision(BaseModel):
+    decision: str = "unclassified"
+    topic_id: str | None = None
+    confidence: float = 0.0
+    reason: str = "未找到合适知识点"
+    proposed_topic: ProposedTopicPayload | None = None
 
 class LLMTutorSkill(BaseSkill):
     """大模型导师技能：负责根据知识点出题，以及批改儿童的答案"""
@@ -105,6 +122,119 @@ class LLMTutorSkill(BaseSkill):
             model_class=EvaluationResult,
             fallback_obj=fallback
         )
+
+    def classify_or_propose_resource_chunk(
+        self,
+        *,
+        chunk_text: str,
+        topics: list[TopicNode],
+        default_parent_topic_id: str | None = None,
+    ) -> dict[str, object]:
+        text = chunk_text.strip()
+        fallback = ResourceChunkProposalDecision()
+        if not text or not topics:
+            return fallback.model_dump()
+
+        topic_payload = [
+            {
+                "topic_id": topic.topic_id,
+                "title": topic.title,
+                "tags": topic.tags,
+                "prerequisite_ids": topic.prerequisite_ids,
+            }
+            for topic in topics
+        ]
+        system_prompt = (
+            "你是儿童学习知识图谱策展助手。你的任务是判断一个教学资源片段应该挂到已有知识节点，"
+            "还是应该提出一个新知识节点。只能复用给定的已有节点；如果没有合适节点，但片段表达了明确、"
+            "可教学的知识点，请提出新节点。不要为了泛泛内容创建节点。"
+        )
+        user_prompt = (
+            "给定已有知识节点列表：\n"
+            f"{json.dumps(topic_payload, ensure_ascii=False)}\n\n"
+            "默认父节点：\n"
+            f"{json.dumps(default_parent_topic_id, ensure_ascii=False)}\n\n"
+            "待处理资源片段：\n"
+            f"```text\n{text[:4000]}\n```\n"
+            '只返回 JSON：{ "decision": "link" | "propose" | "unclassified", "topic_id": string|null, '
+            '"confidence": number, "reason": string, "proposed_topic": { "title": string, '
+            '"summary": string, "parent_node_ids": [string], "edge_type": "requires" | "supports" | "related" } | null }'
+        )
+
+        result = self._call_and_parse(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model_class=ResourceChunkProposalDecision,
+            fallback_obj=fallback,
+        )
+        return self._sanitize_resource_chunk_decision(
+            result=result,
+            topics=topics,
+            default_parent_topic_id=default_parent_topic_id,
+        )
+
+    def _sanitize_resource_chunk_decision(
+        self,
+        *,
+        result: ResourceChunkProposalDecision,
+        topics: list[TopicNode],
+        default_parent_topic_id: str | None,
+    ) -> dict[str, object]:
+        valid_topic_ids = {topic.topic_id for topic in topics}
+        allowed_decisions = {"link", "propose", "unclassified"}
+        allowed_edge_types = {"requires", "supports", "related"}
+
+        decision = result.decision if result.decision in allowed_decisions else "unclassified"
+        topic_id = result.topic_id if result.topic_id in valid_topic_ids else None
+        try:
+            confidence = max(0.0, min(1.0, float(result.confidence)))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        reason = (result.reason or "未找到合适知识点").strip()[:80]
+
+        proposed_topic: dict[str, object] | None = None
+        if decision == "propose" and result.proposed_topic is not None:
+            title = result.proposed_topic.title.strip()
+            summary = result.proposed_topic.summary.strip()
+            parent_node_ids = [
+                parent_id for parent_id in result.proposed_topic.parent_node_ids if parent_id in valid_topic_ids
+            ]
+            if not parent_node_ids and default_parent_topic_id in valid_topic_ids:
+                parent_node_ids = [default_parent_topic_id]
+            edge_type = result.proposed_topic.edge_type if result.proposed_topic.edge_type in allowed_edge_types else "requires"
+            if title:
+                proposed_topic = {
+                    "title": title,
+                    "summary": summary,
+                    "parent_node_ids": parent_node_ids,
+                    "edge_type": edge_type,
+                }
+
+        if confidence < 0.55:
+            decision = "unclassified"
+
+        if decision == "link":
+            if topic_id is None:
+                decision = "unclassified"
+        elif decision == "propose":
+            topic_id = None
+            if proposed_topic is None:
+                decision = "unclassified"
+        else:
+            topic_id = None
+            proposed_topic = None
+
+        if decision == "unclassified":
+            topic_id = None
+            proposed_topic = None
+
+        return {
+            "decision": decision,
+            "topic_id": topic_id,
+            "confidence": confidence,
+            "reason": reason,
+            "proposed_topic": proposed_topic,
+        }
 
     def _call_and_parse(self, system_prompt: str, user_prompt: str, model_class, fallback_obj):
         messages = [
