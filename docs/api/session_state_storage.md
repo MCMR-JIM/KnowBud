@@ -58,6 +58,57 @@ ON learning_events(kind);
 - `event_id`：事件游标，供 API 分页读取。
 - `payload_json`：事件负载（JSON 对象）。
 
+### `resource_library`
+
+保存资源文件级元数据。文档资源的权威分段数据在 `resource_segments`，本表的 `segments_json` 保留为旧数据回退。
+
+```sql
+CREATE TABLE IF NOT EXISTS resource_library (
+  resource_id TEXT PRIMARY KEY,
+  topic_id TEXT NOT NULL,
+  resource_name TEXT NOT NULL,
+  category TEXT NOT NULL,
+  media_type TEXT NOT NULL,
+  mime_type TEXT NOT NULL,
+  original_filename TEXT NOT NULL,
+  stored_path TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  created_ts TEXT NOT NULL,
+  segments_json TEXT NOT NULL
+);
+```
+
+### `resource_segments`
+
+保存资源片段级数据，包括文档定位、LLM 分类/提案结果、教学引导问题和讲解提示。
+
+```sql
+CREATE TABLE IF NOT EXISTS resource_segments (
+  segment_id TEXT PRIMARY KEY,
+  resource_id TEXT NOT NULL,
+  sequence_index INTEGER NOT NULL,
+  text TEXT NOT NULL,
+  locator_json TEXT NOT NULL,
+  topic_id TEXT,
+  proposal_id TEXT,
+  proposed_topic_title TEXT,
+  decision TEXT NOT NULL DEFAULT 'link',
+  guiding_question TEXT,
+  teaching_hint TEXT,
+  confidence REAL NOT NULL,
+  status TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  created_ts TEXT NOT NULL
+);
+```
+
+- `decision`：`link`、`propose`、`unclassified`。
+- `status`：常见值包括 `classified`、`proposed`、`unclassified`、`parse_failed`、`unsupported`。
+- `topic_id`：片段已归类到的真实知识节点。
+- `proposal_id`：片段触发的新知识节点提案。
+- `guiding_question` / `teaching_hint`：给儿童端或老师端直接使用的引导内容。
+- 启动时会用 `ALTER TABLE ADD COLUMN` 对旧库补齐新增列。
+
 ## 事务与一致性
 
 - SQLite `WAL` 模式：`PRAGMA journal_mode=WAL`。

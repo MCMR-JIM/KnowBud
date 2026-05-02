@@ -9,7 +9,9 @@
 - 文本/音频输入回合处理
 - 实时语音流式播放与打断
 - 复习队列、知识图谱、掌握度查询
-- 学习资源上传、索引与文件访问
+- 学习资源上传、文档解析分块、资源驱动扩图与文件访问
+- AI 资源片段教学引导问题
+- 知识图谱提案审核、批准、拒绝与片段回挂
 - 探索奖励时间窗控制
 
 ## Run
@@ -84,13 +86,16 @@ uvicorn src.api.app:app --host 0.0.0.0 --port 8090 --reload
 - `learning_events`
   - 保存学习事件日志，支持按游标分页读取
 - `resource_library`
-  - 保存资源元数据、分段信息与存储路径
+  - 保存资源元数据、旧版分段 JSON 回退信息与存储路径
+- `resource_segments`
+  - 保存文档解析后的片段正文、定位、归类结果、扩图提案关联和教学引导提示
 
 设计目的：
 
 - 保证状态更新事务性
 - 支持长会话增量读取事件，而不是一次性加载全部历史
 - 支持资源库与知识节点绑定
+- 支持资源片段级知识点归类、提案扩图和后续回挂
 
 ## Response and error format
 
@@ -179,7 +184,10 @@ uvicorn src.api.app:app --host 0.0.0.0 --port 8090 --reload
 | --- | --- | --- |
 | `proposal_id` | `string` | 提案 ID |
 | `title` | `string` | 提案标题 |
+| `summary` | `string` | 提案摘要，说明建议新增节点覆盖的知识点 |
 | `trigger` | `string` | 触发来源 |
+| `parent_node_ids` | `string[]` | 建议连接到的父/前置节点 ID 列表 |
+| `edge_type` | `string` | 建议边类型，常见值：`requires`、`supports`、`related` |
 | `status` | `string` | 当前状态 |
 | `reason` | `string` | 触发原因 |
 | `created_topic_id` | `string \| null` | 若已创建主题，则为新主题 ID |
@@ -233,6 +241,23 @@ uvicorn src.api.app:app --host 0.0.0.0 --port 8090 --reload
 | `decision` | `string` | 片段分类决策：`link`、`propose`、`unclassified` |
 | `confidence` | `number` | 分类或提案置信度，范围 `0..1` |
 | `reason` | `string` | 分类/提案原因摘要 |
+| `guiding_question` | `string \| null` | 老师可直接用于引出该片段学习的儿童友好问题 |
+| `teaching_hint` | `string \| null` | 老师讲解该片段时可用的简短提示 |
+
+### ResourceTeachingCueInfo
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `resource_id` | `string` | 来源资源 ID |
+| `resource_name` | `string` | 来源资源名称 |
+| `media_type` | `string` | 来源资源类型 |
+| `segment_id` | `string` | 来源片段 ID |
+| `sequence_index` | `integer` | 片段顺序 |
+| `text` | `string \| null` | 片段文本 |
+| `locator` | `object` | 文档定位信息 |
+| `guiding_question` | `string \| null` | 教师引导问题 |
+| `teaching_hint` | `string \| null` | 教师讲解提示 |
+| `confidence` | `number` | 该片段归类置信度 |
 
 ### ResourceInfo
 
@@ -576,6 +601,9 @@ uvicorn src.api.app:app --host 0.0.0.0 --port 8090 --reload
 - `api_turn_completed`
 - `review_topic_pushed`
 - `resource_uploaded`
+- `resource_ingested`
+- `graph_proposal_approved`
+- `graph_proposal_rejected`
 - `explore_window_opened`
 - `explore_window_open_blocked`
 - `explore_window_closed`
@@ -741,7 +769,9 @@ uvicorn src.api.app:app --host 0.0.0.0 --port 8090 --reload
         "proposed_topic_title": null,
         "decision": "link",
         "confidence": 0.91,
-        "reason": "片段讨论当前知识点"
+        "reason": "片段讨论当前知识点",
+        "guiding_question": "你觉得恐龙为什么没能适应环境变化？",
+        "teaching_hint": "从气候变化和适应能力引导孩子理解灭绝。"
       }
     ]
   }
@@ -776,6 +806,8 @@ uvicorn src.api.app:app --host 0.0.0.0 --port 8090 --reload
 - 如果缺少对应解析依赖，或文件本身损坏，分段状态可能为 `parse_failed`
 - 文档上传成功不代表每个分段都已归类到知识点；未命中的片段会标记为 `unclassified`
 - 若某个片段被判断应新增知识点，分段会返回 `proposal_id` 和 `proposed_topic_title`
+- LLM 会同时尝试生成 `guiding_question` 和 `teaching_hint`，供儿童端或老师端直接发起讲解
+- `resource_ingested` 事件会统计 `segment_count`、`classified_count`、`proposed_count`、`unclassified_count`、`parse_failed_count`、`unsupported_count`
 
 #### `GET /v1/resource/topics/{topic_id}`
 
@@ -831,7 +863,9 @@ uvicorn src.api.app:app --host 0.0.0.0 --port 8090 --reload
       "proposed_topic_title": null,
       "decision": "link",
       "confidence": 0.91,
-      "reason": "片段讨论当前知识点"
+      "reason": "片段讨论当前知识点",
+      "guiding_question": "你觉得恐龙为什么没能适应环境变化？",
+      "teaching_hint": "从气候变化和适应能力引导孩子理解灭绝。"
     }
   ]
 }
@@ -846,6 +880,49 @@ uvicorn src.api.app:app --host 0.0.0.0 --port 8090 --reload
 
 - 家长端上传成功后，可以调用该接口单独读取文档分段与归类结果
 - 前端也可以直接读取上传接口返回体里的 `resource.segments` 做首屏展示
+
+#### `GET /v1/resource/topics/{topic_id}/teaching-cues`
+
+按知识节点获取可直接用于儿童端/老师端的片段级引导问题。该接口会扁平返回当前 `topic_id` 下已归类片段的 `guiding_question` 和 `teaching_hint`，避免前端先查资源列表再逐个资源拉取 segments。
+
+##### Response `200`
+
+```json
+{
+  "session_id": "default",
+  "topic_id": "topic_demo_01",
+  "topic_title": "恐龙为什么会灭绝？",
+  "cues": [
+    {
+      "resource_id": "res_xxx",
+      "resource_name": "恐龙灭绝资料",
+      "media_type": "txt",
+      "segment_id": "seg_res_xxx_0000_ab12cd",
+      "sequence_index": 0,
+      "text": "恐龙没能适应环境变化。",
+      "locator": {
+        "kind": "txt",
+        "line_start": 1,
+        "line_end": 1
+      },
+      "guiding_question": "你觉得恐龙为什么没能适应环境变化？",
+      "teaching_hint": "从气候变化和适应能力引导孩子理解灭绝。",
+      "confidence": 0.9
+    }
+  ]
+}
+```
+
+##### Filtering behavior
+
+- 只返回 `segment.status == classified` 且 `segment.topic_id == {topic_id}` 的片段
+- 没有 `guiding_question` 且没有 `teaching_hint` 的片段会被跳过
+- 若跨主题资源中某个片段归类到该 `topic_id`，也会出现在结果中
+
+##### Status codes
+
+- `200`：成功返回教学引导问题列表
+- `404`：主题不存在
 
 #### `GET /v1/resource/files/{resource_id}`
 
@@ -878,8 +955,29 @@ uvicorn src.api.app:app --host 0.0.0.0 --port 8090 --reload
 ```json
 {
   "session_id": "default",
-  "topics": [],
-  "proposals": [],
+  "topics": [
+    {
+      "topic_id": "topic_demo_01",
+      "title": "恐龙为什么会灭绝？",
+      "difficulty": 1,
+      "prerequisite_ids": [],
+      "tags": ["science"]
+    }
+  ],
+  "proposals": [
+    {
+      "proposal_id": "proposal_xxx",
+      "title": "小行星撞击导致的气候变化",
+      "summary": "理解小行星撞击如何引发遮光、降温和生态变化",
+      "trigger": "resource_ingest",
+      "parent_node_ids": ["topic_demo_01"],
+      "edge_type": "requires",
+      "status": "proposed",
+      "reason": "现有节点不够细",
+      "created_topic_id": null,
+      "updated_ts": "2026-05-02T10:00:00+00:00"
+    }
+  ],
   "mastery": []
 }
 ```
@@ -887,6 +985,145 @@ uvicorn src.api.app:app --host 0.0.0.0 --port 8090 --reload
 ##### Status codes
 
 - `200`：成功返回图谱快照
+
+#### `GET /v1/knowledge/proposals`
+
+查询知识图谱提案列表。家长端主要用于展示 `resource_ingest` 触发的“AI 建议新增知识点”。
+
+##### Query params
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `status` | `string` | no | 按状态过滤，如 `proposed`、`active`、`rejected` |
+| `trigger` | `string` | no | 按触发来源过滤，如 `resource_ingest` |
+
+##### Response `200`
+
+```json
+[
+  {
+    "proposal_id": "proposal_xxx",
+    "title": "小行星撞击导致的气候变化",
+    "summary": "理解小行星撞击如何引发遮光、降温和生态变化",
+    "trigger": "resource_ingest",
+    "parent_node_ids": ["topic_demo_01"],
+    "edge_type": "requires",
+    "status": "proposed",
+    "reason": "现有节点不够细",
+    "created_topic_id": null,
+    "updated_ts": "2026-05-02T10:00:00+00:00"
+  }
+]
+```
+
+##### Status codes
+
+- `200`：成功返回提案列表
+
+#### `POST /v1/knowledge/proposals/{proposal_id}/approve`
+
+批准知识图谱提案，将其转为真实 `TopicNode` 并回挂相关资源片段。
+
+##### Request body
+
+所有字段均可选；未传时使用 proposal 原始内容。
+
+```json
+{
+  "title": "小行星撞击导致的气候变化",
+  "summary": "理解小行星撞击如何引发遮光、降温和生态变化",
+  "parent_node_ids": ["topic_demo_01"],
+  "edge_type": "requires",
+  "difficulty": 1,
+  "tags": ["parent-approved"],
+  "reason": "家长确认 AI 建议节点"
+}
+```
+
+##### Behavior
+
+1. 校验 proposal 存在且不是 `rejected`
+2. 若 proposal 尚未创建 topic，则创建新的 `TopicNode`
+3. 若 `edge_type=requires`，`parent_node_ids` 会写入新节点的 `prerequisite_ids`
+4. proposal 状态推进到 `active`，并记录 `created_topic_id`
+5. 原先关联该 `proposal_id` 的资源片段会改为 `classified` / `link` 并挂到新 topic
+6. 后端会尝试回扫历史 `unclassified` / `proposed` 片段，重新判断是否可挂到新 topic
+7. 写入 `graph_proposal_approved` 事件
+
+##### Response `200`
+
+```json
+{
+  "session_id": "default",
+  "proposal": {
+    "proposal_id": "proposal_xxx",
+    "title": "小行星撞击导致的气候变化",
+    "summary": "理解小行星撞击如何引发遮光、降温和生态变化",
+    "trigger": "resource_ingest",
+    "parent_node_ids": ["topic_demo_01"],
+    "edge_type": "requires",
+    "status": "active",
+    "reason": "家长确认 AI 建议节点",
+    "created_topic_id": "auto_小行星撞击导致的气候变化",
+    "updated_ts": "2026-05-02T10:00:00+00:00"
+  },
+  "topic": {
+    "topic_id": "auto_小行星撞击导致的气候变化",
+    "title": "小行星撞击导致的气候变化",
+    "difficulty": 1,
+    "prerequisite_ids": ["topic_demo_01"],
+    "tags": ["parent-approved", "resource-approved", "active"]
+  },
+  "relinked_segment_count": 1,
+  "rescanned_segment_count": 0
+}
+```
+
+##### Status codes
+
+- `200`：批准成功
+- `400`：标题为空，或 rejected proposal 被批准
+- `404`：proposal 不存在
+
+#### `POST /v1/knowledge/proposals/{proposal_id}/reject`
+
+拒绝知识图谱提案。相关片段会回到 `unclassified`，不再保留 `proposal_id`。
+
+##### Request body
+
+```json
+{
+  "reason": "家长认为不需要新增"
+}
+```
+
+##### Response `200`
+
+```json
+{
+  "session_id": "default",
+  "proposal": {
+    "proposal_id": "proposal_xxx",
+    "title": "小行星撞击导致的气候变化",
+    "summary": "理解小行星撞击如何引发遮光、降温和生态变化",
+    "trigger": "resource_ingest",
+    "parent_node_ids": ["topic_demo_01"],
+    "edge_type": "requires",
+    "status": "rejected",
+    "reason": "家长认为不需要新增",
+    "created_topic_id": null,
+    "updated_ts": "2026-05-02T10:00:00+00:00"
+  },
+  "topic": null,
+  "relinked_segment_count": 1,
+  "rescanned_segment_count": 0
+}
+```
+
+##### Status codes
+
+- `200`：拒绝成功
+- `404`：proposal 不存在
 
 #### `GET /v1/session/mastery`
 
