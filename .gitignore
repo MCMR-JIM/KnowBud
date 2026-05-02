@@ -44,3 +44,6 @@ htmlcov/
 
 # 前端依赖与产物 (Frontend)
 node_modules/
+data/state.db
+data/state.db-shm
+data/state.db-wal

@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ChevronLeft, Star, Mic, Send, HelpCircle, Loader2, Volume2 } from 'lucide-react';
 import { SessionAPI } from '../api/client';
+import { API_BASE, API_BASE_NO_VERSION } from '../api/config';
 
 const COMPANIONS: Record<string, string> = {
   "星空兔": "🐰",
@@ -10,7 +11,7 @@ const COMPANIONS: Record<string, string> = {
 
 export default function KidsLearning() {
   const navigate = useNavigate();
-  const apiBaseUrl = 'http://127.0.0.1:8090/v1';
+  const apiBaseUrl = API_BASE;
 
   type TopicResource = {
     resource_id: string;
@@ -133,7 +134,7 @@ export default function KidsLearning() {
     if (resourceUrl.startsWith('http://') || resourceUrl.startsWith('https://')) {
       return resourceUrl;
     }
-    return `http://127.0.0.1:8090${resourceUrl}`;
+    return `${API_BASE_NO_VERSION}${resourceUrl}`;
   };
 
   // ================= 🎙️ 录音控制逻辑 =================
@@ -218,7 +219,7 @@ export default function KidsLearning() {
       
       setMessages(prev => [...prev, { role: 'assistant', content: res.data.reply_text }]);
       
-      const audioUrl = `http://127.0.0.1:8090/v1/session/output/audio/stream/${streamId}`;
+      const audioUrl = `${API_BASE}/session/output/audio/stream/${streamId}`;
       const audio = new Audio(audioUrl);
       currentAudioRef.current = audio;
       

@@ -1,7 +1,8 @@
 import axios from 'axios';
+import { API_BASE } from './config';
 
 // 统一指向后端的 FastAPI 接口地址
-const API_BASE_URL = 'http://127.0.0.1:8090/v1';
+const API_BASE_URL = API_BASE;
 
 // 创建一个 Axios 实例
 export const apiClient = axios.create({

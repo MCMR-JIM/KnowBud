@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { API_BASE } from '../api/config';
 
 export default function AdminDashboard() {
   const navigate = useNavigate();
-  const apiBaseUrl = 'http://localhost:8090/v1';
+  const apiBaseUrl = API_BASE;
   // 核心状态
   const [activeTab, setActiveTab] = useState('task');
   const [resourceName, setResourceName] = useState('');
