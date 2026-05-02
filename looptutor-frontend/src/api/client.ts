@@ -33,7 +33,6 @@ export const SessionAPI = {
   sendTextRealtime: (text: string) => apiClient.post('/session/input/text/realtime', { text }),
   // 打断后端施法（停止播报）
   interruptStream: (streamId: string) => apiClient.post(`/session/output/audio/interrupt/${streamId}`),
-  // (注：流式音频播放不需要 Axios，直接在 audio 标签的 src 里填入拼接好的 URL 即可)
 
   // ================= 4. 家长端控制台 =================
   // 推送复习任务
@@ -41,4 +40,10 @@ export const SessionAPI = {
   // 开启/关闭自由探索奖励时间窗
   openExploreWindow: (minutes: number = 5) => apiClient.post('/session/explore-window/open', { minutes }),
   closeExploreWindow: () => apiClient.post('/session/explore-window/close'),
-};  
+
+  // ================= 5. PDF 翻页知识点同步 =================
+  getKnowledgeByPage: (topicId: string, pageNumber: number) => 
+    apiClient.get(`/session/knowledge/page`, { 
+      params: { topic_id: topicId, page: pageNumber } 
+    }),
+};

@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ChevronLeft, Star, Mic, Send, HelpCircle, Loader2, Volume2 } from 'lucide-react';
 import { SessionAPI } from '../api/client';
+import PdfViewer from './PdfViewer';
 
 const COMPANIONS: Record<string, string> = {
   "星空兔": "🐰",
@@ -18,7 +19,7 @@ export default function KidsLearning() {
     media_type: string;
     resource_url: string;
   };
-  
+
   const [companion, setCompanion] = useState("星空兔");
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -88,7 +89,11 @@ export default function KidsLearning() {
         const resources = (data.resources || []) as TopicResource[];
         setTopicResources(resources);
 
-        const previewable = resources.find((resource) => ['video', 'image', 'audio'].includes(resource.media_type));
+        // 🌟 把 pdf 加入可预览白名单，并兼容后缀名判断
+        const previewable = resources.find((resource) =>
+          ['video', 'image', 'audio', 'pdf'].includes(resource.media_type) ||
+          resource.resource_url.toLowerCase().endsWith('.pdf')
+        );
         setPreviewResource(previewable || null);
       } catch (e) {
         setTopicResources([]);
@@ -107,8 +112,8 @@ export default function KidsLearning() {
   const [isRecording, setIsRecording] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<BlobPart[]>([]);
-  const currentAudioRef = useRef<HTMLAudioElement | null>(null); 
-  
+  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+
   // 🌟 新增：用于聊天区自动滚动的锚点引用
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
@@ -142,7 +147,7 @@ export default function KidsLearning() {
       currentAudioRef.current.pause();
       currentAudioRef.current = null;
     }
-    window.speechSynthesis.cancel(); 
+    window.speechSynthesis.cancel();
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -183,14 +188,14 @@ export default function KidsLearning() {
     try {
       const response = await SessionAPI.sendAudio(blob);
       const { recognized_text, reply_text } = response.data;
-      
+
       setMessages(prev => {
         const newMsgs = [...prev];
         newMsgs[newMsgs.length - 1].content = `🎤 ${recognized_text || '录音好像没声音哦'}`;
         return [...newMsgs, { role: 'assistant', content: reply_text }];
       });
-      
-      handleHoverRead(reply_text); 
+
+      handleHoverRead(reply_text);
     } catch (error) {
       console.error("语音发送失败:", error);
       setMessages(prev => [...prev, { role: 'assistant', content: '哎呀，语音魔法失效了，请再试一次！' }]);
@@ -199,9 +204,32 @@ export default function KidsLearning() {
     }
   };
 
+  // 🌟 新增：处理 PDF 翻页并请求 AI 知识点
+  const handlePdfPageTurned = async (pageNumber: number) => {
+    if (!todayTopicId) return;
+
+    setIsLoading(true);
+    try {
+      // 向后端发送请求，获取该页的知识点文本
+      const response = await SessionAPI.getKnowledgeByPage(todayTopicId, pageNumber);
+      const knowledgeText = response.data.knowledge_text;
+
+      if (knowledgeText) {
+        setMessages(prev => [...prev, {
+          role: 'assistant',
+          content: knowledgeText // 将知识点作为 AI 的话推送到对话框
+        }]);
+      }
+    } catch (error) {
+      console.error("获取该页知识点失败:", error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleSendText = async (textToSend: string) => {
     if (!textToSend.trim() || isLoading) return;
-    
+
     if (currentAudioRef.current) {
       currentAudioRef.current.pause();
       currentAudioRef.current = null;
@@ -215,13 +243,13 @@ export default function KidsLearning() {
     try {
       const res = await SessionAPI.sendTextRealtime(textToSend);
       const streamId = res.data.stream_id;
-      
+
       setMessages(prev => [...prev, { role: 'assistant', content: res.data.reply_text }]);
-      
+
       const audioUrl = `http://127.0.0.1:8090/v1/session/output/audio/stream/${streamId}`;
       const audio = new Audio(audioUrl);
       currentAudioRef.current = audio;
-      
+
       audio.onended = () => { currentAudioRef.current = null; };
       audio.play().catch(e => console.error("音频播放被拦截:", e));
 
@@ -235,7 +263,7 @@ export default function KidsLearning() {
 
   return (
     <div className="flex flex-col min-h-screen p-6 gap-6">
-      
+
       {/* 顶部导航 */}
       <div className="bg-white/60 backdrop-blur-md rounded-3xl p-4 px-6 flex justify-between items-center shadow-sm border border-white/50">
         <button onClick={() => navigate('/')} className="flex items-center gap-2 text-dark hover:text-primary transition-colors font-bold">
@@ -258,15 +286,21 @@ export default function KidsLearning() {
 
       {/* 核心内容区 */}
       <div className="flex flex-1 gap-6 h-[calc(100vh-140px)]">
-        
+
         {/* 左侧：视频区 */}
         <div className="flex-[6] bg-white/60 backdrop-blur-md rounded-[30px] p-6 shadow-sm border border-white/50 flex flex-col">
           <h3 onMouseEnter={() => handleHoverRead("今日探索：" + todayTopic)} className="text-2xl font-bold text-blue mb-4 cursor-help hover:text-primary transition-colors flex items-center gap-2 w-fit">
             今日探索：{todayTopic} <Volume2 size={20} className="opacity-50" />
           </h3>
-          <div className="w-full flex-1 bg-black/5 rounded-2xl overflow-hidden flex items-center justify-center border-2 border-white/80">
+          <div className="w-full flex-1 bg-black/5 rounded-2xl overflow-hidden flex items-center justify-center border-2 border-white/80 relative">
             {previewResource?.media_type === 'video' ? (
               <video className="w-full h-full object-cover" controls src={resolveResourceUrl(previewResource.resource_url)} />
+            ) : previewResource?.media_type === 'pdf' || previewResource?.resource_url.endsWith('.pdf') ? (
+              // 🌟 引入刚写好的 PdfViewer
+              <PdfViewer
+                url={resolveResourceUrl(previewResource.resource_url)}
+                onRenderComplete={handlePdfPageTurned}
+              />
             ) : previewResource?.media_type === 'image' ? (
               <img className="w-full h-full object-contain" src={resolveResourceUrl(previewResource.resource_url)} alt={previewResource.resource_name} />
             ) : previewResource?.media_type === 'audio' ? (
@@ -290,7 +324,7 @@ export default function KidsLearning() {
             ) : (
               <div className="space-y-2">
                 {topicResources.map((resource) => {
-                  const isPreviewable = ['video', 'image', 'audio'].includes(resource.media_type);
+                  const isPreviewable = ['video', 'image', 'audio', 'pdf'].includes(resource.media_type) || resource.resource_url.toLowerCase().endsWith('.pdf');
                   return (
                     <div key={resource.resource_id} className="flex items-center justify-between bg-white rounded-xl px-3 py-2 border border-white/80">
                       <div>
@@ -328,18 +362,27 @@ export default function KidsLearning() {
           <h3 className="text-xl font-bold text-primary mb-4 flex items-center gap-2">
             <span className="bg-primary/20 p-2 rounded-xl">{COMPANIONS[companion]}</span> 伙伴连线
           </h3>
-          
+
           <div className="flex-1 overflow-y-auto pr-2 space-y-4 mb-4 scrollbar-hide">
             {messages.map((msg, idx) => (
               <div key={idx} className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
                 <div className="text-2xl">{msg.role === 'user' ? '👦' : COMPANIONS[companion]}</div>
-                <div 
-                  onMouseEnter={() => handleHoverRead(msg.content)}
-                  className={`p-4 rounded-2xl max-w-[80%] shadow-sm cursor-help transition-all duration-300 relative group ${
-                    msg.role === 'user' ? 'bg-blue/10 text-dark rounded-tr-sm border border-blue/20 hover:bg-blue/20' : 'bg-white text-dark rounded-tl-sm border border-white/80 hover:bg-yellow-50 hover:border-yellow-200'
-                  }`}
+                <div
+                  className={`p-4 rounded-2xl max-w-[80%] shadow-sm transition-all duration-300 relative group flex items-start gap-2 ${msg.role === 'user' ? 'bg-blue/10 text-dark rounded-tr-sm border border-blue/20' : 'bg-white text-dark rounded-tl-sm border border-white/80'
+                    }`}
                 >
-                  {msg.content}
+                  <span className="flex-1">{msg.content}</span>
+
+                  {/* 🌟 改造为手动点击朗读按钮 */}
+                  {msg.role === 'assistant' && (
+                    <button
+                      onClick={() => handleHoverRead(msg.content)}
+                      className="p-1.5 bg-gray-50 text-gray-400 hover:text-primary hover:bg-pink-50 rounded-lg transition-colors flex-shrink-0 cursor-pointer border border-transparent hover:border-pink-200"
+                      title="点击朗读"
+                    >
+                      <Volume2 size={16} />
+                    </button>
+                  )}
                 </div>
               </div>
             ))}
@@ -361,27 +404,26 @@ export default function KidsLearning() {
                 <Send size={20} />
               </button>
             </div>
-            
+
             <div className="flex gap-3">
               {/* 🌟 升级后的录音按钮：带呼吸波纹动画 */}
-              <button 
+              <button
                 onMouseDown={startRecording}
                 onMouseUp={stopRecording}
                 onMouseLeave={stopRecording}
                 disabled={isLoading}
-                className={`flex-[3] text-white font-bold py-4 rounded-2xl shadow-md transition-all duration-300 flex items-center justify-center gap-2 text-lg select-none relative overflow-hidden ${
-                  isRecording 
-                    ? 'bg-red-500 scale-95 shadow-[0_0_20px_rgba(239,68,68,0.6)]' 
+                className={`flex-[3] text-white font-bold py-4 rounded-2xl shadow-md transition-all duration-300 flex items-center justify-center gap-2 text-lg select-none relative overflow-hidden ${isRecording
+                    ? 'bg-red-500 scale-95 shadow-[0_0_20px_rgba(239,68,68,0.6)]'
                     : 'bg-primary hover:bg-primary/90 hover:shadow-lg'
-                }`}
+                  }`}
               >
                 {isRecording && (
                   <span className="absolute inset-0 bg-white/20 animate-ping rounded-2xl"></span>
                 )}
-                <Mic size={24} className={isRecording ? "animate-bounce" : ""} /> 
+                <Mic size={24} className={isRecording ? "animate-bounce" : ""} />
                 {isRecording ? '正在仔细听...' : '按住说话'}
               </button>
-              
+
               <button onClick={() => handleSendText("我没听懂，能用更简单的话讲一遍吗？")} disabled={isLoading} className="flex-[1] bg-white/80 text-dark font-bold py-4 rounded-2xl shadow-sm border-2 border-white hover:border-gray-200 transition-colors flex items-center justify-center flex-col text-xs gap-1 disabled:opacity-50">
                 <HelpCircle size={18} className="text-blue" />没听懂
               </button>
