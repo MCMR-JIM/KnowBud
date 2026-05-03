@@ -223,6 +223,19 @@ uvicorn src.api.app:app --host 0.0.0.0 --port 8090 --reload
 | `title` | `string` | 主题标题 |
 | `resource_count` | `integer` | 当前绑定资源数 |
 
+### PageKnowledgeResponse
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `session_id` | `string` | 固定为 `default` |
+| `topic_id` | `string` | 当前知识节点 ID |
+| `page` | `integer` | 当前 PDF 页码，从 1 开始 |
+| `knowledge_text` | `string` | 可直接推送到儿童端对话区的讲解/引导文本 |
+| `resource_id` | `string \| null` | 命中的资源 ID |
+| `segment_id` | `string \| null` | 命中的片段 ID |
+| `guiding_question` | `string \| null` | 来源片段的引导问题 |
+| `teaching_hint` | `string \| null` | 来源片段的讲解提示 |
+
 ### ResourceSegmentInfo
 
 | Field | Type | Description |
@@ -615,6 +628,44 @@ uvicorn src.api.app:app --host 0.0.0.0 --port 8090 --reload
 - 若前端已消费到 `next_cursor=120`，下一次建议请求 `after=120`
 - `event_index` 为展示友好序号
 - `next_cursor` 才是下一次轮询应使用的真实游标
+
+#### `GET /v1/session/knowledge/page?topic_id=topic_demo_01&page=1`
+
+PDF 翻页联动接口。儿童端 PDF 预览组件翻页后调用该接口，后端根据当前 `topic_id` 与页码返回一段可以直接推送到对话区的知识讲解文本。
+
+##### Query params
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `topic_id` | `string` | yes | - | 当前知识节点 ID |
+| `page` | `integer` | no | `1` | 当前 PDF 页码，从 1 开始 |
+
+##### Matching behavior
+
+- 优先查找该 topic 下 `locator.kind == pdf` 且页码命中的已分类片段
+- 若没有精确页码命中，会回退到该 topic 下第一个已分类片段
+- 若没有任何可用片段，会返回围绕 topic 标题的通用观察提示
+
+##### Response `200`
+
+```json
+{
+  "session_id": "default",
+  "topic_id": "topic_demo_01",
+  "page": 1,
+  "knowledge_text": "你觉得恐龙为什么没能适应环境变化？\n从气候变化和适应能力引导孩子理解灭绝。",
+  "resource_id": "res_xxx",
+  "segment_id": "seg_res_xxx_0000_ab12cd",
+  "guiding_question": "你觉得恐龙为什么没能适应环境变化？",
+  "teaching_hint": "从气候变化和适应能力引导孩子理解灭绝。"
+}
+```
+
+##### Status codes
+
+- `200`：成功返回页面讲解文本
+- `404`：主题不存在
+- `422`：query 参数类型不合法
 
 ### 5. Review queue
 

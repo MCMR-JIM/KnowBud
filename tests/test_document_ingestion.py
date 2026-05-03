@@ -312,6 +312,14 @@ def test_get_topic_teaching_cues_returns_guiding_questions(monkeypatch, tmp_path
     assert cue["teaching_hint"] == "从气候变化和适应能力引导孩子理解灭绝。"
     assert "恐龙没能适应环境变化" in cue["text"]
 
+    page_response = client.get("/v1/session/knowledge/page", params={"topic_id": "demo_01", "page": 1})
+    assert page_response.status_code == 200
+    page_payload = page_response.json()
+    assert page_payload["topic_id"] == "demo_01"
+    assert page_payload["page"] == 1
+    assert page_payload["resource_id"] == resource_id
+    assert "你觉得恐龙为什么没能适应环境变化？" in page_payload["knowledge_text"]
+
 
 def test_document_ingestion_links_existing_topic(tmp_path: Path) -> None:
     backend = _build_backend(tmp_path)

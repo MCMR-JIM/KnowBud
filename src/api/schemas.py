@@ -133,6 +133,17 @@ class PushReviewResponse(BaseModel):
     review_queue_size: int
 
 
+class PageKnowledgeResponse(BaseModel):
+    session_id: str
+    topic_id: str
+    page: int
+    knowledge_text: str
+    resource_id: Optional[str] = None
+    segment_id: Optional[str] = None
+    guiding_question: Optional[str] = None
+    teaching_hint: Optional[str] = None
+
+
 class ReviewQueueItem(BaseModel):
     topic_id: str
     title: str

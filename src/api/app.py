@@ -28,6 +28,7 @@ from src.api.schemas import (
     KnowledgeGraphResponse,
     MasteryInfo,
     MasteryListResponse,
+    PageKnowledgeResponse,
     ProposalInfo,
     ProposalReviewRequest,
     ProposalReviewResponse,
@@ -399,6 +400,43 @@ def get_events(after: int = 0, limit: int = 50) -> EventListResponse:
         next_cursor=next_cursor,
         events=items,
     )
+
+
+@app.get("/v1/session/knowledge/page", response_model=PageKnowledgeResponse, tags=["session", "knowledge"])
+def get_page_knowledge(topic_id: str, page: int = 1) -> PageKnowledgeResponse:
+    backend = get_backend()
+    topic = backend.get_topic(topic_id)
+    if topic is None:
+        raise HTTPException(status_code=404, detail=f"topic_id not found: {topic_id}")
+
+    page_number = max(1, page)
+    fallback_segment = None
+    fallback_resource = None
+    for resource in backend.list_resources_related_to_topic(topic_id):
+        for segment in resource.segments:
+            if segment.status != "classified" or segment.topic_id != topic_id:
+                continue
+            if fallback_segment is None:
+                fallback_segment = segment
+                fallback_resource = resource
+            locator = segment.locator or {}
+            if locator.get("kind") != "pdf":
+                continue
+            page_start = int(locator.get("page_start") or page_number)
+            page_end = int(locator.get("page_end") or page_start)
+            if page_start <= page_number <= page_end:
+                return _page_knowledge_response(topic_id=topic_id, page=page_number, resource=resource, segment=segment)
+
+    if fallback_segment is not None and fallback_resource is not None:
+        return _page_knowledge_response(topic_id=topic_id, page=page_number, resource=fallback_resource, segment=fallback_segment)
+
+    return PageKnowledgeResponse(
+        session_id=SINGLE_SESSION_ID,
+        topic_id=topic_id,
+        page=page_number,
+        knowledge_text=f"这一页可以先围绕【{topic.title}】观察：你看到了哪些关键线索？",
+    )
+
 
 # ========== review queue now prefers topic_id and keeps content as compatibility alias ==========
 @app.post("/v1/session/review/push", response_model=PushReviewResponse, tags=["session"])
@@ -1021,6 +1059,30 @@ def _resource_segment_info(segment) -> ResourceSegmentInfo:
         decision=segment.decision,
         confidence=segment.confidence,
         reason=segment.reason,
+        guiding_question=segment.guiding_question,
+        teaching_hint=segment.teaching_hint,
+    )
+
+
+def _page_knowledge_response(*, topic_id: str, page: int, resource, segment) -> PageKnowledgeResponse:
+    question = (segment.guiding_question or "").strip()
+    hint = (segment.teaching_hint or "").strip()
+    text = (segment.text or "").strip()
+    parts = []
+    if question:
+        parts.append(question)
+    if hint:
+        parts.append(hint)
+    if text:
+        parts.append(f"这段材料提到：{text[:160]}")
+    knowledge_text = "\n".join(parts) if parts else "这一页可以先观察材料里的关键词，再说说你发现了什么。"
+    return PageKnowledgeResponse(
+        session_id=SINGLE_SESSION_ID,
+        topic_id=topic_id,
+        page=page,
+        knowledge_text=knowledge_text,
+        resource_id=resource.resource_id,
+        segment_id=segment.segment_id,
         guiding_question=segment.guiding_question,
         teaching_hint=segment.teaching_hint,
     )
