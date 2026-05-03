@@ -3,7 +3,7 @@ import axios from 'axios';
 
 // 创建一个 Axios 实例，集中管理基础配置
 const apiClient = axios.create({
-  baseURL: 'http://127.0.0.1:8090', // 后端服务地址
+  baseURL: 'http://localhost:8090', // 后端服务地址
   headers: {
     'Content-Type': 'application/json',
   },

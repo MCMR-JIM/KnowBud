@@ -262,7 +262,7 @@ export default function KidsLearning() {
   };
 
   return (
-    <div className="flex flex-col min-h-screen p-6 gap-6">
+    <div className="flex flex-col h-screen overflow-hidden p-6 gap-6">
 
       {/* 顶部导航 */}
       <div className="bg-white/60 backdrop-blur-md rounded-3xl p-4 px-6 flex justify-between items-center shadow-sm border border-white/50">
@@ -285,7 +285,7 @@ export default function KidsLearning() {
       </div>
 
       {/* 核心内容区 */}
-      <div className="flex flex-1 gap-6 h-[calc(100vh-140px)]">
+      <div className="flex flex-1 gap-6 h-[calc(100vh-140px)] min-h-0">
 
         {/* 左侧：视频区 */}
         <div className="flex-[6] bg-white/60 backdrop-blur-md rounded-[30px] p-6 shadow-sm border border-white/50 flex flex-col">
@@ -358,12 +358,11 @@ export default function KidsLearning() {
         </div>
 
         {/* 右侧：聊天互动区 */}
-        <div className="flex-[4] bg-white/40 backdrop-blur-md rounded-[30px] p-5 shadow-sm border border-white/50 flex flex-col">
-          <h3 className="text-xl font-bold text-primary mb-4 flex items-center gap-2">
-            <span className="bg-primary/20 p-2 rounded-xl">{COMPANIONS[companion]}</span> 伙伴连线
-          </h3>
+        {/* 右侧：聊天互动区 */}
+        <div className="flex-[4] bg-white/40 backdrop-blur-md rounded-[30px] p-5 shadow-sm border border-white/50 flex flex-col min-h-0">
+          <h3 className="text-xl font-bold text-primary mb-4 flex items-center gap-2">...</h3>
 
-          <div className="flex-1 overflow-y-auto pr-2 space-y-4 mb-4 scrollbar-hide">
+          <div className="flex-1 overflow-y-auto pr-2 space-y-4 mb-4 scrollbar-hide min-h-0">
             {messages.map((msg, idx) => (
               <div key={idx} className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
                 <div className="text-2xl">{msg.role === 'user' ? '👦' : COMPANIONS[companion]}</div>
@@ -413,8 +412,8 @@ export default function KidsLearning() {
                 onMouseLeave={stopRecording}
                 disabled={isLoading}
                 className={`flex-[3] text-white font-bold py-4 rounded-2xl shadow-md transition-all duration-300 flex items-center justify-center gap-2 text-lg select-none relative overflow-hidden ${isRecording
-                    ? 'bg-red-500 scale-95 shadow-[0_0_20px_rgba(239,68,68,0.6)]'
-                    : 'bg-primary hover:bg-primary/90 hover:shadow-lg'
+                  ? 'bg-red-500 scale-95 shadow-[0_0_20px_rgba(239,68,68,0.6)]'
+                  : 'bg-primary hover:bg-primary/90 hover:shadow-lg'
                   }`}
               >
                 {isRecording && (
