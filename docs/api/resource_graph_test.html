@@ -1,0 +1,1004 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LoopTutor Resource Graph Test</title>
+  <style>
+    :root {
+      --bg: #f6f3ee;
+      --panel: rgba(255, 255, 255, 0.82);
+      --ink: #25211c;
+      --muted: #7b7168;
+      --line: #e6ddd2;
+      --blue: #3b82f6;
+      --pink: #ec4899;
+      --orange: #f59e0b;
+      --green: #16a34a;
+      --red: #dc2626;
+      --shadow: 0 18px 45px rgba(64, 50, 38, 0.12);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 8% 10%, rgba(236, 72, 153, 0.16), transparent 28%),
+        radial-gradient(circle at 88% 12%, rgba(59, 130, 246, 0.14), transparent 30%),
+        linear-gradient(135deg, #fbf7f0 0%, var(--bg) 48%, #eef4ff 100%);
+    }
+
+    header {
+      padding: 24px 28px 12px;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+    }
+
+    h1 { margin: 0; font-size: 24px; letter-spacing: -0.04em; }
+    p { margin: 0; }
+
+    .subtle { color: var(--muted); font-size: 13px; line-height: 1.5; }
+
+    .shell {
+      padding: 12px 28px 28px;
+      display: grid;
+      grid-template-columns: minmax(360px, 1fr) 420px;
+      gap: 18px;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid rgba(255, 255, 255, 0.72);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(12px);
+    }
+
+    .toolbar {
+      padding: 16px;
+      display: grid;
+      grid-template-columns: minmax(180px, 1fr) auto auto;
+      gap: 10px;
+      align-items: center;
+    }
+
+    input, select, button, textarea {
+      font: inherit;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: white;
+      color: var(--ink);
+    }
+
+    input, select, textarea { padding: 10px 12px; width: 100%; }
+    textarea { resize: vertical; min-height: 84px; }
+
+    button {
+      padding: 10px 13px;
+      cursor: pointer;
+      border: 0;
+      color: white;
+      background: #1f2937;
+      transition: transform 0.12s ease, opacity 0.12s ease;
+    }
+
+    button:hover { transform: translateY(-1px); }
+    button:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+
+    .btn-blue { background: var(--blue); }
+    .btn-pink { background: var(--pink); }
+    .btn-green { background: var(--green); }
+    .btn-orange { background: var(--orange); }
+    .btn-red { background: var(--red); }
+    .btn-soft { background: #ffffff; color: var(--ink); border: 1px solid var(--line); }
+
+    .stats {
+      padding: 0 16px 14px;
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .stat {
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.66);
+      border-radius: 18px;
+      padding: 11px;
+    }
+
+    .stat b { display: block; font-size: 20px; }
+    .stat span { color: var(--muted); font-size: 12px; }
+
+    .graph-wrap {
+      margin: 0 16px 16px;
+      height: calc(100vh - 220px);
+      min-height: 540px;
+      overflow: auto;
+      border-radius: 20px;
+      background:
+        linear-gradient(rgba(120, 113, 108, 0.08) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(120, 113, 108, 0.08) 1px, transparent 1px),
+        rgba(255, 255, 255, 0.55);
+      background-size: 28px 28px;
+      border: 1px solid var(--line);
+      position: relative;
+    }
+
+    svg { min-width: 100%; display: block; }
+    .node { cursor: pointer; }
+    .node rect, .proposal polygon { filter: drop-shadow(0 8px 14px rgba(30, 41, 59, 0.12)); }
+    .node-title { font-weight: 800; font-size: 12px; fill: var(--ink); }
+    .node-meta { font-size: 10px; fill: #756b62; }
+    .edge { stroke: #94a3b8; stroke-width: 1.6; fill: none; marker-end: url(#arrow); }
+    .proposal-edge { stroke: var(--orange); stroke-width: 1.5; fill: none; stroke-dasharray: 5 5; marker-end: url(#arrowProposal); }
+
+    aside { display: flex; flex-direction: column; gap: 14px; }
+    .section { padding: 16px; }
+    .section h2 { margin: 0 0 10px; font-size: 16px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .stack { display: flex; flex-direction: column; gap: 10px; }
+    .buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+
+    .item {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 10px;
+      background: rgba(255, 255, 255, 0.72);
+    }
+
+    .item h3 { margin: 0 0 5px; font-size: 14px; }
+    .item p { line-height: 1.45; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-size: 11px;
+      color: #334155;
+      background: #eef2ff;
+      margin: 2px 4px 2px 0;
+    }
+
+    .source-badge {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 5px 10px;
+      font-size: 12px;
+      font-weight: 700;
+      background: #ecfeff;
+      color: #155e75;
+      border: 1px solid #bae6fd;
+    }
+
+    .log {
+      height: 150px;
+      overflow: auto;
+      background: #14110f;
+      color: #d1fae5;
+      border-radius: 18px;
+      padding: 12px;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .empty { color: var(--muted); font-size: 13px; padding: 10px 0; }
+
+    .diag-grid {
+      display: grid;
+      gap: 10px;
+    }
+
+    .diag-card {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 12px;
+      background: rgba(255, 255, 255, 0.72);
+    }
+
+    .diag-card h3 {
+      margin: 0 0 6px;
+      font-size: 14px;
+    }
+
+    .diag-count {
+      font-weight: 800;
+      color: var(--red);
+    }
+
+    .diag-list {
+      margin-top: 8px;
+      display: grid;
+      gap: 8px;
+    }
+
+    .diag-sample {
+      padding-top: 8px;
+      border-top: 1px dashed var(--line);
+      font-size: 13px;
+    }
+
+    .diag-sample:first-child {
+      padding-top: 0;
+      border-top: 0;
+    }
+
+    @media (max-width: 1080px) {
+      .shell { grid-template-columns: 1fr; }
+      .graph-wrap { height: 620px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>LoopTutor 资源驱动知识图测试台</h1>
+      <p class="subtle">只负责显示与触发现有 API：知识图、资源上传、片段、教学引导问题、proposal 审核。后端需先运行在 8090。</p>
+    </div>
+    <div style="width: 420px; max-width: 48vw;">
+      <input id="apiBase" value="http://127.0.0.1:8090/v1" />
+      <p class="subtle" style="margin-top: 6px;">可改成远端 API Base，例如 http://host:8090/v1</p>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="panel">
+      <div class="toolbar">
+        <select id="topicSelect"></select>
+        <button id="refreshBtn" class="btn-blue">刷新图结构</button>
+        <button id="pollBtn" class="btn-soft">自动刷新：关</button>
+      </div>
+      <div style="padding: 0 16px 12px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+        <span id="sourceBadge" class="source-badge">API 运行态图</span>
+        <span id="sourceHint" class="subtle">当前显示后端 /v1/knowledge/graph 的实时状态。</span>
+      </div>
+      <div class="stats">
+        <div class="stat"><b id="topicCount">0</b><span>topics</span></div>
+        <div class="stat"><b id="edgeCount">0</b><span>DAG edges</span></div>
+        <div class="stat"><b id="proposalCount">0</b><span>proposals</span></div>
+        <div class="stat"><b id="resourceCount">0</b><span>selected resources</span></div>
+        <div class="stat"><b id="cueCount">0</b><span>teaching cues</span></div>
+      </div>
+      <div class="graph-wrap">
+        <svg id="graphSvg" width="1200" height="700" role="img" aria-label="knowledge graph"></svg>
+      </div>
+    </section>
+
+    <aside>
+      <section class="panel section">
+        <h2>图数据源</h2>
+        <div class="stack">
+          <button id="loadApiBtn" class="btn-blue">读取 API 运行态图</button>
+          <input id="reportInput" type="file" accept=".json,application/json" />
+          <p class="subtle">如果要看 `data/simulated_graph/graph_report.json` 里的大图，点击上面的文件选择器加载该 JSON。API 模式只显示当前后端 DATA_ROOT 对应的运行态。</p>
+        </div>
+      </section>
+
+      <section class="panel section">
+        <h2>快捷上传资源</h2>
+        <div class="stack">
+          <input id="resourceName" value="临时测试资源" placeholder="资源名称" />
+          <input id="fileInput" type="file" accept=".txt,.pdf,.doc,.docx,.ppt,.pptx" />
+          <textarea id="quickText">恐龙生活在很久以前。小行星撞击可能让天空变暗、气候变冷，许多动物找不到食物。这个现象可以进一步解释为生态链式变化。</textarea>
+          <div class="buttons">
+            <button id="uploadFileBtn" class="btn-green">上传所选文件</button>
+            <button id="uploadQuickBtn" class="btn-pink">上传上方文本</button>
+            <button id="uploadMixedBtn" class="btn-orange">生成混合文本上传</button>
+          </div>
+          <p class="subtle">上传目标使用左侧选择的 topic。上传后会自动刷新图、资源、片段和 proposal。</p>
+        </div>
+      </section>
+
+      <section class="panel section">
+        <h2>选中节点详情</h2>
+        <div id="nodeDetail" class="empty">点击图中的节点或 proposal 查看详情。</div>
+      </section>
+
+      <section class="panel section">
+        <h2>待审核 proposal</h2>
+        <div id="proposalList" class="stack"></div>
+      </section>
+
+      <section class="panel section">
+        <h2>图质量诊断</h2>
+        <div id="diagnostics" class="diag-grid"></div>
+      </section>
+
+      <section class="panel section">
+        <h2>节点资源与教学提示</h2>
+        <div id="resourceList" class="stack"></div>
+      </section>
+
+      <section class="panel section">
+        <h2>运行日志</h2>
+        <div id="log" class="log"></div>
+      </section>
+    </aside>
+  </main>
+
+  <script>
+    const state = {
+      graph: { topics: [], proposals: [], mastery: [] },
+      source: 'api',
+      report: null,
+      resources: [],
+      cues: [],
+      selectedTopicId: '',
+      pollTimer: null,
+      diagnostics: null,
+    };
+
+    const el = (id) => document.getElementById(id);
+    const apiBase = () => el('apiBase').value.replace(/\/$/, '');
+
+    function log(message, payload) {
+      const time = new Date().toLocaleTimeString();
+      const line = document.createElement('div');
+      line.textContent = `[${time}] ${message}${payload ? ' ' + JSON.stringify(payload) : ''}`;
+      el('log').prepend(line);
+    }
+
+    async function api(path, options = {}) {
+      const res = await fetch(`${apiBase()}${path}`, options);
+      if (!res.ok) {
+        let detail = '';
+        try { detail = JSON.stringify(await res.json()); } catch (_) { detail = await res.text(); }
+        throw new Error(`${res.status} ${res.statusText}: ${detail}`);
+      }
+      return res.json();
+    }
+
+    function short(text, len = 18) {
+      const value = String(text || '');
+      return value.length > len ? value.slice(0, len - 1) + '…' : value;
+    }
+
+    function escapeHtml(text) {
+      return String(text || '').replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+    }
+
+    function normalizeDiagnosticTitle(text) {
+      let value = String(text || '').toLowerCase();
+      value = value
+        .replace(/^[\s:：\-_/]*自动扩展[\s:：\-_/]*/g, '')
+        .replace(/^[\s:：\-_/]*补充节点建议[\s:：\-_/]*/g, '')
+        .replace(/^[\s:：\-_/]*建议补充节点[\s:：\-_/]*/g, '')
+        .replace(/^[\s:：\-_/]*新增节点建议[\s:：\-_/]*/g, '')
+        .replace(/^[\s:：\-_/]*topic[\s:：\-_/]*/g, '')
+        .replace(/^[\s:：\-_/]*专题\s*\d+[\s:：\-_/]*/g, '')
+        .replace(/^[\s:：\-_/]*章节\s*\d+[\s:：\-_/]*/g, '')
+        .replace(/^[\s:：\-_/]*单元\s*\d+[\s:：\-_/]*/g, '')
+        .trim();
+      value = value.replace(/[()（）【】\[\]<>《》'"“”‘’]/g, ' ');
+      value = value.replace(/[,:：;；.!?，。！？/\\|+_-]/g, ' ');
+      value = value.replace(/\s+/g, ' ').trim();
+      return value;
+    }
+
+    function canonicalKey(text) {
+      return normalizeDiagnosticTitle(text).replace(/\s+/g, '');
+    }
+
+    function stringBigrams(text) {
+      const value = canonicalKey(text);
+      if (!value) return [];
+      if (value.length === 1) return [value];
+      const grams = [];
+      for (let i = 0; i < value.length - 1; i += 1) {
+        grams.push(value.slice(i, i + 2));
+      }
+      return grams;
+    }
+
+    function diceSimilarity(a, b) {
+      const gramsA = stringBigrams(a);
+      const gramsB = stringBigrams(b);
+      if (!gramsA.length || !gramsB.length) return 0;
+      const counts = new Map();
+      for (const gram of gramsA) counts.set(gram, (counts.get(gram) || 0) + 1);
+      let overlap = 0;
+      for (const gram of gramsB) {
+        const left = counts.get(gram) || 0;
+        if (left > 0) {
+          counts.set(gram, left - 1);
+          overlap += 1;
+        }
+      }
+      return (2 * overlap) / (gramsA.length + gramsB.length);
+    }
+
+    function idPrefix(topicId) {
+      const match = String(topicId || '').match(/^(.*?)(\d+)$/);
+      if (!match) return null;
+      return { prefix: match[1], number: Number(match[2]), width: match[2].length };
+    }
+
+    function topicSubject(topicId) {
+      return String(topicId || '').split(/[_-]/)[0] || '';
+    }
+
+    function computeDiagnostics(graph) {
+      const topics = graph.topics || [];
+      const proposals = graph.proposals || [];
+      const topicById = new Map(topics.map(topic => [topic.topic_id, topic]));
+
+      const duplicateNodes = [];
+      for (let i = 0; i < topics.length; i += 1) {
+        for (let j = i + 1; j < topics.length; j += 1) {
+          const left = topics[i];
+          const right = topics[j];
+          const leftKey = canonicalKey(left.title);
+          const rightKey = canonicalKey(right.title);
+          if (!leftKey || !rightKey) continue;
+          const similarity = leftKey === rightKey ? 1 : diceSimilarity(left.title, right.title);
+          if (leftKey === rightKey || similarity >= 0.88) {
+            duplicateNodes.push({
+              leftId: left.topic_id,
+              rightId: right.topic_id,
+              leftTitle: left.title,
+              rightTitle: right.title,
+              normalized: normalizeDiagnosticTitle(left.title) || normalizeDiagnosticTitle(right.title),
+              similarity,
+              reason: leftKey === rightKey ? '规范化后相同' : '标题高度相似',
+            });
+          }
+        }
+      }
+      duplicateNodes.sort((a, b) => b.similarity - a.similarity || a.leftId.localeCompare(b.leftId, 'zh-CN'));
+
+      const sequentialEdges = [];
+      for (const topic of topics) {
+        const childMeta = idPrefix(topic.topic_id);
+        if (!childMeta) continue;
+        for (const parentId of topic.prerequisite_ids || []) {
+          const parent = topicById.get(parentId);
+          if (!parent) continue;
+          const parentMeta = idPrefix(parentId);
+          if (!parentMeta) continue;
+          const samePrefix = parentMeta.prefix === childMeta.prefix;
+          const sameSubject = topicSubject(parentId) === topicSubject(topic.topic_id);
+          const consecutive = childMeta.number === parentMeta.number + 1;
+          if (samePrefix && sameSubject && consecutive) {
+            sequentialEdges.push({
+              fromId: parentId,
+              toId: topic.topic_id,
+              fromTitle: parent.title,
+              toTitle: topic.title,
+              chain: `${parentMeta.prefix}${String(parentMeta.number).padStart(parentMeta.width, '0')} -> ${childMeta.prefix}${String(childMeta.number).padStart(childMeta.width, '0')}`,
+            });
+          }
+        }
+      }
+      sequentialEdges.sort((a, b) => a.fromId.localeCompare(b.fromId, 'zh-CN'));
+
+      const proposalTitleIssues = [];
+      const proposed = proposals.filter(proposal => proposal.status === 'proposed');
+      for (let i = 0; i < proposed.length; i += 1) {
+        for (let j = i + 1; j < proposed.length; j += 1) {
+          const left = proposed[i];
+          const right = proposed[j];
+          const leftKey = canonicalKey(left.title);
+          const rightKey = canonicalKey(right.title);
+          if (!leftKey || !rightKey) continue;
+          const similarity = leftKey === rightKey ? 1 : diceSimilarity(left.title, right.title);
+          if (leftKey === rightKey || similarity >= 0.88) {
+            proposalTitleIssues.push({
+              leftId: left.proposal_id,
+              rightId: right.proposal_id,
+              leftTitle: left.title,
+              rightTitle: right.title,
+              parentSummary: `${(left.parent_node_ids || []).join(', ') || '无'} | ${(right.parent_node_ids || []).join(', ') || '无'}`,
+              similarity,
+              reason: leftKey === rightKey ? 'proposal 标题重复' : 'proposal 标题近似',
+            });
+          }
+        }
+      }
+      proposalTitleIssues.sort((a, b) => b.similarity - a.similarity || a.leftId.localeCompare(b.leftId, 'zh-CN'));
+
+      return {
+        duplicateNodes,
+        sequentialEdges,
+        proposalTitleIssues,
+      };
+    }
+
+    function renderDiagnostics() {
+      const box = el('diagnostics');
+      const diagnostics = state.diagnostics || { duplicateNodes: [], sequentialEdges: [], proposalTitleIssues: [] };
+      const sections = [
+        {
+          title: '疑似重复节点',
+          count: diagnostics.duplicateNodes.length,
+          hint: '按标题规范化和高相似度静态检测，帮助识别自动扩图产出的重复知识点。',
+          empty: '未发现明显的重复节点样例。',
+          items: diagnostics.duplicateNodes.slice(0, 20).map(item => `
+            <div class="diag-sample">
+              <strong>${escapeHtml(item.leftId)}</strong> / <strong>${escapeHtml(item.rightId)}</strong>
+              <p class="subtle">${escapeHtml(item.leftTitle)} | ${escapeHtml(item.rightTitle)}</p>
+              <p class="subtle">${escapeHtml(item.reason)} · 相似度 ${item.similarity.toFixed(2)} · 规范化 ${escapeHtml(item.normalized || '空')}</p>
+            </div>`),
+        },
+        {
+          title: '疑似读取顺序边',
+          count: diagnostics.sequentialEdges.length,
+          hint: '检测同一前缀、同一科目且编号连续的前置边，识别类似 math_09 -> math_10 的顺序链。',
+          empty: '未发现连续编号顺序边样例。',
+          items: diagnostics.sequentialEdges.slice(0, 20).map(item => `
+            <div class="diag-sample">
+              <strong>${escapeHtml(item.fromId)}</strong> -> <strong>${escapeHtml(item.toId)}</strong>
+              <p class="subtle">${escapeHtml(item.fromTitle)} | ${escapeHtml(item.toTitle)}</p>
+              <p class="subtle">连续链 ${escapeHtml(item.chain)}</p>
+            </div>`),
+        },
+        {
+          title: 'proposal 重复/近似标题',
+          count: diagnostics.proposalTitleIssues.length,
+          hint: '统计待审核 proposal 中标题重复或高度近似的 pair 数量。',
+          empty: '当前待审核 proposal 未发现明显重复标题。',
+          items: diagnostics.proposalTitleIssues.slice(0, 20).map(item => `
+            <div class="diag-sample">
+              <strong>${escapeHtml(item.leftId)}</strong> / <strong>${escapeHtml(item.rightId)}</strong>
+              <p class="subtle">${escapeHtml(item.leftTitle)} | ${escapeHtml(item.rightTitle)}</p>
+              <p class="subtle">${escapeHtml(item.reason)} · 相似度 ${item.similarity.toFixed(2)} · 父节点 ${escapeHtml(item.parentSummary)}</p>
+            </div>`),
+        },
+      ];
+
+      box.innerHTML = sections.map(section => `
+        <div class="diag-card">
+          <h3>${section.title}</h3>
+          <p class="subtle"><span class="diag-count">${section.count}</span> 条问题样例对。${section.hint}</p>
+          <div class="diag-list">${section.items.join('') || `<div class="empty">${section.empty}</div>`}</div>
+        </div>`).join('');
+    }
+
+    function normalizeReportGraph(report) {
+      const topics = (report.topics || []).map(topic => ({
+        topic_id: topic.topic_id,
+        title: topic.title,
+        difficulty: topic.difficulty || 1,
+        prerequisite_ids: topic.prerequisite_ids || [],
+        tags: [
+          topic.mastery_state ? `mastery:${topic.mastery_state}` : '',
+          topic.resource_count != null ? `resources:${topic.resource_count}` : '',
+          topic.classified_segment_count != null ? `segments:${topic.classified_segment_count}` : '',
+        ].filter(Boolean),
+        resource_count: topic.resource_count || 0,
+        classified_segment_count: topic.classified_segment_count || 0,
+        mastery_state: topic.mastery_state || 'unknown',
+        dependent_ids: topic.dependent_ids || [],
+      }));
+      const proposals = (report.graph_proposals || []).map(proposal => ({
+        proposal_id: proposal.proposal_id,
+        title: proposal.title,
+        summary: proposal.summary || '',
+        trigger: proposal.trigger || 'resource_ingest',
+        parent_node_ids: proposal.parent_node_ids || [],
+        edge_type: proposal.edge_type || 'requires',
+        status: proposal.status || 'proposed',
+        reason: proposal.reason || '',
+        created_topic_id: proposal.created_topic_id || null,
+        updated_ts: proposal.updated_ts || report.generated_at || '',
+      }));
+      return { session_id: 'graph_report', topics, proposals, mastery: [] };
+    }
+
+    function updateSourceBanner() {
+      const badge = el('sourceBadge');
+      const hint = el('sourceHint');
+      if (state.source === 'report') {
+        const counts = state.report?.counts || {};
+        badge.textContent = '模拟报告图';
+        hint.textContent = `来自 graph_report.json：${counts.topic_count || state.graph.topics.length} topics，${counts.prerequisite_edge_count || '未知'} 条前置边，${counts.graph_proposals || state.graph.proposals.length} proposals。`;
+      } else {
+        badge.textContent = 'API 运行态图';
+        hint.textContent = '当前显示后端 /v1/knowledge/graph 的实时状态。若只看到 demo_01，说明当前后端 DATA_ROOT 不是 data/simulated_graph。';
+      }
+    }
+
+    async function refreshAll({ keepSelection = true } = {}) {
+      const previous = state.selectedTopicId;
+      state.graph = await api('/knowledge/graph');
+      state.source = 'api';
+      state.report = null;
+      const topics = state.graph.topics || [];
+      if (!keepSelection || !topics.some(t => t.topic_id === previous)) {
+        state.selectedTopicId = topics[0]?.topic_id || '';
+      } else {
+        state.selectedTopicId = previous;
+      }
+      renderTopicSelect();
+      await refreshTopicData();
+      renderGraph();
+      renderProposals();
+      renderNodeDetail();
+      updateSourceBanner();
+      renderStats();
+      state.diagnostics = computeDiagnostics(state.graph);
+      renderDiagnostics();
+      log('API 刷新完成', { topics: topics.length, proposals: (state.graph.proposals || []).length });
+      if (topics.length <= 1) {
+        log('提示：API 当前只有少量 topic；如需查看模拟大图，请加载 data/simulated_graph/graph_report.json，或用 DATA_ROOT=data/simulated_graph 启动后端');
+      }
+    }
+
+    async function loadReportFile(file) {
+      const report = JSON.parse(await file.text());
+      const graph = normalizeReportGraph(report);
+      const previous = state.selectedTopicId;
+      state.source = 'report';
+      state.report = report;
+      state.graph = graph;
+      state.resources = [];
+      state.cues = [];
+      const topics = graph.topics || [];
+      state.selectedTopicId = topics.some(t => t.topic_id === previous) ? previous : (topics[0]?.topic_id || '');
+      renderTopicSelect();
+      refreshTopicDataFromReport();
+      renderGraph();
+      renderProposals();
+      renderNodeDetail();
+      updateSourceBanner();
+      renderStats();
+      state.diagnostics = computeDiagnostics(state.graph);
+      renderDiagnostics();
+      log('已加载模拟报告图', { topics: topics.length, proposals: graph.proposals.length });
+    }
+
+    async function refreshTopicData() {
+      if (!state.selectedTopicId) {
+        state.resources = [];
+        state.cues = [];
+        return;
+      }
+      if (state.source === 'report') {
+        refreshTopicDataFromReport();
+        return;
+      }
+      const [resourcePayload, cuePayload] = await Promise.all([
+        api(`/resource/topics/${encodeURIComponent(state.selectedTopicId)}`),
+        api(`/resource/topics/${encodeURIComponent(state.selectedTopicId)}/teaching-cues`).catch(() => ({ cues: [] })),
+      ]);
+      state.resources = resourcePayload.resources || [];
+      state.cues = cuePayload.cues || [];
+      renderResources();
+      renderStats();
+    }
+
+    function refreshTopicDataFromReport() {
+      const report = state.report;
+      if (!report || !state.selectedTopicId) {
+        state.resources = [];
+        state.cues = [];
+        renderResources();
+        renderStats();
+        return;
+      }
+      state.resources = (report.resources || [])
+        .filter(resource => resource.home_topic_id === state.selectedTopicId || (resource.linked_topic_ids || []).includes(state.selectedTopicId))
+        .map(resource => ({
+          resource_id: resource.resource_id,
+          topic_id: resource.home_topic_id,
+          topic_title: state.selectedTopicId,
+          resource_name: resource.resource_id,
+          category: 'report',
+          media_type: 'simulated',
+          mime_type: 'application/json',
+          original_filename: 'graph_report.json',
+          resource_url: '',
+          size_bytes: 0,
+          created_ts: report.generated_at || '',
+          segments: (resource.linked_topic_ids || []).map((topicId, idx) => ({
+            segment_id: `${resource.resource_id}_${idx}`,
+            status: 'classified',
+            topic_id: topicId,
+            confidence: 1,
+          })),
+        }));
+      state.cues = [];
+      renderResources();
+      renderStats();
+    }
+
+    function renderTopicSelect() {
+      const select = el('topicSelect');
+      select.innerHTML = '';
+      for (const topic of state.graph.topics || []) {
+        const option = document.createElement('option');
+        option.value = topic.topic_id;
+        option.textContent = `${topic.title} (${topic.topic_id})`;
+        select.appendChild(option);
+      }
+      select.value = state.selectedTopicId;
+    }
+
+    function renderStats() {
+      const topics = state.graph.topics || [];
+      const proposals = state.graph.proposals || [];
+      const edges = topics.reduce((sum, t) => sum + (t.prerequisite_ids || []).length, 0);
+      el('topicCount').textContent = topics.length;
+      el('edgeCount').textContent = edges;
+      el('proposalCount').textContent = state.source === 'report'
+        ? (state.report?.counts?.graph_proposals || proposals.length)
+        : proposals.filter(p => p.status === 'proposed').length;
+      el('resourceCount').textContent = state.source === 'report'
+        ? ((state.graph.topics || []).find(t => t.topic_id === state.selectedTopicId)?.resource_count || state.resources.length)
+        : state.resources.length;
+      el('cueCount').textContent = state.cues.length;
+    }
+
+    function layoutTopics(topics) {
+      const byId = new Map(topics.map(t => [t.topic_id, t]));
+      const depthMemo = new Map();
+      function depth(topic) {
+        if (depthMemo.has(topic.topic_id)) return depthMemo.get(topic.topic_id);
+        const parents = (topic.prerequisite_ids || []).filter(id => byId.has(id));
+        const value = parents.length ? 1 + Math.max(...parents.map(id => depth(byId.get(id)))) : 0;
+        depthMemo.set(topic.topic_id, value);
+        return value;
+      }
+      const buckets = new Map();
+      for (const topic of topics) {
+        const d = depth(topic);
+        if (!buckets.has(d)) buckets.set(d, []);
+        buckets.get(d).push(topic);
+      }
+      const positions = new Map();
+      const columnGap = 240;
+      const rowGap = 118;
+      const marginX = 70;
+      const marginY = 70;
+      for (const [d, bucket] of [...buckets.entries()].sort((a, b) => a[0] - b[0])) {
+        bucket.sort((a, b) => a.title.localeCompare(b.title, 'zh-CN'));
+        bucket.forEach((topic, idx) => {
+          positions.set(topic.topic_id, { x: marginX + d * columnGap, y: marginY + idx * rowGap, depth: d });
+        });
+      }
+      return positions;
+    }
+
+    function renderGraph() {
+      const svg = el('graphSvg');
+      const topics = state.graph.topics || [];
+      const proposals = state.graph.proposals || [];
+      const positions = layoutTopics(topics);
+      const topicMaxX = Math.max(1100, ...[...positions.values()].map(p => p.x + 220));
+      const proposalX = topicMaxX + 80;
+      const maxX = Math.max(topicMaxX, proposalX + 220);
+      const maxY = Math.max(680, ...[...positions.values()].map(p => p.y + 130), 220 + proposals.length * 96);
+      svg.setAttribute('width', maxX);
+      svg.setAttribute('height', maxY);
+      svg.innerHTML = `
+        <defs>
+          <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#94a3b8"></path></marker>
+          <marker id="arrowProposal" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#f59e0b"></path></marker>
+        </defs>`;
+
+      for (const topic of topics) {
+        const child = positions.get(topic.topic_id);
+        for (const parentId of topic.prerequisite_ids || []) {
+          const parent = positions.get(parentId);
+          if (!parent || !child) continue;
+          svg.insertAdjacentHTML('beforeend', `<path class="edge" d="M${parent.x + 184},${parent.y + 38} C${parent.x + 228},${parent.y + 38} ${child.x - 44},${child.y + 38} ${child.x},${child.y + 38}" />`);
+        }
+      }
+
+      const resourceByTopic = new Map();
+      for (const topic of topics) {
+        if (topic.classified_segment_count != null) resourceByTopic.set(topic.topic_id, topic.classified_segment_count);
+      }
+      for (const resource of state.resources) {
+        for (const segment of resource.segments || []) {
+          if (segment.topic_id) resourceByTopic.set(segment.topic_id, (resourceByTopic.get(segment.topic_id) || 0) + 1);
+        }
+      }
+
+      for (const topic of topics) {
+        const pos = positions.get(topic.topic_id);
+        if (!pos) continue;
+        const selected = topic.topic_id === state.selectedTopicId;
+        const fill = selected ? '#dbeafe' : '#ffffff';
+        const stroke = selected ? '#3b82f6' : '#e6ddd2';
+        svg.insertAdjacentHTML('beforeend', `
+          <g class="node" data-topic-id="${escapeHtml(topic.topic_id)}" transform="translate(${pos.x},${pos.y})">
+            <rect width="184" height="76" rx="18" fill="${fill}" stroke="${stroke}" stroke-width="2" />
+            <text x="14" y="25" class="node-title">${escapeHtml(short(topic.title, 16))}</text>
+            <text x="14" y="45" class="node-meta">${escapeHtml(topic.topic_id)}</text>
+            <text x="14" y="62" class="node-meta">前置 ${(topic.prerequisite_ids || []).length} · 片段 ${resourceByTopic.get(topic.topic_id) || 0}</text>
+          </g>`);
+      }
+
+      const proposed = proposals.filter(p => p.status === 'proposed');
+      proposed.forEach((proposal, idx) => {
+        const x = proposalX;
+        const y = 70 + idx * 96;
+        for (const parentId of proposal.parent_node_ids || []) {
+          const parent = positions.get(parentId);
+          if (parent) svg.insertAdjacentHTML('beforeend', `<path class="proposal-edge" d="M${parent.x + 184},${parent.y + 38} C${parent.x + 260},${parent.y + 38} ${x - 50},${y + 38} ${x},${y + 38}" />`);
+        }
+        svg.insertAdjacentHTML('beforeend', `
+          <g class="proposal" data-proposal-id="${escapeHtml(proposal.proposal_id)}" transform="translate(${x},${y})" style="cursor:pointer">
+            <polygon points="92,0 184,38 92,76 0,38" fill="#fff7ed" stroke="#f59e0b" stroke-width="2" />
+            <text x="92" y="31" text-anchor="middle" class="node-title">${escapeHtml(short(proposal.title, 14))}</text>
+            <text x="92" y="50" text-anchor="middle" class="node-meta">proposal · ${escapeHtml(proposal.edge_type || 'requires')}</text>
+          </g>`);
+      });
+
+      svg.querySelectorAll('[data-topic-id]').forEach(node => {
+        node.addEventListener('click', async () => {
+          state.selectedTopicId = node.getAttribute('data-topic-id');
+          await refreshTopicData();
+          renderTopicSelect();
+          renderGraph();
+          renderNodeDetail();
+        });
+      });
+      svg.querySelectorAll('[data-proposal-id]').forEach(node => {
+        node.addEventListener('click', () => renderProposalDetail(node.getAttribute('data-proposal-id')));
+      });
+    }
+
+    function renderNodeDetail() {
+      const topic = (state.graph.topics || []).find(t => t.topic_id === state.selectedTopicId);
+      if (!topic) {
+        el('nodeDetail').innerHTML = '<div class="empty">未选择节点。</div>';
+        return;
+      }
+      el('nodeDetail').innerHTML = `
+        <div class="item">
+          <h3>${escapeHtml(topic.title)}</h3>
+          <p class="subtle">${escapeHtml(topic.topic_id)}</p>
+          <div style="margin-top:8px">
+            ${(topic.tags || []).map(t => `<span class="pill">${escapeHtml(t)}</span>`).join('') || '<span class="pill">无标签</span>'}
+          </div>
+          <p class="subtle" style="margin-top:8px">前置节点：${(topic.prerequisite_ids || []).join(', ') || '无'}</p>
+          <p class="subtle" style="margin-top:6px">后继节点：${(topic.dependent_ids || []).join(', ') || '无'}</p>
+        </div>`;
+    }
+
+    function renderProposalDetail(proposalId) {
+      const proposal = (state.graph.proposals || []).find(p => p.proposal_id === proposalId);
+      if (!proposal) return;
+      el('nodeDetail').innerHTML = `
+        <div class="item">
+          <h3>${escapeHtml(proposal.title)}</h3>
+          <p class="subtle">${escapeHtml(proposal.summary || proposal.reason || '')}</p>
+          <p class="subtle" style="margin-top:8px">父节点：${(proposal.parent_node_ids || []).join(', ') || '无'} · ${escapeHtml(proposal.edge_type || 'requires')}</p>
+          <div class="buttons" style="margin-top:10px">
+            <button class="btn-green" onclick="approveProposal('${proposal.proposal_id}')">批准</button>
+            <button class="btn-red" onclick="rejectProposal('${proposal.proposal_id}')">拒绝</button>
+          </div>
+        </div>`;
+    }
+
+    function renderProposals() {
+      const box = el('proposalList');
+      const proposals = (state.graph.proposals || []).filter(p => p.status === 'proposed');
+      if (!proposals.length) {
+        box.innerHTML = '<div class="empty">暂无待审核 proposal。</div>';
+        return;
+      }
+      box.innerHTML = proposals.map(p => `
+        <div class="item">
+          <h3>${escapeHtml(p.title)}</h3>
+          <p class="subtle">${escapeHtml(p.summary || p.reason || '')}</p>
+          <p class="subtle">父节点：${(p.parent_node_ids || []).join(', ') || '无'} · ${escapeHtml(p.edge_type || 'requires')}</p>
+          <div class="buttons" style="margin-top:8px">
+            <button class="btn-green" onclick="approveProposal('${p.proposal_id}')">批准并回挂</button>
+            <button class="btn-red" onclick="rejectProposal('${p.proposal_id}')">拒绝</button>
+          </div>
+        </div>`).join('');
+    }
+
+    function renderResources() {
+      const box = el('resourceList');
+      const cues = state.cues || [];
+      const resources = state.resources || [];
+      if (!resources.length && !cues.length) {
+        box.innerHTML = '<div class="empty">当前节点暂无资源或教学提示。</div>';
+        return;
+      }
+      const cueHtml = cues.map(c => `
+        <div class="item">
+          <h3>提问：${escapeHtml(c.guiding_question || '无')}</h3>
+          <p class="subtle">${escapeHtml(c.teaching_hint || '')}</p>
+          <p class="subtle" style="margin-top:6px">${escapeHtml(c.resource_name)} · ${escapeHtml(c.segment_id)} · conf ${Number(c.confidence || 0).toFixed(2)}</p>
+        </div>`).join('');
+      const resourceHtml = resources.slice(0, 8).map(r => `
+        <div class="item">
+          <h3>${escapeHtml(r.resource_name)}</h3>
+          <p class="subtle">${escapeHtml(r.media_type)} · ${escapeHtml(r.resource_id)}</p>
+          <div>${(r.segments || []).slice(0, 4).map(s => `<span class="pill">${escapeHtml(s.status)} ${escapeHtml(s.topic_id || s.proposed_topic_title || '')}</span>`).join('')}</div>
+        </div>`).join('');
+      box.innerHTML = cueHtml + resourceHtml;
+    }
+
+    async function uploadBlob(blob, filename, name) {
+      if (!state.selectedTopicId) throw new Error('没有可用 topic');
+      if (state.source === 'report') {
+        log('注意：当前是报告查看模式，上传仍会发到 API；如果 API 后端没有这个 topic_id 会返回 404', { topic_id: state.selectedTopicId });
+      }
+      const form = new FormData();
+      form.append('file', blob, filename);
+      form.append('topic_id', state.selectedTopicId);
+      form.append('resource_name', name || filename.replace(/\.[^.]+$/, ''));
+      form.append('category', 'learn');
+      const result = await api('/resource/upload', { method: 'POST', body: form });
+      log('上传完成', { resource_id: result.resource?.resource_id, segments: result.resource?.segments?.length });
+      await refreshAll();
+    }
+
+    async function uploadSelectedFile() {
+      const file = el('fileInput').files[0];
+      if (!file) return alert('请选择文件');
+      await uploadBlob(file, file.name, el('resourceName').value || file.name);
+    }
+
+    async function uploadQuickText() {
+      const text = el('quickText').value.trim();
+      if (!text) return alert('请输入测试文本');
+      await uploadBlob(new Blob([text], { type: 'text/plain' }), `quick_${Date.now()}.txt`, el('resourceName').value || '快捷文本测试');
+    }
+
+    async function uploadMixedText() {
+      const topic = (state.graph.topics || []).find(t => t.topic_id === state.selectedTopicId);
+      const title = topic?.title || '当前知识点';
+      const text = `${title}\n\n这一段直接围绕 ${title} 展开，适合挂接到当前知识点。\n\n另一个更细的新问题是：链式变化、进阶解释和迁移问题如何帮助孩子把资料里的因果关系说清楚？\n\n最后加入一个泛泛内容：今天我们一起观察资料，说说你最感兴趣的地方。`;
+      await uploadBlob(new Blob([text], { type: 'text/plain' }), `mixed_${Date.now()}.txt`, '混合扩图测试');
+    }
+
+    async function approveProposal(proposalId) {
+      await api(`/knowledge/proposals/${proposalId}/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason: '测试页批准' }) });
+      log('已批准 proposal', { proposalId });
+      await refreshAll({ keepSelection: false });
+    }
+
+    async function rejectProposal(proposalId) {
+      await api(`/knowledge/proposals/${proposalId}/reject`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason: '测试页拒绝' }) });
+      log('已拒绝 proposal', { proposalId });
+      await refreshAll();
+    }
+
+    window.approveProposal = approveProposal;
+    window.rejectProposal = rejectProposal;
+
+    el('loadApiBtn').addEventListener('click', () => refreshAll({ keepSelection: false }).catch(err => log('API 刷新失败', { error: err.message })));
+    el('reportInput').addEventListener('change', (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      loadReportFile(file).catch(err => log('加载报告失败', { error: err.message }));
+    });
+    el('refreshBtn').addEventListener('click', () => refreshAll().catch(err => log('刷新失败', { error: err.message })));
+    el('topicSelect').addEventListener('change', async (event) => {
+      state.selectedTopicId = event.target.value;
+      await refreshTopicData();
+      renderGraph();
+      renderNodeDetail();
+    });
+    el('uploadFileBtn').addEventListener('click', () => uploadSelectedFile().catch(err => log('上传失败', { error: err.message })));
+    el('uploadQuickBtn').addEventListener('click', () => uploadQuickText().catch(err => log('上传失败', { error: err.message })));
+    el('uploadMixedBtn').addEventListener('click', () => uploadMixedText().catch(err => log('上传失败', { error: err.message })));
+    el('pollBtn').addEventListener('click', () => {
+      if (state.pollTimer) {
+        clearInterval(state.pollTimer);
+        state.pollTimer = null;
+        el('pollBtn').textContent = '自动刷新：关';
+      } else {
+        state.pollTimer = setInterval(() => refreshAll().catch(err => log('自动刷新失败', { error: err.message })), 2500);
+        el('pollBtn').textContent = '自动刷新：开';
+      }
+    });
+
+    refreshAll({ keepSelection: false }).catch(err => log('初始化失败', { error: err.message }));
+  </script>
+</body>
+</html>
