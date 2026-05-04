@@ -20,22 +20,24 @@ export default function PdfViewer({ url, onRenderComplete }: PdfViewerProps) {
 
   function onDocumentLoadSuccess({ numPages }: { numPages: number }) {
     setNumPages(numPages);
+    // 首次加载完成，触发第一页的知识点获取
+    if (onRenderComplete) {
+      onRenderComplete(1);
+    }
   }
 
   const changePage = (offset: number) => {
-    setPageNumber(prevPageNumber => {
-      const newPage = prevPageNumber + offset;
-      // 翻页后，如果是正常翻页，触发联动回调
-      return newPage;
-    });
-  };
+    // 直接计算新页码并设置，不使用回调
+    const newPage = pageNumber + offset;
+    setPageNumber(newPage);
 
-  // 页面渲染完成后的处理
-  const handlePageRenderSuccess = () => {
+    // 仅在点击翻页时触发请求
     if (onRenderComplete) {
-      onRenderComplete(pageNumber);
+      onRenderComplete(newPage);
     }
   };
+
+
 
   return (
     <div className="flex flex-col items-center w-full h-full bg-white/40 rounded-2xl p-4 overflow-hidden">
@@ -45,18 +47,18 @@ export default function PdfViewer({ url, onRenderComplete }: PdfViewerProps) {
           <button onClick={() => setScale(s => Math.max(0.5, s - 0.2))} className="p-2 bg-white text-gray-600 rounded-lg hover:bg-gray-100 shadow-sm transition-colors cursor-pointer"><ZoomOut size={18} /></button>
           <button onClick={() => setScale(s => Math.min(2.5, s + 0.2))} className="p-2 bg-white text-gray-600 rounded-lg hover:bg-gray-100 shadow-sm transition-colors cursor-pointer"><ZoomIn size={18} /></button>
         </div>
-        
+
         <div className="flex items-center gap-4">
-          <button 
-            onClick={() => changePage(-1)} 
+          <button
+            onClick={() => changePage(-1)}
             disabled={pageNumber <= 1}
             className="p-2 bg-white text-gray-600 rounded-lg hover:bg-gray-100 disabled:opacity-30 shadow-sm cursor-pointer"
           ><ChevronLeft size={18} /></button>
           <span className="text-sm font-bold text-gray-700 select-none">
             {pageNumber} <span className="text-gray-400">/</span> {numPages || '-'}
           </span>
-          <button 
-            onClick={() => changePage(1)} 
+          <button
+            onClick={() => changePage(1)}
             disabled={pageNumber >= numPages}
             className="p-2 bg-white text-gray-600 rounded-lg hover:bg-gray-100 disabled:opacity-30 shadow-sm cursor-pointer"
           ><ChevronRight size={18} /></button>
@@ -79,7 +81,6 @@ export default function PdfViewer({ url, onRenderComplete }: PdfViewerProps) {
           <Page 
             pageNumber={pageNumber} 
             scale={scale} 
-            onRenderSuccess={handlePageRenderSuccess}
             renderTextLayer={true}
             renderAnnotationLayer={false}
             loading=""

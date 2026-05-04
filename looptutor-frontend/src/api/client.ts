@@ -29,6 +29,8 @@ export const SessionAPI = {
     });
   },
 
+  
+
   // ================= 3. 魔法舱互动 (流式极速响应) =================
   // 获取流式播报的 stream_id
   sendTextRealtime: (text: string) => apiClient.post('/session/input/text/realtime', { text }),
@@ -50,6 +52,11 @@ export const SessionAPI = {
     apiClient.get('/session/knowledge/page', {
       params: { topic_id: topicId, page: pageNumber }
     }),
+    synthesizeSpeech: (text: string, voice?: string) => {
+    // 指向你 docker-compose 里映射的本地 5501 端口
+    const ttsUrl = 'http://127.0.0.1:5501/tts'; 
+    return axios.post(ttsUrl, { text, voice }, { responseType: 'blob' });
+  },
 };
 
 export const ResourceAPI = {

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ChevronLeft, Star, Mic, Send, HelpCircle, Loader2, Volume2 } from 'lucide-react';
+import { ChevronLeft, Star, Mic, Send, HelpCircle, Loader2, Volume2, Pause } from 'lucide-react';
 import { SessionAPI } from '../api/client';
 import { API_BASE, API_BASE_NO_VERSION } from '../api/config';
 import PdfViewer from './PdfViewer';
@@ -24,6 +24,16 @@ export default function KidsLearning() {
   const [companion, setCompanion] = useState("星空兔");
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [speakingText, setSpeakingText] = useState<string | null>(null);
+  // 🌟 新增：记录已经触发过知识点的页码，防止来回翻页重复刷屏
+  const triggeredPagesRef = useRef<Set<number>>(new Set());
+  const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    return () => {
+      window.speechSynthesis.cancel();
+    };
+  }, []);
 
   // ================= 🌟 从复习队列/当前主线中同步 topic，并拉取节点资源 =================
   const [todayTopic, setTodayTopic] = useState('恐龙的秘密');
@@ -125,14 +135,62 @@ export default function KidsLearning() {
     }
   }, [messages]);
 
-  // 原生 TTS 悬停点读
-  const handleHoverRead = (text: string) => {
+  // 🌟 修复：对接本地 Docker TTS 服务，支持播放与暂停
+  const toggleRead = async (text: string) => {
+    // 1. 如果点击的是当前正在播放/准备播放的文本，则执行暂停并清空状态
+    if (speakingText === text) {
+      if (ttsAudioRef.current) {
+        ttsAudioRef.current.pause();
+        ttsAudioRef.current = null;
+      }
+      setSpeakingText(null);
+      return;
+    }
+
+    // 2. 停止当前可能正在播放的其他声音
+    if (ttsAudioRef.current) {
+      ttsAudioRef.current.pause();
+      ttsAudioRef.current = null;
+    }
+    
+    // 为了防止原来浏览器的声音干扰，保险起见也关掉
     window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = 'zh-CN';
-    utterance.rate = 0.85;
-    utterance.pitch = 1.1;
-    window.speechSynthesis.speak(utterance);
+
+    try {
+      // 马上把按钮置为加载/播放状态，提升交互响应感
+      setSpeakingText(text);
+
+      // 3. 调用我们刚才在 API 中加的接口，获取音频 Blob
+      // 如果根据不同的 companion 想用不同的音色，可以在第二个参数传
+      const voiceName = companion === "星空兔" ? "zh-CN-XiaoxiaoNeural" : "zh-CN-YunxiNeural";
+      const response = await SessionAPI.synthesizeSpeech(text, voiceName);
+      
+      const audioBlob = response.data;
+      const audioUrl = URL.createObjectURL(audioBlob);
+
+      // 4. 创建新的 Audio 实例并播放
+      const audio = new Audio(audioUrl);
+      ttsAudioRef.current = audio;
+
+      audio.onended = () => {
+        setSpeakingText(null);
+        ttsAudioRef.current = null;
+        URL.revokeObjectURL(audioUrl); // 释放内存
+      };
+      
+      audio.onerror = () => {
+        console.error("TTS 音频播放失败");
+        setSpeakingText(null);
+      };
+
+      await audio.play();
+
+    } catch (error) {
+      console.error("TTS 语音合成请求失败:", error);
+      setSpeakingText(null);
+      // 如果网络 TTS 挂了，你可以选择在这里 fallback 回 window.speechSynthesis
+      // alert("语音服务开小差了，请检查后端运行状态");
+    }
   };
 
   const resolveResourceUrl = (resourceUrl: string) => {
@@ -196,7 +254,7 @@ export default function KidsLearning() {
         return [...newMsgs, { role: 'assistant', content: reply_text }];
       });
 
-      handleHoverRead(reply_text);
+      toggleRead(reply_text);
     } catch (error) {
       console.error("语音发送失败:", error);
       setMessages(prev => [...prev, { role: 'assistant', content: '哎呀，语音魔法失效了，请再试一次！' }]);
@@ -205,21 +263,37 @@ export default function KidsLearning() {
     }
   };
 
-  // 🌟 新增：处理 PDF 翻页并请求 AI 知识点
+  // 🌟 修复方案 2：直接提取后端纯净字段，彻底抛弃带垃圾 OCR 的 knowledge_text
   const handlePdfPageTurned = async (pageNumber: number) => {
     if (!todayTopicId) return;
 
+    // 防重复触发
+    if (triggeredPagesRef.current.has(pageNumber)) return;
+
     setIsLoading(true);
     try {
-      // 向后端发送请求，获取该页的知识点文本
       const response = await SessionAPI.getKnowledgeByPage(todayTopicId, pageNumber);
-      const knowledgeText = response.data.knowledge_text;
+      const data = response.data;
 
-      if (knowledgeText) {
+      // 🚨 核心逻辑：只取干净的“引导问题”和“教学提示”
+      const question = data.guiding_question ? data.guiding_question.trim() : "";
+      const hint = data.teaching_hint ? data.teaching_hint.trim() : "";
+
+      // 如果这一页既没有预设问题，也没有预设提示，说明是普通页，直接跳过！
+      if (!question && !hint) {
+        return;
+      }
+
+      // 把干净的问题和提示拼起来（如果都有就换行拼接）
+      const cleanMessage = [question, hint].filter(Boolean).join("\n");
+
+      if (cleanMessage) {
         setMessages(prev => [...prev, {
           role: 'assistant',
-          content: knowledgeText // 将知识点作为 AI 的话推送到对话框
+          content: cleanMessage 
         }]);
+        
+        triggeredPagesRef.current.add(pageNumber);
       }
     } catch (error) {
       console.error("获取该页知识点失败:", error);
@@ -289,8 +363,13 @@ export default function KidsLearning() {
 
         {/* 左侧：视频区 */}
         <div className="flex-[6] bg-white/60 backdrop-blur-md rounded-[30px] p-6 shadow-sm border border-white/50 flex flex-col">
-          <h3 onMouseEnter={() => handleHoverRead("今日探索：" + todayTopic)} className="text-2xl font-bold text-blue mb-4 cursor-help hover:text-primary transition-colors flex items-center gap-2 w-fit">
-            今日探索：{todayTopic} <Volume2 size={20} className="opacity-50" />
+          <h3 onClick={() => toggleRead("今日探索：" + todayTopic)} className="text-2xl font-bold text-blue mb-4 cursor-pointer hover:text-primary transition-colors flex items-center gap-2 w-fit select-none">
+            今日探索：{todayTopic} 
+            {speakingText === "今日探索：" + todayTopic ? (
+               <Pause size={20} className="text-primary animate-pulse" />
+            ) : (
+               <Volume2 size={20} className="opacity-50" />
+            )}
           </h3>
           <div className="w-full flex-1 bg-black/5 rounded-2xl overflow-hidden flex items-center justify-center border-2 border-white/80 relative">
             {previewResource?.media_type === 'video' ? (
@@ -375,11 +454,15 @@ export default function KidsLearning() {
                   {/* 🌟 改造为手动点击朗读按钮 */}
                   {msg.role === 'assistant' && (
                     <button
-                      onClick={() => handleHoverRead(msg.content)}
+                      onClick={() => toggleRead(msg.content)}
                       className="p-1.5 bg-gray-50 text-gray-400 hover:text-primary hover:bg-pink-50 rounded-lg transition-colors flex-shrink-0 cursor-pointer border border-transparent hover:border-pink-200"
-                      title="点击朗读"
+                      title={speakingText === msg.content ? "停止朗读" : "点击朗读"}
                     >
-                      <Volume2 size={16} />
+                      {speakingText === msg.content ? (
+                        <Pause size={16} className="text-primary animate-pulse" />
+                      ) : (
+                        <Volume2 size={16} />
+                      )}
                     </button>
                   )}
                 </div>
