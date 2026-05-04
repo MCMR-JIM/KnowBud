@@ -64,7 +64,7 @@ class SubjectProfile:
 
 LANGUAGE_INSTANCE_MARKERS: dict[str, tuple[str, ...]] = {
     "english": ("英语", "english", "present continuous", "simple past", "grammar focus", "listen and repeat"),
-    "chinese": ("语文", "中文", "汉语", "chinese", "古诗", "文言文", "作文", "阅读理解"),
+    "chinese": ("语文", "中文", "汉语", "chinese language", "chinese reading", "chinese writing", "古诗", "文言文", "作文", "阅读理解"),
 }
 
 
@@ -72,8 +72,8 @@ SUBJECT_PROFILES: dict[str, SubjectProfile] = {
     "language": SubjectProfile(
         subject_id="language",
         root_title="语言",
-        aliases=("语言", "英语", "语文", "中文", "english", "chinese"),
-        strong_markers=("英语", "english", "语文", "中文", "grammar focus", "listen and repeat", "role-play", "pronunciation"),
+        aliases=("语言", "英语", "语文", "中文", "english", "chinese language", "chinese reading", "chinese writing"),
+        strong_markers=("英语", "english", "语文", "中文", "grammar focus", "listen and repeat", "role-play", "pronunciation", "chinese language", "chinese reading", "chinese writing"),
         weak_markers=("grammar", "vocabulary", "phonics", "reading comprehension", "guided writing", "present continuous", "simple past", "一般过去时", "现在进行时", "阅读理解", "作文"),
         facets=("grammar", "vocabulary", "pronunciation", "functional_expression", "reading", "writing", "culture"),
         default_facet="culture",
@@ -197,6 +197,7 @@ class CandidateTopic:
     raw_title: str
     normalized_title: str
     subject: str
+    language_id: str | None
     facet: str
     confidence: float
     reason: str
@@ -208,6 +209,7 @@ class CandidateTopic:
 class CandidateCluster:
     title: str
     subject: str
+    language_id: str | None
     facet: str
     edge_type: str
     candidates: list[CandidateTopic]
@@ -311,19 +313,20 @@ def classify_candidate_kind(title: str, text: str, *, subject: str) -> Candidate
 
 
 def cluster_candidate_topics(candidates: list[CandidateTopic]) -> list[CandidateCluster]:
-    buckets: dict[tuple[str, str, str], list[CandidateTopic]] = {}
+    buckets: dict[tuple[str, str | None, str, str], list[CandidateTopic]] = {}
     for candidate in candidates:
-        key = (candidate.subject, candidate.facet, candidate.normalized_title)
+        key = (candidate.subject, candidate.language_id, candidate.facet, candidate.normalized_title)
         buckets.setdefault(key, []).append(candidate)
 
     clusters: list[CandidateCluster] = []
-    for (subject, facet, normalized_title), items in buckets.items():
+    for (subject, language_id, facet, normalized_title), items in buckets.items():
         edge_type = _pick_edge_type(items, subject=subject)
         ordered = sorted(items, key=lambda item: (-item.confidence, item.segment_index))
         clusters.append(
             CandidateCluster(
                 title=normalized_title,
                 subject=subject,
+                language_id=language_id,
                 facet=facet,
                 edge_type=edge_type,
                 candidates=ordered,
@@ -378,6 +381,7 @@ def create_resource_level_proposals(
                 raw_title=segment.proposed_topic_title,
                 normalized_title=normalized_title,
                 subject=subject,
+                language_id=language_id,
                 facet=kind.facet,
                 confidence=segment.confidence,
                 reason=segment.reason,
@@ -393,18 +397,18 @@ def create_resource_level_proposals(
     parent_node_ids = _select_parent_node_ids(subject=subject, topics=topics, default_topic_id=default_topic_id, language_id=language_id)
     proposals: list[GraphProposalRecord] = []
     needs_new_content_proposal = any(
-        topic_map.get((cluster.subject, cluster.facet, cluster.title)) is None
-        and proposal_map.get((cluster.subject, cluster.facet, cluster.title)) is None
+        _resolve_existing_topic(topic_map, subject=cluster.subject, language_id=cluster.language_id, facet=cluster.facet, normalized_title=cluster.title) is None
+        and _resolve_existing_proposal(proposal_map, subject=cluster.subject, language_id=cluster.language_id, facet=cluster.facet, normalized_title=cluster.title) is None
         for cluster in clusters
     )
 
     if subject != "general" and needs_new_content_proposal and not parent_node_ids and _should_create_subject_root(subject=subject, topics=topics, backend=backend):
-        root_title = profile.root_title
+        root_title = _root_title_for_subject(subject=subject, language_id=language_id)
         proposals.append(
             backend.create_graph_proposal_from_resource(
                 title=root_title,
                 summary=f"facet: root；支撑片段 {len(candidate_topics)} 个；代表片段：{_representative_snippets([item.text for item in candidate_topics])}",
-                tags=_proposal_tags(subject=subject, facet="root", language_id=language_id, include_language_tag=False),
+                tags=_proposal_tags(subject=subject, facet="root", language_id=language_id),
                 parent_node_ids=[],
                 edge_type="related",
                 reason=f"resource batch root proposal; facet=root; segments={len(candidate_topics)}",
@@ -412,13 +416,25 @@ def create_resource_level_proposals(
         )
 
     for cluster in clusters:
-        existing_topic = topic_map.get((cluster.subject, cluster.facet, cluster.title))
+        existing_topic = _resolve_existing_topic(
+            topic_map,
+            subject=cluster.subject,
+            language_id=cluster.language_id,
+            facet=cluster.facet,
+            normalized_title=cluster.title,
+        )
         if existing_topic is not None:
             for candidate in cluster.candidates:
                 _link_segment_to_existing_topic(segments[candidate.segment_index], topic_id=existing_topic.topic_id)
             continue
 
-        existing_proposal = proposal_map.get((cluster.subject, cluster.facet, cluster.title))
+        existing_proposal = _resolve_existing_proposal(
+            proposal_map,
+            subject=cluster.subject,
+            language_id=cluster.language_id,
+            facet=cluster.facet,
+            normalized_title=cluster.title,
+        )
         if existing_proposal is not None:
             for candidate in cluster.candidates:
                 _attach_segment_to_existing_proposal(
@@ -431,7 +447,7 @@ def create_resource_level_proposals(
         cluster_summary = _build_cluster_summary(cluster)
         cluster_reason = f"resource batch cluster; facet={cluster.facet}; segments={len(cluster.candidates)}"
         if subject != "general" and not parent_node_ids:
-            pending_label = profile.root_title
+            pending_label = _root_title_for_subject(subject=subject, language_id=language_id)
             cluster_summary = f"{cluster_summary}；pending_subject_root={pending_label}"
             cluster_reason = f"{cluster_reason}; pending_subject_root={pending_label}"
 
@@ -723,31 +739,23 @@ def _build_existing_match_maps(
     *,
     topics: list[TopicNode],
     proposals: list[GraphProposalRecord],
-) -> tuple[dict[tuple[str, str, str], TopicNode], dict[tuple[str, str, str], GraphProposalRecord]]:
-    topic_map: dict[tuple[str, str, str], TopicNode] = {}
+) -> tuple[dict[tuple[str, str | None, str, str], TopicNode], dict[tuple[str, str | None, str, str], GraphProposalRecord]]:
+    topic_map: dict[tuple[str, str | None, str, str], TopicNode] = {}
     for topic in topics:
-        subject = _infer_topic_subject(topic)
-        facet = _infer_topic_facet(topic.title, getattr(topic, "tags", []), subject=subject)
-        normalized = normalize_candidate_title(topic.title, subject=subject, facet=facet or SUBJECT_PROFILES.get(subject, SUBJECT_PROFILES["general"]).default_facet, text="")
-        if not normalized:
+        key = _topic_match_key(topic)
+        if key is None:
             continue
-        topic_map.setdefault((subject, facet or "general", normalized), topic)
+        topic_map.setdefault(key, topic)
 
-    proposal_map: dict[tuple[str, str, str], GraphProposalRecord] = {}
+    proposal_map: dict[tuple[str, str | None, str, str], GraphProposalRecord] = {}
     reusable_statuses = {"proposed", "validated", "shadow"}
     for proposal in proposals:
         if proposal.status not in reusable_statuses:
             continue
-        subject = _subject_from_tags(getattr(proposal, "tags", []))
-        facet = _facet_from_tags(getattr(proposal, "tags", []))
-        if subject is None:
-            subject = "general"
-        if facet is None:
-            facet = _infer_topic_facet(proposal.title, getattr(proposal, "tags", []), subject=subject) or "general"
-        normalized = normalize_candidate_title(proposal.title, subject=subject, facet=facet, text="")
-        if not normalized:
+        key = _proposal_match_key(proposal)
+        if key is None:
             continue
-        proposal_map.setdefault((subject, facet, normalized), proposal)
+        proposal_map.setdefault(key, proposal)
     return topic_map, proposal_map
 
 
@@ -772,12 +780,12 @@ def _infer_topic_facet(title: str, tags: list[str], *, subject: str) -> str | No
 def _subject_evidence_score(*, profile: SubjectProfile, resource_name: str, filename: str, text: str) -> int:
     score = 0
     for alias in profile.aliases:
-        if alias and (alias in resource_name or alias in filename):
+        if alias and (_marker_matches(alias, resource_name) or _marker_matches(alias, filename)):
             score += 6
     for marker in profile.strong_markers:
-        if marker and marker in text:
+        if marker and _marker_matches(marker, text):
             score += 4
-    score += min(4, sum(1 for marker in profile.weak_markers if marker and marker in text))
+    score += min(4, sum(1 for marker in profile.weak_markers if marker and _marker_matches(marker, text)))
     return score
 
 
@@ -796,6 +804,21 @@ def _detect_language_id(*parts: str) -> str | None:
             best_language = language_id
             best_score = score
     return best_language
+
+
+def _marker_matches(marker: str, text: str) -> bool:
+    marker = marker.strip().lower()
+    haystack = text.lower()
+    if not marker or not haystack:
+        return False
+    if _contains_cjk(marker):
+        return marker in haystack
+    pattern = r"(?<![a-z0-9])" + re.escape(marker).replace(r"\ ", r"\s+") + r"(?![a-z0-9])"
+    return re.search(pattern, haystack) is not None
+
+
+def _contains_cjk(text: str) -> bool:
+    return any("\u4e00" <= char <= "\u9fff" for char in text)
 
 
 def _language_reading_title(text: str, language_id: str | None = None) -> str:
@@ -849,7 +872,11 @@ def _classify_profile_facet(text: str, *, profile: SubjectProfile) -> str:
 
 
 def _is_non_node_candidate(title: str, text: str, *, profile: SubjectProfile) -> bool:
-    return any(re.search(pattern, title) for pattern in profile.non_node_patterns) and not any(marker in text for marker in profile.strong_markers)
+    has_activity_title = any(re.search(pattern, title) for pattern in profile.non_node_patterns)
+    has_activity_text = any(re.search(pattern, text) for pattern in profile.non_node_patterns)
+    if not has_activity_title and not has_activity_text:
+        return False
+    return not _has_profile_substantive_markers(text, profile=profile)
 
 
 def _proposal_tags(*, subject: str, facet: str, language_id: str | None = None, include_language_tag: bool = True) -> list[str]:
@@ -868,6 +895,85 @@ def _root_topic_score(topic: TopicNode, *, subject: str, language_id: str | None
     if language_id and f"language:{language_id}" in topic.tags:
         score += 2
     return score
+
+
+def _root_title_for_subject(*, subject: str, language_id: str | None) -> str:
+    if subject != "language":
+        return SUBJECT_PROFILES.get(subject, SUBJECT_PROFILES["general"]).root_title
+    if language_id == "english":
+        return "英语"
+    if language_id == "chinese":
+        return "语文"
+    return "语言"
+
+
+def _topic_match_key(topic: TopicNode) -> tuple[str, str | None, str, str] | None:
+    subject = _infer_topic_subject(topic)
+    facet = _infer_topic_facet(topic.title, getattr(topic, "tags", []), subject=subject)
+    language_id = _language_id_from_tags(getattr(topic, "tags", [])) if subject == "language" else None
+    normalized = normalize_candidate_title(topic.title, subject=subject, facet=facet or SUBJECT_PROFILES.get(subject, SUBJECT_PROFILES["general"]).default_facet, text="")
+    if not normalized:
+        return None
+    return (subject, language_id, facet or "general", normalized)
+
+
+def _proposal_match_key(proposal: GraphProposalRecord) -> tuple[str, str | None, str, str] | None:
+    subject = _subject_from_tags(getattr(proposal, "tags", [])) or "general"
+    facet = _facet_from_tags(getattr(proposal, "tags", [])) or _infer_topic_facet(proposal.title, getattr(proposal, "tags", []), subject=subject) or "general"
+    language_id = _language_id_from_tags(getattr(proposal, "tags", [])) if subject == "language" else None
+    normalized = normalize_candidate_title(proposal.title, subject=subject, facet=facet, text="")
+    if not normalized:
+        return None
+    return (subject, language_id, facet, normalized)
+
+
+def _language_id_from_tags(tags: list[str]) -> str | None:
+    for tag in tags:
+        if tag.startswith("language:"):
+            return tag.split(":", 1)[1]
+    return None
+
+
+def _resolve_existing_topic(
+    topic_map: dict[tuple[str, str | None, str, str], TopicNode],
+    *,
+    subject: str,
+    language_id: str | None,
+    facet: str,
+    normalized_title: str,
+) -> TopicNode | None:
+    if subject != "language":
+        return topic_map.get((subject, None, facet, normalized_title))
+    if language_id is None:
+        return topic_map.get((subject, None, facet, normalized_title))
+    return topic_map.get((subject, language_id, facet, normalized_title)) or topic_map.get((subject, None, facet, normalized_title))
+
+
+def _resolve_existing_proposal(
+    proposal_map: dict[tuple[str, str | None, str, str], GraphProposalRecord],
+    *,
+    subject: str,
+    language_id: str | None,
+    facet: str,
+    normalized_title: str,
+) -> GraphProposalRecord | None:
+    if subject != "language":
+        return proposal_map.get((subject, None, facet, normalized_title))
+    if language_id is None:
+        return proposal_map.get((subject, None, facet, normalized_title))
+    return proposal_map.get((subject, language_id, facet, normalized_title)) or proposal_map.get((subject, None, facet, normalized_title))
+
+
+def _has_profile_substantive_markers(text: str, *, profile: SubjectProfile) -> bool:
+    if profile.subject_id == "language":
+        return _has_language_substantive_markers(text)
+    if profile.subject_id == "math":
+        return any(marker in text for marker in ("加法", "减法", "乘法", "除法", "equation", "geometry", "formula", "概念", "方法"))
+    if profile.subject_id in {"science", "physics", "chemistry", "biology"}:
+        return any(marker in text for marker in ("公式", "formula", "定律", "law", "实验", "experiment", "速度", "distance", "cell", "细胞", "energy", "force"))
+    if profile.subject_id in {"history", "geography"}:
+        return any(marker in text for marker in ("事件", "人物", "战争", "地图", "气候", "区域", "经纬度", "原因", "影响"))
+    return any(_marker_matches(marker, text) for marker in profile.strong_markers)
 
 
 def _subject_from_tags(tags: list[str]) -> str | None:

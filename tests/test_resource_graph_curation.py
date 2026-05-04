@@ -110,7 +110,7 @@ def test_english_resource_aggregates_proposals_and_backfills_segments(tmp_path: 
 
     state = backend.load_app_state(include_history=False)
     proposals = state.learning.graph_proposals
-    assert any(proposal.title == "语言" for proposal in proposals)
+    assert any(proposal.title == "英语" for proposal in proposals)
 
     content_proposals = [proposal for proposal in proposals if proposal.title == "现在进行时"]
     assert len(content_proposals) == 1
@@ -357,8 +357,8 @@ def test_non_root_english_topic_is_not_used_as_parent(tmp_path: Path) -> None:
 
     proposal = next(rec for rec in backend.load_app_state(include_history=False).learning.graph_proposals if rec.proposal_id == segments[0].proposal_id and rec.title == "一般过去时")
     assert proposal.parent_node_ids == []
-    assert proposal.summary.endswith("pending_subject_root=语言")
-    assert proposal.reason.endswith("pending_subject_root=语言")
+    assert proposal.summary.endswith("pending_subject_root=英语")
+    assert proposal.reason.endswith("pending_subject_root=英语")
     assert proposal.parent_node_ids != ["english_present_continuous"]
 
 
@@ -459,10 +459,26 @@ def test_detect_resource_subject_identifies_history_material(tmp_path: Path) -> 
     assert subject == "history"
 
 
+def test_detect_resource_subject_treats_chinese_history_as_history_not_language(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    record = _create_record(tmp_path, backend, name="Chinese history", content="Chinese history covers important dynasties and reform events.")
+    segments = [ResourceSegment(segment_id="seg_1", text="Chinese history covers important dynasties and reform events.")]
+    subject = detect_resource_subject(record=record, segments=segments, topics=backend.load_app_state(include_history=False).curriculum.topics, default_topic_id="demo_01")
+    assert subject == "history"
+
+
 def test_detect_resource_subject_identifies_geography_material(tmp_path: Path) -> None:
     backend = _build_backend(tmp_path)
     record = _create_record(tmp_path, backend, name="地理地图与气候", content="地图技能帮助理解气候区域的分布。")
     segments = [ResourceSegment(segment_id="seg_1", text="地图技能帮助理解气候区域的分布。")]
+    subject = detect_resource_subject(record=record, segments=segments, topics=backend.load_app_state(include_history=False).curriculum.topics, default_topic_id="demo_01")
+    assert subject == "geography"
+
+
+def test_detect_resource_subject_treats_chinese_geography_as_geography_not_language(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    record = _create_record(tmp_path, backend, name="Chinese geography", content="Chinese geography studies climate regions and maps.")
+    segments = [ResourceSegment(segment_id="seg_1", text="Chinese geography studies climate regions and maps.")]
     subject = detect_resource_subject(record=record, segments=segments, topics=backend.load_app_state(include_history=False).curriculum.topics, default_topic_id="demo_01")
     assert subject == "geography"
 
@@ -493,6 +509,146 @@ def test_detect_resource_subject_does_not_use_time_word_alone_as_language(tmp_pa
     assert subject != "language"
 
 
+def test_detect_resource_subject_emotion_does_not_match_motion(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    record = _create_record(tmp_path, backend, name="social emotions", content="Emotion changes how people respond in groups.")
+    segments = [ResourceSegment(segment_id="seg_1", text="Emotion changes how people respond in groups.")]
+    subject = detect_resource_subject(record=record, segments=segments, topics=backend.load_app_state(include_history=False).curriculum.topics, default_topic_id="demo_01")
+    assert subject == "general"
+
+
+def test_detect_resource_subject_excellent_does_not_match_cell(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    record = _create_record(tmp_path, backend, name="excellent writing", content="Excellent writing shows clear structure and detail.")
+    segments = [ResourceSegment(segment_id="seg_1", text="Excellent writing shows clear structure and detail.")]
+    subject = detect_resource_subject(record=record, segments=segments, topics=backend.load_app_state(include_history=False).curriculum.topics, default_topic_id="demo_01")
+    assert subject in {"language", "general"}
+    assert subject != "biology"
+
+
+def test_english_and_chinese_reading_proposals_do_not_cross_reuse(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    state = backend.load_app_state(include_history=False)
+    state.learning.graph_proposals.append(
+        GraphProposalRecord(
+            proposal_id="proposal_english_reading",
+            title="英语阅读理解",
+            summary="facet: reading；支撑片段 1 个；代表片段：old",
+            trigger="resource_ingest",
+            tags=["subject:language", "facet:reading", "language:english"],
+            parent_node_ids=[],
+            edge_type="related",
+            status="proposed",
+            reason="existing proposal",
+            created_ts="2026-05-04T00:00:00+00:00",
+            updated_ts="2026-05-04T00:00:00+00:00",
+        )
+    )
+    backend.save_app_state(state)
+
+    backend.llm_skill.classify_or_propose_resource_chunk = lambda **_: {
+        "decision": "propose",
+        "topic_id": None,
+        "confidence": 0.85,
+        "reason": "reading chunk",
+        "proposed_topic": {
+            "title": "阅读理解",
+            "summary": "阅读材料分析",
+            "parent_node_ids": ["demo_01"],
+            "edge_type": "requires",
+        },
+    }
+    record = _create_record(tmp_path, backend, name="七年级语文阅读", content="阅读理解：分析课文结构和主题。")
+    segments = ingest_document_resource(
+        backend=backend,
+        record=record,
+        topics=backend.load_app_state(include_history=False).curriculum.topics,
+        default_topic_id="demo_01",
+    )
+
+    assert segments[0].proposal_id != "proposal_english_reading"
+    chinese_proposal = next(rec for rec in backend.load_app_state(include_history=False).learning.graph_proposals if rec.proposal_id == segments[0].proposal_id)
+    assert "language:chinese" in chinese_proposal.tags
+
+
+def test_chinese_resource_creates_chinese_root_title(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    backend.llm_skill.classify_or_propose_resource_chunk = lambda **_: {
+        "decision": "propose",
+        "topic_id": None,
+        "confidence": 0.85,
+        "reason": "reading chunk",
+        "proposed_topic": {
+            "title": "阅读理解",
+            "summary": "阅读材料分析",
+            "parent_node_ids": ["demo_01"],
+            "edge_type": "requires",
+        },
+    }
+    record = _create_record(tmp_path, backend, name="七年级语文阅读", content="阅读理解：分析课文结构和主题。")
+    ingest_document_resource(
+        backend=backend,
+        record=record,
+        topics=backend.load_app_state(include_history=False).curriculum.topics,
+        default_topic_id="demo_01",
+    )
+    proposals = backend.load_app_state(include_history=False).learning.graph_proposals
+    root = next(rec for rec in proposals if rec.title in {"语文", "中文"})
+    assert root.tags == ["subject:language", "facet:root", "language:chinese"]
+
+
+def test_math_project_activity_is_filtered(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    backend.llm_skill.classify_or_propose_resource_chunk = lambda **_: {
+        "decision": "propose",
+        "topic_id": None,
+        "confidence": 0.8,
+        "reason": "activity",
+        "proposed_topic": {
+            "title": "Math project",
+            "summary": "project activity",
+            "parent_node_ids": ["demo_01"],
+            "edge_type": "requires",
+        },
+    }
+    record = _create_record(tmp_path, backend, name="数学项目活动", content="Project: work in groups and make a poster.")
+    segments = ingest_document_resource(
+        backend=backend,
+        record=record,
+        topics=backend.load_app_state(include_history=False).curriculum.topics,
+        default_topic_id="demo_01",
+    )
+    assert segments[0].status == "unclassified"
+    assert backend.load_app_state(include_history=False).learning.graph_proposals == []
+
+
+def test_physics_formula_exercise_still_generates_proposal(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    backend.llm_skill.classify_or_propose_resource_chunk = lambda **_: {
+        "decision": "propose",
+        "topic_id": None,
+        "confidence": 0.86,
+        "reason": "formula exercise",
+        "proposed_topic": {
+            "title": "Speed formula exercise",
+            "summary": "velocity formula",
+            "parent_node_ids": ["demo_01"],
+            "edge_type": "requires",
+        },
+    }
+    record = _create_record(tmp_path, backend, name="物理速度公式练习", content="Exercise: use the velocity formula v=d/t to solve speed problems.")
+    segments = ingest_document_resource(
+        backend=backend,
+        record=record,
+        topics=backend.load_app_state(include_history=False).curriculum.topics,
+        default_topic_id="demo_01",
+    )
+    assert segments[0].status == "proposed"
+    proposal = next(rec for rec in backend.load_app_state(include_history=False).learning.graph_proposals if rec.proposal_id == segments[0].proposal_id)
+    assert proposal.title == "速度公式"
+    assert proposal.tags[0] in {"subject:physics", "subject:science"}
+
+
 def test_weather_emotion_titles_are_clustered_after_normalization() -> None:
     first = normalize_candidate_title("天气如何影响我们的情绪？", subject="language", facet="culture")
     second = normalize_candidate_title("天气如何影响我们的心情？", subject="language", facet="culture")
@@ -506,6 +662,7 @@ def test_weather_emotion_titles_are_clustered_after_normalization() -> None:
                 raw_title="天气如何影响我们的情绪？",
                 normalized_title=first,
                 subject="language",
+                language_id="english",
                 facet="culture",
                 confidence=0.8,
                 reason="候选 1",
@@ -517,6 +674,7 @@ def test_weather_emotion_titles_are_clustered_after_normalization() -> None:
                 raw_title="天气如何影响我们的心情？",
                 normalized_title=second,
                 subject="language",
+                language_id="english",
                 facet="culture",
                 confidence=0.81,
                 reason="候选 2",
