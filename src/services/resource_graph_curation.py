@@ -463,13 +463,14 @@ def create_resource_level_proposals(
         cluster_summary = _build_cluster_summary(cluster)
         cluster_reason = f"resource batch cluster; facet={cluster.facet}; segments={len(cluster.candidates)}"
 
+        has_subject_parent = subject != "general" and (bool(parent_node_ids) or bool(pending_parent_proposal_ids))
         proposal = backend.create_graph_proposal_from_resource(
             title=cluster.title,
             summary=cluster_summary,
             tags=_proposal_tags(subject=cluster.subject, facet=cluster.facet, language_id=language_id),
             parent_node_ids=parent_node_ids,
             pending_parent_proposal_ids=pending_parent_proposal_ids if subject != "general" and not parent_node_ids else [],
-            edge_type=cluster.edge_type,
+            edge_type="part_of" if has_subject_parent else cluster.edge_type,
             reason=cluster_reason,
         )
         proposals.append(proposal)
@@ -663,6 +664,19 @@ def _is_story_title_only(title: str, text: str) -> bool:
 
 def _pick_edge_type(candidates: list[CandidateTopic], *, subject: str) -> str:
     profile = SUBJECT_PROFILES.get(subject, SUBJECT_PROFILES["general"])
+    facet = candidates[0].facet if candidates else profile.default_facet
+    if facet in {"formula", "quantity", "theorem_or_rule"}:
+        return "defines"
+    if facet == "experiment":
+        return "evidence_for"
+    if facet in {"phenomenon", "model", "reading", "writing", "culture"}:
+        return "explains"
+    if facet == "cause_effect":
+        return "causes"
+    if facet in {"method", "application", "functional_expression"}:
+        return "uses"
+    if facet in {"operation", "grammar", "vocabulary", "pronunciation", "concept", "event", "person", "place", "map_skill"}:
+        return "part_of"
     if subject in {"math", "science", "physics", "chemistry", "biology"}:
         return "requires" if any("公式" in candidate.text or "定律" in candidate.text for candidate in candidates) else "related"
     return profile.default_edge_type

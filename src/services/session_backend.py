@@ -31,6 +31,8 @@ class UIRenderBundle:
     messages: list[str] = field(default_factory=list)
 
 class SessionBackend:
+    _ALLOWED_EDGE_TYPES: set[str] = {item.value for item in EdgeType}
+
     _PROPOSAL_RECORD_TRANSITIONS: dict[str, set[str]] = {
         "proposed": {"validated", "rejected", "shadow"},
         "validated": {"shadow", "rejected"},
@@ -275,7 +277,7 @@ class SessionBackend:
     ) -> GraphProposalRecord:
         state = self.load_app_state(include_history=False)
         now = datetime.datetime.now(timezone.utc).isoformat()
-        safe_edge_type = edge_type if edge_type in {"requires", "supports", "related"} else "requires"
+        safe_edge_type = edge_type if edge_type in self._ALLOWED_EDGE_TYPES else "requires"
         proposal = GraphMutationProposal(
             proposal_id=f"proposal_{int(time.time() * 1000)}_{os.urandom(4).hex()}",
             trigger="resource_ingest",
@@ -333,8 +335,8 @@ class SessionBackend:
                     ]
                 )
             )
-        approved_edge_type = edge_type if edge_type in {"requires", "supports", "related"} else proposal.edge_type
-        if approved_edge_type not in {"requires", "supports", "related"}:
+        approved_edge_type = edge_type if edge_type in self._ALLOWED_EDGE_TYPES else proposal.edge_type
+        if approved_edge_type not in self._ALLOWED_EDGE_TYPES:
             approved_edge_type = "requires"
         approved_tags = list(dict.fromkeys([*proposal.tags, *(tags or [])]))
 

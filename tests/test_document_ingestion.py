@@ -197,7 +197,7 @@ def test_upload_txt_ingests_segments_and_records_events(monkeypatch, tmp_path: P
     assert proposal["tags"][1].startswith("facet:")
     assert proposal["parent_node_ids"] == []
     assert len(proposal["pending_parent_proposal_ids"]) == 1
-    assert proposal["edge_type"] in {"requires", "related"}
+    assert proposal["edge_type"] in {"requires", "related", "part_of"}
     assert proposal["status"] == "proposed"
 
     state = backend.load_app_state(include_history=False)

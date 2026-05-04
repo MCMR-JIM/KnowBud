@@ -116,7 +116,7 @@ def test_english_resource_aggregates_proposals_and_backfills_segments(tmp_path: 
     assert len(content_proposals) == 1
     proposal = content_proposals[0]
     assert proposal.parent_node_ids == []
-    assert proposal.edge_type == "related"
+    assert proposal.edge_type == "part_of"
     assert proposal.tags == ["subject:language", "facet:grammar", "language:english"]
     assert "支撑片段 2 个" in proposal.summary
     assert all(parent_id != "demo_01" for parent_id in proposal.parent_node_ids)
@@ -233,7 +233,7 @@ def test_approving_root_proposal_backfills_child_parent(tmp_path: Path) -> None:
         proposal_id=child.proposal_id,
         difficulty=1,
     )
-    assert child_topic.prerequisite_ids == [root_topic.topic_id]
+    assert child_topic.prerequisite_ids == []
 
 
 def test_existing_english_topic_is_linked_instead_of_creating_proposal(tmp_path: Path) -> None:

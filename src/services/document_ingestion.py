@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 from src.core.models import ResourceRecord, ResourceSegment, TopicNode
+from src.agent.models import EdgeType
 from src.services.resource_graph_curation import create_resource_level_proposals
 
 if TYPE_CHECKING:
@@ -382,7 +383,7 @@ def _normalize_chunk_decision(
 ) -> dict[str, object]:
     valid_topic_ids = {topic.topic_id for topic in topics}
     allowed_decisions = {"link", "propose", "unclassified"}
-    allowed_edge_types = {"requires", "supports", "related"}
+    allowed_edge_types = {item.value for item in EdgeType}
 
     raw_decision = result.get("decision")
     decision = raw_decision if isinstance(raw_decision, str) and raw_decision in allowed_decisions else "unclassified"

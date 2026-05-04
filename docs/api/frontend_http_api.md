@@ -188,7 +188,7 @@ uvicorn src.api.app:app --host 0.0.0.0 --port 8090 --reload
 | `trigger` | `string` | 触发来源 |
 | `parent_node_ids` | `string[]` | 建议连接到的父/前置节点 ID 列表 |
 | `pending_parent_proposal_ids` | `string[]` | 待批准的父提案 ID 列表；父提案批准后会回填到 `parent_node_ids` |
-| `edge_type` | `string` | 建议边类型，常见值：`requires`、`supports`、`related` |
+| `edge_type` | `string` | 建议边类型，常见值：`requires`、`supports`、`related`、`part_of`、`derived_from`、`defines`、`explains`、`evidence_for`、`causes`、`uses`、`formula_uses_quantity` |
 | `status` | `string` | 当前状态 |
 | `reason` | `string` | 触发原因 |
 | `created_topic_id` | `string \| null` | 若已创建主题，则为新主题 ID |

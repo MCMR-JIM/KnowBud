@@ -10,6 +10,14 @@ class EdgeType(str, Enum):
     REQUIRES = "requires"
     SUPPORTS = "supports"
     RELATED = "related"
+    PART_OF = "part_of"
+    DERIVED_FROM = "derived_from"
+    DEFINES = "defines"
+    EXPLAINS = "explains"
+    EVIDENCE_FOR = "evidence_for"
+    CAUSES = "causes"
+    USES = "uses"
+    FORMULA_USES_QUANTITY = "formula_uses_quantity"
 
 
 class ProposalStatus(str, Enum):

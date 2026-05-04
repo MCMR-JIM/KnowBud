@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, ValidationError
 from openai import OpenAI
 
 from src.skills.base_skill import BaseSkill, SkillContext
+from src.agent.models import EdgeType
 from src.core.models import PendingQuestion, EvaluationResult, RadarScore, TopicNode
 
 
@@ -177,7 +178,7 @@ class LLMTutorSkill(BaseSkill):
             f"```text\n{text[:4000]}\n```\n"
             '只返回 JSON：{ "decision": "link" | "propose" | "unclassified", "topic_id": string|null, '
             '"confidence": number, "reason": string, "proposed_topic": { "title": string, '
-            '"summary": string, "parent_node_ids": [string], "edge_type": "requires" | "supports" | "related" } | null, '
+            '"summary": string, "parent_node_ids": [string], "edge_type": "requires" | "supports" | "related" | "part_of" | "derived_from" | "defines" | "explains" | "evidence_for" | "causes" | "uses" | "formula_uses_quantity" } | null, '
             '"guiding_question": string, "teaching_hint": string }\n'
             "guiding_question 是老师可以直接用来引出学习的儿童友好问题，不超过 60 字。"
             "teaching_hint 是老师讲解该片段的简短提示，不超过 80 字。"
@@ -204,7 +205,7 @@ class LLMTutorSkill(BaseSkill):
     ) -> dict[str, object]:
         valid_topic_ids = {topic.topic_id for topic in topics}
         allowed_decisions = {"link", "propose", "unclassified"}
-        allowed_edge_types = {"requires", "supports", "related"}
+        allowed_edge_types = {item.value for item in EdgeType}
 
         decision = result.decision if result.decision in allowed_decisions else "unclassified"
         topic_id = result.topic_id if result.topic_id in valid_topic_ids else None

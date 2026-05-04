@@ -119,7 +119,7 @@ class GraphCurator:
             self._transition_proposal(proposal, to_status=ProposalStatus.REJECTED, reason="cycle detected")
             return False, None
 
-        if not self._is_subject_links_allowed(proposal.parent_node_ids, curriculum.topics):
+        if proposal.edge_type == EdgeType.REQUIRES and not self._is_subject_links_allowed(proposal.parent_node_ids, curriculum.topics):
             self._transition_proposal(
                 proposal,
                 to_status=ProposalStatus.REJECTED,
