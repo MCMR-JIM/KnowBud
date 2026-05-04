@@ -10,25 +10,6 @@ if TYPE_CHECKING:
     from src.services.session_backend import SessionBackend
 
 
-SUBJECT_LABELS = {
-    "english": "英语",
-    "math": "数学",
-    "science": "科学",
-    "physics": "物理",
-    "chemistry": "化学",
-    "biology": "生物",
-}
-
-ENGLISH_FACETS = {
-    "grammar",
-    "vocabulary",
-    "phonics",
-    "function",
-    "reading",
-    "writing",
-    "culture_or_content",
-}
-
 ENGLISH_ACTIVITY_MARKERS = (
     "role-play",
     "role play",
@@ -65,6 +46,140 @@ ENGLISH_ACTIVITY_TITLE_MARKERS = (
 )
 
 ROOT_MARKER_TAGS = {"facet:root", "subject_root", "graph:root"}
+
+
+@dataclass(frozen=True)
+class SubjectProfile:
+    subject_id: str
+    root_title: str
+    aliases: tuple[str, ...]
+    strong_markers: tuple[str, ...]
+    weak_markers: tuple[str, ...]
+    facets: tuple[str, ...]
+    default_facet: str
+    non_node_patterns: tuple[str, ...]
+    canonical_title_rules: dict[str, tuple[tuple[str, str], ...]]
+    default_edge_type: str
+
+
+LANGUAGE_INSTANCE_MARKERS: dict[str, tuple[str, ...]] = {
+    "english": ("英语", "english", "present continuous", "simple past", "grammar focus", "listen and repeat"),
+    "chinese": ("语文", "中文", "汉语", "chinese", "古诗", "文言文", "作文", "阅读理解"),
+}
+
+
+SUBJECT_PROFILES: dict[str, SubjectProfile] = {
+    "language": SubjectProfile(
+        subject_id="language",
+        root_title="语言",
+        aliases=("语言", "英语", "语文", "中文", "english", "chinese"),
+        strong_markers=("英语", "english", "语文", "中文", "grammar focus", "listen and repeat", "role-play", "pronunciation"),
+        weak_markers=("grammar", "vocabulary", "phonics", "reading comprehension", "guided writing", "present continuous", "simple past", "一般过去时", "现在进行时", "阅读理解", "作文"),
+        facets=("grammar", "vocabulary", "pronunciation", "functional_expression", "reading", "writing", "culture"),
+        default_facet="culture",
+        non_node_patterns=(r"\bunit\s*\d+\b", r"\blesson\s*\d+\b", r"\bfill in\b", r"\bchoose\b", r"\bmatch\b", r"role-play", r"project", r"work in groups", r"listen and repeat", r"设计动物园", r"制定班级规则"),
+        canonical_title_rules={
+            "grammar": ((r"\bpresent continuous\b", "现在进行时"), (r"\bsimple past\b", "一般过去时"), (r"\bsimple present\b", "一般现在时")),
+        },
+        default_edge_type="related",
+    ),
+    "math": SubjectProfile(
+        subject_id="math",
+        root_title="数学",
+        aliases=("数学", "math"),
+        strong_markers=("数学", "equation", "geometry", "algebra", "fraction"),
+        weak_markers=("加法", "减法", "乘法", "除法", "方程", "函数", "几何", "面积", "周长"),
+        facets=("concept", "operation", "theorem_or_rule", "method", "application"),
+        default_facet="concept",
+        non_node_patterns=(r"练习", r"活动", r"project"),
+        canonical_title_rules={},
+        default_edge_type="requires",
+    ),
+    "science": SubjectProfile(
+        subject_id="science",
+        root_title="科学",
+        aliases=("科学", "science"),
+        strong_markers=("科学", "experiment", "ecosystem", "matter"),
+        weak_markers=("实验", "现象", "模型", "能量", "定律", "公式"),
+        facets=("concept", "quantity", "formula", "law", "experiment", "phenomenon", "model"),
+        default_facet="concept",
+        non_node_patterns=(r"练习", r"活动", r"project"),
+        canonical_title_rules={},
+        default_edge_type="related",
+    ),
+    "physics": SubjectProfile(
+        subject_id="physics",
+        root_title="物理",
+        aliases=("物理", "physics"),
+        strong_markers=("物理", "velocity", "distance", "speed", "force", "energy", "acceleration", "motion"),
+        weak_markers=("公式", "定律", "质量", "时间", "路程", "速度", "力", "能量"),
+        facets=("concept", "quantity", "formula", "law", "experiment", "phenomenon", "model"),
+        default_facet="concept",
+        non_node_patterns=(r"练习", r"活动", r"project"),
+        canonical_title_rules={},
+        default_edge_type="related",
+    ),
+    "chemistry": SubjectProfile(
+        subject_id="chemistry",
+        root_title="化学",
+        aliases=("化学", "chemistry"),
+        strong_markers=("化学", "molecule", "atom", "reaction", "acid", "base"),
+        weak_markers=("分子", "原子", "反应", "溶液", "酸", "碱"),
+        facets=("concept", "quantity", "formula", "law", "experiment", "phenomenon", "model"),
+        default_facet="concept",
+        non_node_patterns=(r"练习", r"活动", r"project"),
+        canonical_title_rules={},
+        default_edge_type="related",
+    ),
+    "biology": SubjectProfile(
+        subject_id="biology",
+        root_title="生物",
+        aliases=("生物", "biology"),
+        strong_markers=("生物", "cell", "cells", "dna", "organism", "ecosystem"),
+        weak_markers=("细胞", "组织", "器官", "生态系统", "遗传", "实验"),
+        facets=("concept", "quantity", "formula", "law", "experiment", "phenomenon", "model"),
+        default_facet="concept",
+        non_node_patterns=(r"练习", r"活动", r"project"),
+        canonical_title_rules={},
+        default_edge_type="related",
+    ),
+    "history": SubjectProfile(
+        subject_id="history",
+        root_title="历史",
+        aliases=("历史", "history"),
+        strong_markers=("历史", "dynasty", "war", "revolution", "empire"),
+        weak_markers=("朝代", "事件", "人物", "改革", "战争", "年代"),
+        facets=("event", "concept", "person", "cause_effect", "general"),
+        default_facet="general",
+        non_node_patterns=(r"练习", r"活动", r"project"),
+        canonical_title_rules={},
+        default_edge_type="related",
+    ),
+    "geography": SubjectProfile(
+        subject_id="geography",
+        root_title="地理",
+        aliases=("地理", "geography"),
+        strong_markers=("地理", "map", "latitude", "longitude", "climate", "region"),
+        weak_markers=("地图", "气候", "地形", "区域", "经纬度", "人口"),
+        facets=("concept", "place", "cause_effect", "map_skill", "general"),
+        default_facet="general",
+        non_node_patterns=(r"练习", r"活动", r"project"),
+        canonical_title_rules={},
+        default_edge_type="related",
+    ),
+    "general": SubjectProfile(
+        subject_id="general",
+        root_title="通用",
+        aliases=(),
+        strong_markers=(),
+        weak_markers=(),
+        facets=("general",),
+        default_facet="general",
+        non_node_patterns=(),
+        canonical_title_rules={},
+        default_edge_type="requires",
+    ),
+}
 
 
 @dataclass
@@ -120,70 +235,14 @@ def detect_resource_subject(
         )
     ).lower()
 
-    if any(marker in resource_name or marker in filename for marker in ("英语", "english")):
-        return "english"
-
-    math_markers = ("数学", "方程", "函数", "几何", "分数", "加法", "减法", "乘法", "除法", "equation", "geometry", "algebra")
-    if any(marker in text for marker in math_markers):
-        return "math"
-
-    physics_markers = ("物理", "velocity", "distance", "time", "speed", "force", "energy", "acceleration", "motion")
-    if any(marker in text for marker in physics_markers):
-        return "physics"
-
-    science_markers = (
-        "科学",
-        "生物",
-        "化学",
-        "实验",
-        "细胞",
-        "力",
-        "能量",
-        "公式",
-        "定律",
-        "formula",
-        "cell",
-        "cells",
-        "experiment",
-        "ecosystem",
-        "matter",
-    )
-    if any(marker in text for marker in science_markers):
-        return "science"
-
-    english_teaching_markers = (
-        "grammar",
-        "vocabulary",
-        "phonics",
-        "pronunciation",
-        "reading comprehension",
-        "guided writing",
-        "listen and repeat",
-        "role-play",
-        "role play",
-        "grammar focus",
-    )
-    if any(marker in text for marker in english_teaching_markers):
-        return "english"
-
-    english_language_markers = (
-        "present continuous",
-        "simple past",
-        "simple present",
-        "一般现在时",
-        "一般过去时",
-        "现在进行时",
-        "情态动词",
-        "物主代词",
-        "可数名词",
-        "不可数名词",
-        "阅读理解",
-        "写作",
-        "打电话",
-    )
-    english_marker_count = sum(1 for marker in english_language_markers if marker in text)
-    if english_marker_count >= 2:
-        return "english"
+    scores = {
+        profile_id: _subject_evidence_score(profile=profile, resource_name=resource_name, filename=filename, text=text)
+        for profile_id, profile in SUBJECT_PROFILES.items()
+        if profile_id != "general"
+    }
+    best_subject, best_score = max(scores.items(), key=lambda item: (item[1], _subject_priority(item[0])))
+    if best_score >= 4:
+        return best_subject
 
     for topic_id in filter(None, [record.topic_id, default_topic_id]):
         topic = topic_map.get(topic_id)
@@ -196,13 +255,18 @@ def detect_resource_subject(
 
 
 def normalize_candidate_title(title: str, *, subject: str, facet: str, text: str = "") -> str | None:
+    profile = SUBJECT_PROFILES.get(subject, SUBJECT_PROFILES["general"])
     raw_title = _clean_title(title)
     full_text = f"{raw_title}\n{text}".lower()
     if not raw_title:
         return None
 
-    if subject == "english":
-        return _normalize_english_candidate_title(raw_title, facet=facet, full_text=full_text)
+    if subject == "language":
+        return _normalize_language_candidate_title(raw_title, facet=facet, full_text=full_text, language_id=_detect_language_id(raw_title, full_text))
+
+    specialized = _normalize_profile_candidate_title(raw_title, facet=facet, full_text=full_text, profile=profile)
+    if specialized:
+        return specialized
 
     normalized = raw_title
     normalized = re.sub(r"^(如何|怎样|怎么|请你|试着)", "", normalized)
@@ -215,36 +279,35 @@ def normalize_candidate_title(title: str, *, subject: str, facet: str, text: str
 
 
 def classify_candidate_kind(title: str, text: str, *, subject: str) -> CandidateKind:
+    profile = SUBJECT_PROFILES.get(subject, SUBJECT_PROFILES["general"])
     cleaned_title = _clean_title(title)
     lowered = f"{cleaned_title}\n{text}".lower()
     title_lowered = cleaned_title.lower()
 
-    if subject == "english":
+    if subject == "language":
         if _is_story_title_only(cleaned_title, lowered):
-            return CandidateKind(subject=subject, facet="reading", include=True, title_hint="英语故事阅读理解")
-        if _is_english_grammar(lowered):
+            return CandidateKind(subject=subject, facet="reading", include=True, title_hint=_language_reading_title(lowered))
+        if _is_language_grammar(lowered):
             return CandidateKind(subject=subject, facet="grammar", include=True)
-        if _is_english_phonics(lowered):
-            return CandidateKind(subject=subject, facet="phonics", include=True)
-        if _is_english_writing(lowered):
+        if _is_language_pronunciation(lowered):
+            return CandidateKind(subject=subject, facet="pronunciation", include=True)
+        if _is_language_writing(lowered):
             return CandidateKind(subject=subject, facet="writing", include=True)
-        if _is_english_function(lowered):
-            return CandidateKind(subject=subject, facet="function", include=True)
-        if _is_english_vocabulary(lowered):
+        if _is_language_functional_expression(lowered):
+            return CandidateKind(subject=subject, facet="functional_expression", include=True)
+        if _is_language_vocabulary(lowered):
             return CandidateKind(subject=subject, facet="vocabulary", include=True)
-        if _is_english_reading(lowered):
-            return CandidateKind(subject=subject, facet="reading", include=True, title_hint="英语故事阅读理解")
+        if _is_language_reading(lowered):
+            return CandidateKind(subject=subject, facet="reading", include=True, title_hint=_language_reading_title(lowered))
         if re.search(r"\b(unit\s*\d+|lesson\s*\d+)\b", title_lowered):
             return CandidateKind(subject=subject, facet="unit", include=False, filter_reason="unit wrapper candidate")
-        if _is_activity_dominant_english_candidate(title=title_lowered, text=lowered):
+        if _is_activity_dominant_language_candidate(title=title_lowered, text=lowered, profile=profile):
             return CandidateKind(subject=subject, facet="activity", include=False, filter_reason="activity-like candidate")
-        return CandidateKind(subject=subject, facet="culture_or_content", include=True)
+        return CandidateKind(subject=subject, facet="culture", include=True)
 
-    if subject == "math":
-        return CandidateKind(subject=subject, facet="concept", include=True)
-    if subject in {"science", "physics", "chemistry", "biology"}:
-        return CandidateKind(subject=subject, facet="concept", include=True)
-    return CandidateKind(subject=subject, facet="general", include=True)
+    if _is_non_node_candidate(title_lowered, lowered, profile=profile):
+        return CandidateKind(subject=subject, facet=profile.default_facet, include=False, filter_reason="activity-like candidate")
+    return CandidateKind(subject=subject, facet=_classify_profile_facet(lowered, profile=profile), include=True)
 
 
 def cluster_candidate_topics(candidates: list[CandidateTopic]) -> list[CandidateCluster]:
@@ -279,6 +342,8 @@ def create_resource_level_proposals(
     default_topic_id: str | None = None,
 ) -> list[GraphProposalRecord]:
     subject = detect_resource_subject(record=record, segments=segments, topics=topics, default_topic_id=default_topic_id)
+    profile = SUBJECT_PROFILES.get(subject, SUBJECT_PROFILES["general"])
+    language_id = _detect_language_id(record.resource_name, "\n".join(filter(None, [record.original_filename, *(segment.text or "" for segment in segments)]))) if subject == "language" else None
     candidate_topics: list[CandidateTopic] = []
     state = backend.load_app_state(include_history=False)
     topic_map, proposal_map = _build_existing_match_maps(topics=topics, proposals=state.learning.graph_proposals)
@@ -317,7 +382,7 @@ def create_resource_level_proposals(
                 confidence=segment.confidence,
                 reason=segment.reason,
                 text=segment.text or "",
-                edge_type="related" if subject == "english" else "requires",
+                edge_type=profile.default_edge_type,
             )
         )
 
@@ -325,7 +390,7 @@ def create_resource_level_proposals(
     if not clusters:
         return []
 
-    parent_node_ids = _select_parent_node_ids(subject=subject, topics=topics, default_topic_id=default_topic_id)
+    parent_node_ids = _select_parent_node_ids(subject=subject, topics=topics, default_topic_id=default_topic_id, language_id=language_id)
     proposals: list[GraphProposalRecord] = []
     needs_new_content_proposal = any(
         topic_map.get((cluster.subject, cluster.facet, cluster.title)) is None
@@ -334,12 +399,12 @@ def create_resource_level_proposals(
     )
 
     if subject != "general" and needs_new_content_proposal and not parent_node_ids and _should_create_subject_root(subject=subject, topics=topics, backend=backend):
-        root_title = SUBJECT_LABELS.get(subject, subject.title())
+        root_title = profile.root_title
         proposals.append(
             backend.create_graph_proposal_from_resource(
                 title=root_title,
                 summary=f"facet: root；支撑片段 {len(candidate_topics)} 个；代表片段：{_representative_snippets([item.text for item in candidate_topics])}",
-                tags=[f"subject:{subject}", "facet:root"],
+                tags=_proposal_tags(subject=subject, facet="root", language_id=language_id, include_language_tag=False),
                 parent_node_ids=[],
                 edge_type="related",
                 reason=f"resource batch root proposal; facet=root; segments={len(candidate_topics)}",
@@ -366,14 +431,14 @@ def create_resource_level_proposals(
         cluster_summary = _build_cluster_summary(cluster)
         cluster_reason = f"resource batch cluster; facet={cluster.facet}; segments={len(cluster.candidates)}"
         if subject != "general" and not parent_node_ids:
-            pending_label = SUBJECT_LABELS.get(subject, subject.title())
+            pending_label = profile.root_title
             cluster_summary = f"{cluster_summary}；pending_subject_root={pending_label}"
             cluster_reason = f"{cluster_reason}; pending_subject_root={pending_label}"
 
         proposal = backend.create_graph_proposal_from_resource(
             title=cluster.title,
             summary=cluster_summary,
-            tags=[f"subject:{cluster.subject}", f"facet:{cluster.facet}"],
+            tags=_proposal_tags(subject=cluster.subject, facet=cluster.facet, language_id=language_id),
             parent_node_ids=parent_node_ids,
             edge_type=cluster.edge_type,
             reason=cluster_reason,
@@ -421,7 +486,7 @@ def _clean_title(title: str) -> str:
     return cleaned[:120]
 
 
-def _normalize_english_candidate_title(title: str, *, facet: str, full_text: str) -> str | None:
+def _normalize_language_candidate_title(title: str, *, facet: str, full_text: str, language_id: str | None) -> str | None:
     if facet == "grammar":
         if re.search(r"\b(present continuous|be\s+doing)\b", full_text):
             return "现在进行时"
@@ -456,7 +521,7 @@ def _normalize_english_candidate_title(title: str, *, facet: str, full_text: str
             return "规则词汇与表达"
         return re.sub(r"(英语|词汇|单词|核心)", "", title).strip() or title
 
-    if facet == "phonics":
+    if facet == "pronunciation":
         if "元音" in full_text:
             return "元音组合发音"
         if "辅音" in full_text:
@@ -465,7 +530,7 @@ def _normalize_english_candidate_title(title: str, *, facet: str, full_text: str
             return "英语单词重音"
         return "英语发音规律"
 
-    if facet == "function":
+    if facet == "functional_expression":
         if "打电话" in full_text or re.search(r"\b(phone|call|calling)\b", full_text):
             return "电话用语"
         if "天气" in full_text:
@@ -481,9 +546,11 @@ def _normalize_english_candidate_title(title: str, *, facet: str, full_text: str
         return re.sub(r"^(如何|怎样|怎么)", "", title).strip("？?") or title
 
     if facet == "reading":
-        return "英语故事阅读理解" if _is_story_like(full_text) else "英语阅读理解"
+        return _language_reading_title(full_text, language_id=language_id)
 
     if facet == "writing":
+        if language_id == "chinese":
+            return "语文写作"
         if "日记" in full_text:
             return "英语日记写作"
         if "经历" in full_text:
@@ -492,7 +559,7 @@ def _normalize_english_candidate_title(title: str, *, facet: str, full_text: str
             return "英语故事续写"
         return "英语写作"
 
-    if facet == "culture_or_content":
+    if facet == "culture":
         normalized = re.sub(r"^(如何|怎样|怎么)", "", title).strip("？?")
         normalized = normalized.replace("情绪", "心情")
         return normalized or None
@@ -500,12 +567,32 @@ def _normalize_english_candidate_title(title: str, *, facet: str, full_text: str
     return title
 
 
-def _is_english_grammar(text: str) -> bool:
+def _normalize_profile_candidate_title(title: str, *, facet: str, full_text: str, profile: SubjectProfile) -> str | None:
+    for pattern, replacement in profile.canonical_title_rules.get(facet, ()):
+        if re.search(pattern, full_text):
+            return replacement
+    if profile.subject_id == "math":
+        if facet == "operation":
+            if "加法" in full_text or "addition" in full_text:
+                return "加法"
+            if "乘法" in full_text or "multiplication" in full_text:
+                return "乘法"
+    if profile.subject_id in {"science", "physics", "chemistry", "biology"}:
+        if facet == "formula" and ("velocity" in full_text or "速度" in full_text):
+            return "速度公式"
+        if profile.subject_id == "biology" and ("cell" in full_text or "细胞" in full_text):
+            return "细胞结构与功能"
+    if profile.subject_id == "geography" and ("地图" in full_text or "map" in full_text):
+        return "地图技能"
+    return None
+
+
+def _is_language_grammar(text: str) -> bool:
     markers = ("现在进行时", "一般过去时", "一般现在时", "情态动词", "物主代词", "可数名词", "不可数名词")
     return any(marker in text for marker in markers) or bool(re.search(r"\b(be\s+going\s+to|present continuous|simple past)\b", text))
 
 
-def _is_english_vocabulary(text: str) -> bool:
+def _is_language_vocabulary(text: str) -> bool:
     markers = ("词汇", "单词", "vocabulary", "动物词汇", "食物词汇", "天气词汇", "规则词汇", "颜色词汇", "家庭词汇")
     if any(marker in text for marker in markers):
         return True
@@ -514,22 +601,22 @@ def _is_english_vocabulary(text: str) -> bool:
     )
 
 
-def _is_english_phonics(text: str) -> bool:
+def _is_language_pronunciation(text: str) -> bool:
     markers = ("音标", "自然拼读", "发音", "元音", "辅音", "重音", "弱读")
     return any(marker in text for marker in markers)
 
 
-def _is_english_function(text: str) -> bool:
+def _is_language_functional_expression(text: str) -> bool:
     markers = ("打电话", "点餐", "谈论天气", "表达喜好", "谈论规则", "频率", "归属")
     return any(marker in text for marker in markers) or bool(re.search(r"\b(phone|order food|weather|favorite|rules)\b", text))
 
 
-def _is_english_reading(text: str) -> bool:
+def _is_language_reading(text: str) -> bool:
     markers = ("阅读理解", "课文", "语篇", "故事", "短文", "passage", "story")
     return any(marker in text for marker in markers)
 
 
-def _is_english_writing(text: str) -> bool:
+def _is_language_writing(text: str) -> bool:
     markers = ("写作", "日记", "续写", "描述经历", "作文")
     return any(marker in text for marker in markers)
 
@@ -546,11 +633,10 @@ def _is_story_title_only(title: str, text: str) -> bool:
 
 
 def _pick_edge_type(candidates: list[CandidateTopic], *, subject: str) -> str:
-    if subject == "english":
-        return "related"
+    profile = SUBJECT_PROFILES.get(subject, SUBJECT_PROFILES["general"])
     if subject in {"math", "science", "physics", "chemistry", "biology"}:
         return "requires" if any("公式" in candidate.text or "定律" in candidate.text for candidate in candidates) else "related"
-    return "requires"
+    return profile.default_edge_type
 
 
 def _infer_topic_subject(topic: TopicNode) -> str:
@@ -558,19 +644,19 @@ def _infer_topic_subject(topic: TopicNode) -> str:
         if tag.startswith("subject:"):
             return tag.split(":", 1)[1]
     title = topic.title.lower()
-    if "英语" in title or "english" in title:
-        return "english"
-    if "数学" in title:
-        return "math"
-    if any(marker in title for marker in ("科学", "物理", "化学", "生物")):
-        return "science"
+    for profile in SUBJECT_PROFILES.values():
+        if profile.subject_id == "general":
+            continue
+        if title == profile.root_title.lower() or any(alias in title for alias in profile.aliases):
+            return profile.subject_id
     return "general"
 
 
-def _select_parent_node_ids(*, subject: str, topics: list[TopicNode], default_topic_id: str | None) -> list[str]:
-    compatible = [topic.topic_id for topic in topics if _infer_topic_subject(topic) == subject and _is_root_like_topic(topic, subject)]
+def _select_parent_node_ids(*, subject: str, topics: list[TopicNode], default_topic_id: str | None, language_id: str | None = None) -> list[str]:
+    compatible = [topic for topic in topics if _infer_topic_subject(topic) == subject and _is_root_like_topic(topic, subject)]
     if compatible:
-        return compatible[:1]
+        compatible.sort(key=lambda topic: _root_topic_score(topic, subject=subject, language_id=language_id), reverse=True)
+        return [compatible[0].topic_id]
 
     if default_topic_id:
         default_topic = next((topic for topic in topics if topic.topic_id == default_topic_id), None)
@@ -581,7 +667,7 @@ def _select_parent_node_ids(*, subject: str, topics: list[TopicNode], default_to
 
 def _is_root_like_topic(topic: TopicNode, subject: str) -> bool:
     title = topic.title.strip().lower()
-    subject_label = SUBJECT_LABELS.get(subject, "").lower()
+    subject_label = SUBJECT_PROFILES.get(subject, SUBJECT_PROFILES["general"]).root_title.lower()
     if title == subject_label:
         return True
     return any(tag in ROOT_MARKER_TAGS for tag in topic.tags)
@@ -599,14 +685,14 @@ def _should_create_subject_root(*, subject: str, topics: list[TopicNode], backen
 
 def _is_root_like_proposal(proposal: GraphProposalRecord, *, subject: str) -> bool:
     title = proposal.title.strip().lower()
-    subject_label = SUBJECT_LABELS.get(subject, "").lower()
+    subject_label = SUBJECT_PROFILES.get(subject, SUBJECT_PROFILES["general"]).root_title.lower()
     if title == subject_label:
         return True
     tags = getattr(proposal, "tags", [])
     return any(tag in ROOT_MARKER_TAGS for tag in tags) and f"subject:{subject}" in tags
 
 
-def _is_activity_dominant_english_candidate(*, title: str, text: str) -> bool:
+def _is_activity_dominant_language_candidate(*, title: str, text: str, profile: SubjectProfile) -> bool:
     has_activity_title = any(marker in title for marker in ENGLISH_ACTIVITY_TITLE_MARKERS)
     if re.search(r"(设计|制定|制作|画).*(动物园|地图|海报|班级规则)", title):
         has_activity_title = True
@@ -616,19 +702,19 @@ def _is_activity_dominant_english_candidate(*, title: str, text: str) -> bool:
         has_activity_title = any(token in title for token in ("activity", "project", "role", "design", "规则", "动物园", "地图", "海报"))
     if not has_activity_title:
         return False
-    return not _has_english_substantive_markers(text)
+    return not _has_language_substantive_markers(text)
 
 
-def _has_english_substantive_markers(text: str) -> bool:
+def _has_language_substantive_markers(text: str) -> bool:
     return any(
         checker(text)
         for checker in (
-            _is_english_grammar,
-            _is_english_phonics,
-            _is_english_function,
-            _is_english_vocabulary,
-            _is_english_reading,
-            _is_english_writing,
+            _is_language_grammar,
+            _is_language_pronunciation,
+            _is_language_functional_expression,
+            _is_language_vocabulary,
+            _is_language_reading,
+            _is_language_writing,
         )
     )
 
@@ -642,7 +728,7 @@ def _build_existing_match_maps(
     for topic in topics:
         subject = _infer_topic_subject(topic)
         facet = _infer_topic_facet(topic.title, getattr(topic, "tags", []), subject=subject)
-        normalized = normalize_candidate_title(topic.title, subject=subject, facet=facet or "general", text="")
+        normalized = normalize_candidate_title(topic.title, subject=subject, facet=facet or SUBJECT_PROFILES.get(subject, SUBJECT_PROFILES["general"]).default_facet, text="")
         if not normalized:
             continue
         topic_map.setdefault((subject, facet or "general", normalized), topic)
@@ -669,14 +755,119 @@ def _infer_topic_facet(title: str, tags: list[str], *, subject: str) -> str | No
     facet = _facet_from_tags(tags)
     if facet is not None:
         return facet
-    if subject == "english":
+    if subject == "language":
         kind = classify_candidate_kind(title, "", subject=subject)
         return kind.facet if kind.include else None
     if subject in {"math", "science", "physics", "chemistry", "biology"}:
         return "concept"
+    if subject == "history":
+        return "general"
+    if subject == "geography":
+        return "general"
     if subject == "general":
         return "general"
     return None
+
+
+def _subject_evidence_score(*, profile: SubjectProfile, resource_name: str, filename: str, text: str) -> int:
+    score = 0
+    for alias in profile.aliases:
+        if alias and (alias in resource_name or alias in filename):
+            score += 6
+    for marker in profile.strong_markers:
+        if marker and marker in text:
+            score += 4
+    score += min(4, sum(1 for marker in profile.weak_markers if marker and marker in text))
+    return score
+
+
+def _subject_priority(subject: str) -> int:
+    order = {"physics": 8, "chemistry": 7, "biology": 6, "math": 5, "history": 4, "geography": 3, "science": 2, "language": 1, "general": 0}
+    return order.get(subject, 0)
+
+
+def _detect_language_id(*parts: str) -> str | None:
+    text = "\n".join(parts).lower()
+    best_language: str | None = None
+    best_score = 0
+    for language_id, markers in LANGUAGE_INSTANCE_MARKERS.items():
+        score = sum(1 for marker in markers if marker in text)
+        if score > best_score:
+            best_language = language_id
+            best_score = score
+    return best_language
+
+
+def _language_reading_title(text: str, language_id: str | None = None) -> str:
+    if language_id == "chinese":
+        return "语文阅读理解"
+    return "英语故事阅读理解" if _is_story_like(text) else "英语阅读理解"
+
+
+def _classify_profile_facet(text: str, *, profile: SubjectProfile) -> str:
+    if profile.subject_id == "math":
+        if any(marker in text for marker in ("加法", "减法", "乘法", "除法", "addition", "multiplication")):
+            return "operation"
+        if any(marker in text for marker in ("公式", "定理", "法则")):
+            return "theorem_or_rule"
+        if any(marker in text for marker in ("方法", "解题", "步骤")):
+            return "method"
+        if any(marker in text for marker in ("应用", "实际问题")):
+            return "application"
+        return "concept"
+    if profile.subject_id in {"science", "physics", "chemistry", "biology"}:
+        if any(marker in text for marker in ("公式", "formula")):
+            return "formula"
+        if any(marker in text for marker in ("定律", "law")):
+            return "law"
+        if any(marker in text for marker in ("实验", "experiment")):
+            return "experiment"
+        if any(marker in text for marker in ("现象", "phenomenon")):
+            return "phenomenon"
+        if any(marker in text for marker in ("模型", "model")):
+            return "model"
+        if any(marker in text for marker in ("速度", "时间", "distance", "speed", "force", "energy", "cell", "细胞")):
+            return "quantity"
+        return "concept"
+    if profile.subject_id == "history":
+        if any(marker in text for marker in ("事件", "war", "revolution")):
+            return "event"
+        if any(marker in text for marker in ("人物", "emperor", "leader")):
+            return "person"
+        if any(marker in text for marker in ("原因", "影响", "cause", "effect")):
+            return "cause_effect"
+        return "general"
+    if profile.subject_id == "geography":
+        if any(marker in text for marker in ("地图", "map", "经纬度", "latitude", "longitude")):
+            return "map_skill"
+        if any(marker in text for marker in ("地区", "region", "城市", "mountain", "river")):
+            return "place"
+        if any(marker in text for marker in ("原因", "影响", "climate", "weather")):
+            return "cause_effect"
+        return "general"
+    return profile.default_facet
+
+
+def _is_non_node_candidate(title: str, text: str, *, profile: SubjectProfile) -> bool:
+    return any(re.search(pattern, title) for pattern in profile.non_node_patterns) and not any(marker in text for marker in profile.strong_markers)
+
+
+def _proposal_tags(*, subject: str, facet: str, language_id: str | None = None, include_language_tag: bool = True) -> list[str]:
+    tags = [f"subject:{subject}", f"facet:{facet}"]
+    if include_language_tag and subject == "language" and language_id:
+        tags.append(f"language:{language_id}")
+    return tags
+
+
+def _root_topic_score(topic: TopicNode, *, subject: str, language_id: str | None) -> int:
+    score = 0
+    if topic.title.strip() == SUBJECT_PROFILES.get(subject, SUBJECT_PROFILES["general"]).root_title:
+        score += 3
+    if "facet:root" in topic.tags:
+        score += 2
+    if language_id and f"language:{language_id}" in topic.tags:
+        score += 2
+    return score
 
 
 def _subject_from_tags(tags: list[str]) -> str | None:

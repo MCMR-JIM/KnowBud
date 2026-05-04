@@ -110,14 +110,14 @@ def test_english_resource_aggregates_proposals_and_backfills_segments(tmp_path: 
 
     state = backend.load_app_state(include_history=False)
     proposals = state.learning.graph_proposals
-    assert any(proposal.title == "英语" for proposal in proposals)
+    assert any(proposal.title == "语言" for proposal in proposals)
 
     content_proposals = [proposal for proposal in proposals if proposal.title == "现在进行时"]
     assert len(content_proposals) == 1
     proposal = content_proposals[0]
     assert proposal.parent_node_ids == []
     assert proposal.edge_type == "related"
-    assert proposal.tags == ["subject:english", "facet:grammar"]
+    assert proposal.tags == ["subject:language", "facet:grammar", "language:english"]
     assert "支撑片段 2 个" in proposal.summary
     assert all(parent_id != "demo_01" for parent_id in proposal.parent_node_ids)
     assert not any(item.title == "如何设计动物园" for item in proposals)
@@ -198,7 +198,7 @@ def test_existing_english_topic_is_linked_instead_of_creating_proposal(tmp_path:
             title="现在进行时",
             difficulty=1,
             prerequisite_ids=[],
-            tags=["subject:english", "facet:grammar"],
+            tags=["subject:language", "facet:grammar", "language:english"],
         )
     )
     backend.save_app_state(state)
@@ -229,7 +229,7 @@ def test_existing_english_topic_is_linked_instead_of_creating_proposal(tmp_path:
     assert segments[0].topic_id == "english_present_continuous"
     assert segments[0].proposal_id is None
     assert not any(rec.title == "现在进行时" for rec in backend.load_app_state(include_history=False).learning.graph_proposals)
-    assert not any(rec.title == "英语" for rec in backend.load_app_state(include_history=False).learning.graph_proposals)
+    assert not any(rec.title == "语言" for rec in backend.load_app_state(include_history=False).learning.graph_proposals)
 
 
 def test_existing_english_proposal_is_reused_instead_of_creating_duplicate(tmp_path: Path) -> None:
@@ -241,7 +241,7 @@ def test_existing_english_proposal_is_reused_instead_of_creating_duplicate(tmp_p
             title="现在进行时",
             summary="facet: grammar；支撑片段 1 个；代表片段：old",
             trigger="resource_ingest",
-            tags=["subject:english", "facet:grammar"],
+            tags=["subject:language", "facet:grammar", "language:english"],
             parent_node_ids=[],
             edge_type="related",
             status="proposed",
@@ -278,7 +278,7 @@ def test_existing_english_proposal_is_reused_instead_of_creating_duplicate(tmp_p
     proposals = backend.load_app_state(include_history=False).learning.graph_proposals
     assert [proposal.proposal_id for proposal in proposals].count("proposal_present_continuous") == 1
     assert len([proposal for proposal in proposals if proposal.title == "现在进行时"]) == 1
-    assert not any(proposal.title == "英语" for proposal in proposals)
+    assert not any(proposal.title == "语言" for proposal in proposals)
 
 
 def test_reupload_same_english_resource_reuses_existing_proposal(tmp_path: Path) -> None:
@@ -329,7 +329,7 @@ def test_non_root_english_topic_is_not_used_as_parent(tmp_path: Path) -> None:
             title="现在进行时",
             difficulty=1,
             prerequisite_ids=[],
-            tags=["subject:english", "facet:grammar"],
+            tags=["subject:language", "facet:grammar", "language:english"],
         )
     )
     backend.save_app_state(state)
@@ -357,8 +357,8 @@ def test_non_root_english_topic_is_not_used_as_parent(tmp_path: Path) -> None:
 
     proposal = next(rec for rec in backend.load_app_state(include_history=False).learning.graph_proposals if rec.proposal_id == segments[0].proposal_id and rec.title == "一般过去时")
     assert proposal.parent_node_ids == []
-    assert proposal.summary.endswith("pending_subject_root=英语")
-    assert proposal.reason.endswith("pending_subject_root=英语")
+    assert proposal.summary.endswith("pending_subject_root=语言")
+    assert proposal.reason.endswith("pending_subject_root=语言")
     assert proposal.parent_node_ids != ["english_present_continuous"]
 
 
@@ -371,7 +371,7 @@ def test_explicit_english_root_topic_is_used_as_parent(tmp_path: Path) -> None:
             title="英语",
             difficulty=1,
             prerequisite_ids=[],
-            tags=["subject:english", "facet:root"],
+            tags=["subject:language", "facet:root", "language:english"],
         )
     )
     state.curriculum.topics.append(
@@ -380,7 +380,7 @@ def test_explicit_english_root_topic_is_used_as_parent(tmp_path: Path) -> None:
             title="现在进行时",
             difficulty=1,
             prerequisite_ids=[],
-            tags=["subject:english", "facet:grammar"],
+            tags=["subject:language", "facet:grammar", "language:english"],
         )
     )
     backend.save_app_state(state)
@@ -415,7 +415,23 @@ def test_detect_resource_subject_identifies_english_teaching_material(tmp_path: 
     record = _create_record(tmp_path, backend, name="七年级英语语法", content="Grammar Focus. Present continuous. Listen and repeat.")
     segments = [ResourceSegment(segment_id="seg_1", text="Grammar Focus. Present continuous. Listen and repeat.", proposed_topic_title="现在进行时")]
     subject = detect_resource_subject(record=record, segments=segments, topics=backend.load_app_state(include_history=False).curriculum.topics, default_topic_id="demo_01")
-    assert subject == "english"
+    assert subject == "language"
+
+
+def test_detect_resource_subject_identifies_chinese_reading_as_language(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    record = _create_record(tmp_path, backend, name="七年级语文阅读", content="阅读理解：分析课文主题和人物形象。")
+    segments = [ResourceSegment(segment_id="seg_1", text="阅读理解：分析课文主题和人物形象。")]
+    subject = detect_resource_subject(record=record, segments=segments, topics=backend.load_app_state(include_history=False).curriculum.topics, default_topic_id="demo_01")
+    assert subject == "language"
+
+
+def test_detect_resource_subject_identifies_math_material(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    record = _create_record(tmp_path, backend, name="数学乘法", content="乘法和加法的关系，计算 3 x 4。")
+    segments = [ResourceSegment(segment_id="seg_1", text="乘法和加法的关系，计算 3 x 4。")]
+    subject = detect_resource_subject(record=record, segments=segments, topics=backend.load_app_state(include_history=False).curriculum.topics, default_topic_id="demo_01")
+    assert subject == "math"
 
 
 def test_detect_resource_subject_treats_velocity_formula_as_physics(tmp_path: Path) -> None:
@@ -424,7 +440,31 @@ def test_detect_resource_subject_treats_velocity_formula_as_physics(tmp_path: Pa
     segments = [ResourceSegment(segment_id="seg_1", text="Velocity formula v=d/t. Distance, time, and speed describe motion.")]
     subject = detect_resource_subject(record=record, segments=segments, topics=backend.load_app_state(include_history=False).curriculum.topics, default_topic_id="demo_01")
     assert subject in {"science", "physics"}
-    assert subject != "english"
+    assert subject != "language"
+
+
+def test_detect_resource_subject_identifies_biology_material(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    record = _create_record(tmp_path, backend, name="生物细胞", content="Cell structure and function explain how organisms grow.")
+    segments = [ResourceSegment(segment_id="seg_1", text="Cell structure and function explain how organisms grow.")]
+    subject = detect_resource_subject(record=record, segments=segments, topics=backend.load_app_state(include_history=False).curriculum.topics, default_topic_id="demo_01")
+    assert subject in {"biology", "science"}
+
+
+def test_detect_resource_subject_identifies_history_material(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    record = _create_record(tmp_path, backend, name="历史事件", content="这场改革事件改变了王朝的政治结构。")
+    segments = [ResourceSegment(segment_id="seg_1", text="这场改革事件改变了王朝的政治结构。")]
+    subject = detect_resource_subject(record=record, segments=segments, topics=backend.load_app_state(include_history=False).curriculum.topics, default_topic_id="demo_01")
+    assert subject == "history"
+
+
+def test_detect_resource_subject_identifies_geography_material(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    record = _create_record(tmp_path, backend, name="地理地图与气候", content="地图技能帮助理解气候区域的分布。")
+    segments = [ResourceSegment(segment_id="seg_1", text="地图技能帮助理解气候区域的分布。")]
+    subject = detect_resource_subject(record=record, segments=segments, topics=backend.load_app_state(include_history=False).curriculum.topics, default_topic_id="demo_01")
+    assert subject == "geography"
 
 
 def test_detect_resource_subject_does_not_use_weather_word_alone_as_english(tmp_path: Path) -> None:
@@ -432,13 +472,30 @@ def test_detect_resource_subject_does_not_use_weather_word_alone_as_english(tmp_
     record = _create_record(tmp_path, backend, name="science article", content="Weather affects climate and energy transfer in the atmosphere.")
     segments = [ResourceSegment(segment_id="seg_1", text="Weather affects climate and energy transfer in the atmosphere.")]
     subject = detect_resource_subject(record=record, segments=segments, topics=backend.load_app_state(include_history=False).curriculum.topics, default_topic_id="demo_01")
-    assert subject != "english"
+    assert subject != "language"
     assert subject == "physics" or subject == "science" or subject == "general"
 
 
+def test_detect_resource_subject_does_not_use_story_word_alone_as_language(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    record = _create_record(tmp_path, backend, name="science story", content="This story explains energy flow in an ecosystem.")
+    segments = [ResourceSegment(segment_id="seg_1", text="This story explains energy flow in an ecosystem.")]
+    subject = detect_resource_subject(record=record, segments=segments, topics=backend.load_app_state(include_history=False).curriculum.topics, default_topic_id="demo_01")
+    assert subject != "language"
+
+
+def test_detect_resource_subject_does_not_use_time_word_alone_as_language(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    record = _create_record(tmp_path, backend, name="physics timing", content="Time, distance, and speed are related quantities.")
+    segments = [ResourceSegment(segment_id="seg_1", text="Time, distance, and speed are related quantities.")]
+    subject = detect_resource_subject(record=record, segments=segments, topics=backend.load_app_state(include_history=False).curriculum.topics, default_topic_id="demo_01")
+    assert subject in {"physics", "science", "general"}
+    assert subject != "language"
+
+
 def test_weather_emotion_titles_are_clustered_after_normalization() -> None:
-    first = normalize_candidate_title("天气如何影响我们的情绪？", subject="english", facet="culture_or_content")
-    second = normalize_candidate_title("天气如何影响我们的心情？", subject="english", facet="culture_or_content")
+    first = normalize_candidate_title("天气如何影响我们的情绪？", subject="language", facet="culture")
+    second = normalize_candidate_title("天气如何影响我们的心情？", subject="language", facet="culture")
 
     assert first == second == "天气如何影响我们的心情"
 
@@ -448,8 +505,8 @@ def test_weather_emotion_titles_are_clustered_after_normalization() -> None:
                 segment_index=0,
                 raw_title="天气如何影响我们的情绪？",
                 normalized_title=first,
-                subject="english",
-                facet="culture_or_content",
+                subject="language",
+                facet="culture",
                 confidence=0.8,
                 reason="候选 1",
                 text="Weather can change how people feel.",
@@ -459,8 +516,8 @@ def test_weather_emotion_titles_are_clustered_after_normalization() -> None:
                 segment_index=1,
                 raw_title="天气如何影响我们的心情？",
                 normalized_title=second,
-                subject="english",
-                facet="culture_or_content",
+                subject="language",
+                facet="culture",
                 confidence=0.81,
                 reason="候选 2",
                 text="The weather affects our moods.",
