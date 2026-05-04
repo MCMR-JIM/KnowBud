@@ -277,8 +277,9 @@
         <h2>图数据源</h2>
         <div class="stack">
           <button id="loadApiBtn" class="btn-blue">读取 API 运行态图</button>
+          <button id="loadApiReportBtn" class="btn-soft">读取 API 图报告</button>
           <input id="reportInput" type="file" accept=".json,application/json" />
-          <p class="subtle">如果要看 `data/simulated_graph/graph_report.json` 里的大图，点击上面的文件选择器加载该 JSON。API 模式只显示当前后端 DATA_ROOT 对应的运行态。</p>
+          <p class="subtle">API 图报告来自 /v1/knowledge/graph/report，包含资源、片段、proposal 和诊断统计。也可加载本地 graph_report.json。</p>
         </div>
       </section>
 
@@ -598,8 +599,9 @@
       const hint = el('sourceHint');
       if (state.source === 'report') {
         const counts = state.report?.counts || {};
-        badge.textContent = '模拟报告图';
-        hint.textContent = `来自 graph_report.json：${counts.topic_count || state.graph.topics.length} topics，${counts.prerequisite_edge_count || '未知'} 条前置边，${counts.graph_proposals || state.graph.proposals.length} proposals。`;
+        const label = state.report?.source === 'runtime' ? 'API 图报告' : '模拟报告图';
+        badge.textContent = label;
+        hint.textContent = `${label}：${counts.topic_count || state.graph.topics.length} topics，${counts.prerequisite_edge_count || '未知'} 条前置边，${counts.graph_proposals || state.graph.proposals.length} proposals。`;
       } else {
         badge.textContent = 'API 运行态图';
         hint.textContent = '当前显示后端 /v1/knowledge/graph 的实时状态。若只看到 demo_01，说明当前后端 DATA_ROOT 不是 data/simulated_graph。';
@@ -634,6 +636,15 @@
 
     async function loadReportFile(file) {
       const report = JSON.parse(await file.text());
+      loadReportObject(report, '已加载模拟报告图');
+    }
+
+    async function loadApiReport() {
+      const report = await api('/knowledge/graph/report');
+      loadReportObject(report, '已加载 API 图报告');
+    }
+
+    function loadReportObject(report, logMessage) {
       const graph = normalizeReportGraph(report);
       const previous = state.selectedTopicId;
       state.source = 'report';
@@ -652,7 +663,7 @@
       renderStats();
       state.diagnostics = computeDiagnostics(state.graph);
       renderDiagnostics();
-      log('已加载模拟报告图', { topics: topics.length, proposals: graph.proposals.length });
+      log(logMessage, { topics: topics.length, proposals: graph.proposals.length });
     }
 
     async function refreshTopicData() {
@@ -973,6 +984,7 @@
     window.rejectProposal = rejectProposal;
 
     el('loadApiBtn').addEventListener('click', () => refreshAll({ keepSelection: false }).catch(err => log('API 刷新失败', { error: err.message })));
+    el('loadApiReportBtn').addEventListener('click', () => loadApiReport().catch(err => log('API 图报告失败', { error: err.message })));
     el('reportInput').addEventListener('change', (event) => {
       const file = event.target.files[0];
       if (!file) return;

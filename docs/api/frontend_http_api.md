@@ -1038,6 +1038,36 @@ PDF 翻页联动接口。儿童端 PDF 预览组件翻页后调用该接口，�
 
 - `200`：成功返回图谱快照
 
+
+#### `GET /v1/knowledge/graph/report`
+
+返回当前运行态知识图诊断报告，结构兼容 `graph_report.json` 测试页加载格式。
+
+##### Response `200`
+
+```json
+{
+  "session_id": "default",
+  "source": "runtime",
+  "counts": {
+    "topic_count": 1,
+    "prerequisite_edge_count": 0,
+    "resource_count": 0,
+    "segment_count": 0,
+    "graph_proposals": 0
+  },
+  "topics": [],
+  "prerequisite_edges": [],
+  "resources": [],
+  "graph_proposals": []
+}
+```
+
+##### Status codes
+
+- `200`：成功返回运行态图诊断报告
+
+
 #### `GET /v1/knowledge/proposals`
 
 查询知识图谱提案列表。家长端主要用于展示 `resource_ingest` 触发的“AI 建议新增知识点”。

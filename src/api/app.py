@@ -7,11 +7,12 @@ import os
 import shutil
 import threading
 import uuid
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, AsyncIterator, Callable
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -794,6 +795,13 @@ def get_knowledge_graph() -> KnowledgeGraphResponse:
     return _build_graph_response(state)
 
 
+@app.get("/v1/knowledge/graph/report", tags=["knowledge"])
+def get_knowledge_graph_report() -> dict[str, Any]:
+    backend = get_backend()
+    state = backend.load_app_state(include_history=False)
+    return _build_graph_report(state=state, resources=backend.list_all_resources())
+
+
 @app.get("/v1/knowledge/proposals", response_model=list[ProposalInfo], tags=["knowledge"])
 def list_knowledge_proposals(status: str | None = None, trigger: str | None = None) -> list[ProposalInfo]:
     runtime = get_runtime()
@@ -1021,6 +1029,125 @@ def _build_graph_response(state) -> KnowledgeGraphResponse:
         proposals=[_proposal_info(proposal) for proposal in state.learning.graph_proposals],
         mastery=[_mastery_info(topic_id, mastery) for topic_id, mastery in state.learning.mastery_map.items()],
     )
+
+
+def _build_graph_report(*, state, resources: list[object]) -> dict[str, Any]:
+    topics = state.curriculum.topics
+    topic_ids = {topic.topic_id for topic in topics}
+    segment_status_counter: Counter[str] = Counter()
+    topic_segment_counter: Counter[str] = Counter()
+    cross_topic_pair_counter: Counter[str] = Counter()
+    resource_rows: list[dict[str, Any]] = []
+
+    for resource in resources:
+        linked_topics = sorted(
+            {
+                segment.topic_id
+                for segment in getattr(resource, "segments", [])
+                if segment.topic_id in topic_ids
+            }
+        )
+        proposed_proposal_ids = sorted(
+            {
+                segment.proposal_id
+                for segment in getattr(resource, "segments", [])
+                if segment.proposal_id
+            }
+        )
+        for segment in getattr(resource, "segments", []):
+            segment_status_counter[segment.status] += 1
+            if segment.topic_id in topic_ids:
+                topic_segment_counter[segment.topic_id] += 1
+                if segment.topic_id != resource.topic_id:
+                    cross_topic_pair_counter[f"{resource.topic_id}->{segment.topic_id}"] += 1
+        resource_rows.append(
+            {
+                "resource_id": resource.resource_id,
+                "home_topic_id": resource.topic_id,
+                "resource_name": resource.resource_name,
+                "media_type": resource.media_type,
+                "ingestion_status": getattr(resource, "ingestion_status", "pending"),
+                "segment_count": len(getattr(resource, "segments", [])),
+                "linked_topic_ids": linked_topics,
+                "proposal_ids": proposed_proposal_ids,
+            }
+        )
+
+    prerequisite_edges = [
+        {"from": prerequisite_id, "to": topic.topic_id, "edge_type": "requires"}
+        for topic in topics
+        for prerequisite_id in topic.prerequisite_ids
+        if prerequisite_id in topic_ids
+    ]
+    dependents_map: dict[str, list[str]] = defaultdict(list)
+    for edge in prerequisite_edges:
+        dependents_map[str(edge["from"])].append(str(edge["to"]))
+
+    proposal_status_counter = Counter(proposal.status for proposal in state.learning.graph_proposals)
+    proposal_edge_counter = Counter(proposal.edge_type for proposal in state.learning.graph_proposals)
+    mastery_state_counter = Counter(mastery.mastery_state for mastery in state.learning.mastery_map.values())
+    cross_topic_resource_count = sum(
+        1
+        for row in resource_rows
+        if any(topic_id != row["home_topic_id"] for topic_id in row["linked_topic_ids"])
+    )
+
+    topic_rows = []
+    for topic in topics:
+        mastery = state.learning.mastery_map.get(topic.topic_id)
+        topic_rows.append(
+            {
+                "topic_id": topic.topic_id,
+                "title": topic.title,
+                "difficulty": topic.difficulty,
+                "tags": list(topic.tags),
+                "prerequisite_ids": list(topic.prerequisite_ids),
+                "dependent_ids": sorted(dependents_map.get(topic.topic_id, [])),
+                "resource_count": sum(
+                    1
+                    for row in resource_rows
+                    if row["home_topic_id"] == topic.topic_id or topic.topic_id in row["linked_topic_ids"]
+                ),
+                "classified_segment_count": topic_segment_counter[topic.topic_id],
+                "mastery_state": mastery.mastery_state if mastery else "unknown",
+            }
+        )
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "session_id": SINGLE_SESSION_ID,
+        "source": "runtime",
+        "counts": {
+            "topic_count": len(topics),
+            "prerequisite_edge_count": len(prerequisite_edges),
+            "resource_count": len(resources),
+            "segment_count": sum(len(getattr(resource, "segments", [])) for resource in resources),
+            "classified_segments": segment_status_counter["classified"],
+            "proposed_segments": segment_status_counter["proposed"],
+            "unclassified_segments": segment_status_counter["unclassified"],
+            "cross_topic_resource_count": cross_topic_resource_count,
+            "graph_proposals": len(state.learning.graph_proposals),
+        },
+        "status_breakdown": {
+            "segment_status": dict(segment_status_counter),
+            "mastery_state": dict(mastery_state_counter),
+            "proposal_status": dict(proposal_status_counter),
+            "proposal_edge_type": dict(proposal_edge_counter),
+        },
+        "topics": topic_rows,
+        "prerequisite_edges": prerequisite_edges,
+        "resources": resource_rows,
+        "cross_topic_pairs_top20": [
+            {"pair": pair, "segment_count": count}
+            for pair, count in cross_topic_pair_counter.most_common(20)
+        ],
+        "cross_topic_resources_sample": [
+            row
+            for row in resource_rows
+            if any(topic_id != row["home_topic_id"] for topic_id in row["linked_topic_ids"])
+        ][:40],
+        "graph_proposals": [proposal.model_dump() for proposal in state.learning.graph_proposals],
+    }
 
 
 def _build_turn_response(
