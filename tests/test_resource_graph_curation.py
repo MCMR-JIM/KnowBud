@@ -232,6 +232,52 @@ def test_existing_english_topic_is_linked_instead_of_creating_proposal(tmp_path:
     assert not any(rec.title == "语言" for rec in backend.load_app_state(include_history=False).learning.graph_proposals)
 
 
+def test_legacy_subject_english_topic_is_linked_instead_of_creating_proposal(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    state = backend.load_app_state(include_history=False)
+    state.curriculum.topics.append(
+        TopicNode(
+            topic_id="legacy_english_present_continuous",
+            title="现在进行时",
+            difficulty=1,
+            prerequisite_ids=[],
+            tags=["subject:english", "facet:grammar"],
+        )
+    )
+    backend.save_app_state(state)
+
+    backend.llm_skill.classify_or_propose_resource_chunk = lambda **_: {
+        "decision": "propose",
+        "topic_id": None,
+        "confidence": 0.84,
+        "reason": "present continuous chunk",
+        "proposed_topic": {
+            "title": "Present continuous",
+            "summary": "be doing",
+            "parent_node_ids": ["demo_01"],
+            "edge_type": "requires",
+        },
+    }
+    record = _create_record(
+        tmp_path,
+        backend,
+        name="英语现在进行时复用旧 topic",
+        content="Present continuous: She is reading now.",
+    )
+
+    segments = ingest_document_resource(
+        backend=backend,
+        record=record,
+        topics=backend.load_app_state(include_history=False).curriculum.topics,
+        default_topic_id="demo_01",
+    )
+
+    assert segments[0].status == "classified"
+    assert segments[0].decision == "link"
+    assert segments[0].topic_id == "legacy_english_present_continuous"
+    assert segments[0].proposal_id is None
+
+
 def test_existing_english_proposal_is_reused_instead_of_creating_duplicate(tmp_path: Path) -> None:
     backend = _build_backend(tmp_path)
     state = backend.load_app_state(include_history=False)
@@ -595,6 +641,98 @@ def test_chinese_resource_creates_chinese_root_title(tmp_path: Path) -> None:
     proposals = backend.load_app_state(include_history=False).learning.graph_proposals
     root = next(rec for rec in proposals if rec.title in {"语文", "中文"})
     assert root.tags == ["subject:language", "facet:root", "language:chinese"]
+
+
+def test_chinese_resource_does_not_reuse_english_root(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    state = backend.load_app_state(include_history=False)
+    state.curriculum.topics.append(
+        TopicNode(
+            topic_id="english_root",
+            title="英语",
+            difficulty=1,
+            prerequisite_ids=[],
+            tags=["subject:language", "facet:root", "language:english"],
+        )
+    )
+    backend.save_app_state(state)
+
+    backend.llm_skill.classify_or_propose_resource_chunk = lambda **_: {
+        "decision": "propose",
+        "topic_id": None,
+        "confidence": 0.85,
+        "reason": "reading chunk",
+        "proposed_topic": {
+            "title": "阅读理解",
+            "summary": "阅读材料分析",
+            "parent_node_ids": ["demo_01"],
+            "edge_type": "requires",
+        },
+    }
+    record = _create_record(tmp_path, backend, name="七年级语文阅读", content="阅读理解：分析课文结构和主题。")
+    segments = ingest_document_resource(
+        backend=backend,
+        record=record,
+        topics=backend.load_app_state(include_history=False).curriculum.topics,
+        default_topic_id="demo_01",
+    )
+
+    proposals = backend.load_app_state(include_history=False).learning.graph_proposals
+    content = next(rec for rec in proposals if rec.proposal_id == segments[0].proposal_id)
+    assert content.parent_node_ids == []
+    assert "pending_subject_root=语文" in content.summary
+    assert any(rec.title == "语文" and "language:chinese" in rec.tags for rec in proposals)
+
+
+def test_legacy_subject_english_proposal_is_reused(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    state = backend.load_app_state(include_history=False)
+    state.learning.graph_proposals.append(
+        GraphProposalRecord(
+            proposal_id="legacy_english_present_continuous",
+            title="现在进行时",
+            summary="legacy english proposal",
+            trigger="resource_ingest",
+            tags=["subject:english", "facet:grammar"],
+            parent_node_ids=[],
+            edge_type="related",
+            status="proposed",
+            reason="existing legacy proposal",
+            created_ts="2026-05-04T00:00:00+00:00",
+            updated_ts="2026-05-04T00:00:00+00:00",
+        )
+    )
+    backend.save_app_state(state)
+
+    backend.llm_skill.classify_or_propose_resource_chunk = lambda **_: {
+        "decision": "propose",
+        "topic_id": None,
+        "confidence": 0.84,
+        "reason": "present continuous chunk",
+        "proposed_topic": {
+            "title": "Present continuous",
+            "summary": "be doing",
+            "parent_node_ids": ["demo_01"],
+            "edge_type": "requires",
+        },
+    }
+    record = _create_record(
+        tmp_path,
+        backend,
+        name="英语现在进行时复用旧 proposal",
+        content="English grammar: Present continuous. He is running now.",
+    )
+
+    segments = ingest_document_resource(
+        backend=backend,
+        record=record,
+        topics=backend.load_app_state(include_history=False).curriculum.topics,
+        default_topic_id="demo_01",
+    )
+
+    proposals = backend.load_app_state(include_history=False).learning.graph_proposals
+    assert segments[0].proposal_id == "legacy_english_present_continuous"
+    assert len([rec for rec in proposals if rec.title == "现在进行时"]) == 1
 
 
 def test_math_project_activity_is_filtered(tmp_path: Path) -> None:

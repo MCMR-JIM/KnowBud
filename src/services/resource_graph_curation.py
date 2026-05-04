@@ -402,7 +402,7 @@ def create_resource_level_proposals(
         for cluster in clusters
     )
 
-    if subject != "general" and needs_new_content_proposal and not parent_node_ids and _should_create_subject_root(subject=subject, topics=topics, backend=backend):
+    if subject != "general" and needs_new_content_proposal and not parent_node_ids and _should_create_subject_root(subject=subject, topics=topics, backend=backend, language_id=language_id):
         root_title = _root_title_for_subject(subject=subject, language_id=language_id)
         proposals.append(
             backend.create_graph_proposal_from_resource(
@@ -658,7 +658,7 @@ def _pick_edge_type(candidates: list[CandidateTopic], *, subject: str) -> str:
 def _infer_topic_subject(topic: TopicNode) -> str:
     for tag in topic.tags:
         if tag.startswith("subject:"):
-            return tag.split(":", 1)[1]
+            return _canonical_subject(tag.split(":", 1)[1])
     title = topic.title.lower()
     for profile in SUBJECT_PROFILES.values():
         if profile.subject_id == "general":
@@ -669,14 +669,25 @@ def _infer_topic_subject(topic: TopicNode) -> str:
 
 
 def _select_parent_node_ids(*, subject: str, topics: list[TopicNode], default_topic_id: str | None, language_id: str | None = None) -> list[str]:
-    compatible = [topic for topic in topics if _infer_topic_subject(topic) == subject and _is_root_like_topic(topic, subject)]
+    compatible = [
+        topic
+        for topic in topics
+        if _infer_topic_subject(topic) == subject
+        and _is_root_like_topic(topic, subject)
+        and _language_root_matches(getattr(topic, "tags", []), topic.title, subject=subject, language_id=language_id)
+    ]
     if compatible:
         compatible.sort(key=lambda topic: _root_topic_score(topic, subject=subject, language_id=language_id), reverse=True)
         return [compatible[0].topic_id]
 
     if default_topic_id:
         default_topic = next((topic for topic in topics if topic.topic_id == default_topic_id), None)
-        if default_topic is not None and _infer_topic_subject(default_topic) == subject and _is_root_like_topic(default_topic, subject):
+        if (
+            default_topic is not None
+            and _infer_topic_subject(default_topic) == subject
+            and _is_root_like_topic(default_topic, subject)
+            and _language_root_matches(getattr(default_topic, "tags", []), default_topic.title, subject=subject, language_id=language_id)
+        ):
             return [default_topic_id]
     return []
 
@@ -689,23 +700,32 @@ def _is_root_like_topic(topic: TopicNode, subject: str) -> bool:
     return any(tag in ROOT_MARKER_TAGS for tag in topic.tags)
 
 
-def _should_create_subject_root(*, subject: str, topics: list[TopicNode], backend: "SessionBackend") -> bool:
-    if any(_infer_topic_subject(topic) == subject and _is_root_like_topic(topic, subject) for topic in topics):
+def _should_create_subject_root(*, subject: str, topics: list[TopicNode], backend: "SessionBackend", language_id: str | None = None) -> bool:
+    if any(
+        _infer_topic_subject(topic) == subject
+        and _is_root_like_topic(topic, subject)
+        and _language_root_matches(getattr(topic, "tags", []), topic.title, subject=subject, language_id=language_id)
+        for topic in topics
+    ):
         return False
     state = backend.load_app_state(include_history=False)
     for proposal in state.learning.graph_proposals:
-        if _is_root_like_proposal(proposal, subject=subject):
+        if _is_root_like_proposal(proposal, subject=subject, language_id=language_id):
             return False
     return True
 
 
-def _is_root_like_proposal(proposal: GraphProposalRecord, *, subject: str) -> bool:
+def _is_root_like_proposal(proposal: GraphProposalRecord, *, subject: str, language_id: str | None = None) -> bool:
     title = proposal.title.strip().lower()
-    subject_label = SUBJECT_PROFILES.get(subject, SUBJECT_PROFILES["general"]).root_title.lower()
-    if title == subject_label:
-        return True
+    subject_label = _root_title_for_subject(subject=subject, language_id=language_id).lower()
     tags = getattr(proposal, "tags", [])
-    return any(tag in ROOT_MARKER_TAGS for tag in tags) and f"subject:{subject}" in tags
+    if title == subject_label and _subject_from_tags(tags) == subject:
+        return True
+    return (
+        any(tag in ROOT_MARKER_TAGS for tag in tags)
+        and _subject_from_tags(tags) == subject
+        and _language_root_matches(tags, proposal.title, subject=subject, language_id=language_id)
+    )
 
 
 def _is_activity_dominant_language_candidate(*, title: str, text: str, profile: SubjectProfile) -> bool:
@@ -931,7 +951,20 @@ def _language_id_from_tags(tags: list[str]) -> str | None:
     for tag in tags:
         if tag.startswith("language:"):
             return tag.split(":", 1)[1]
+        if tag == "subject:english":
+            return "english"
+        if tag in {"subject:chinese", "subject:语文", "subject:中文"}:
+            return "chinese"
     return None
+
+
+def _language_root_matches(tags: list[str], title: str, *, subject: str, language_id: str | None) -> bool:
+    if subject != "language":
+        return True
+    root_language_id = _language_id_from_tags(tags) or _detect_language_id(title)
+    if language_id is None:
+        return root_language_id is None
+    return root_language_id is None or root_language_id == language_id
 
 
 def _resolve_existing_topic(
@@ -979,8 +1012,14 @@ def _has_profile_substantive_markers(text: str, *, profile: SubjectProfile) -> b
 def _subject_from_tags(tags: list[str]) -> str | None:
     for tag in tags:
         if tag.startswith("subject:"):
-            return tag.split(":", 1)[1]
+            return _canonical_subject(tag.split(":", 1)[1])
     return None
+
+
+def _canonical_subject(subject: str) -> str:
+    if subject in {"english", "chinese", "语文", "中文"}:
+        return "language"
+    return subject
 
 
 def _facet_from_tags(tags: list[str]) -> str | None:
