@@ -196,7 +196,7 @@ def test_upload_txt_ingests_segments_and_records_events(monkeypatch, tmp_path: P
     assert proposal["tags"][0].startswith("subject:")
     assert proposal["tags"][1].startswith("facet:")
     assert proposal["parent_node_ids"] == []
-    assert "pending_subject_root=" in proposal["summary"]
+    assert len(proposal["pending_parent_proposal_ids"]) == 1
     assert proposal["edge_type"] in {"requires", "related"}
     assert proposal["status"] == "proposed"
 
@@ -207,6 +207,7 @@ def test_upload_txt_ingests_segments_and_records_events(monkeypatch, tmp_path: P
     assert proposal_record.tags[0].startswith("subject:")
     assert proposal_record.tags[1].startswith("facet:")
     assert proposal_record.parent_node_ids == []
+    assert len(proposal_record.pending_parent_proposal_ids) == 1
 
 
 def test_document_ingestion_marks_null_and_low_confidence_as_unclassified(tmp_path: Path) -> None:

@@ -269,6 +269,7 @@ class SessionBackend:
         summary: str,
         tags: list[str] | None = None,
         parent_node_ids: list[str],
+        pending_parent_proposal_ids: list[str] | None = None,
         edge_type: str,
         reason: str,
     ) -> GraphProposalRecord:
@@ -282,6 +283,7 @@ class SessionBackend:
             summary=summary.strip(),
             tags=list(dict.fromkeys(tags or [])),
             parent_node_ids=list(parent_node_ids),
+            pending_parent_proposal_ids=list(dict.fromkeys(pending_parent_proposal_ids or [])),
             edge_type=EdgeType(safe_edge_type),
             reason=reason[:80],
         )
@@ -317,7 +319,20 @@ class SessionBackend:
         if not approved_title:
             raise ValueError("title is required")
         approved_summary = (summary if summary is not None else proposal.summary).strip()
-        approved_parents = [item for item in (parent_node_ids if parent_node_ids is not None else proposal.parent_node_ids) if item in valid_topic_ids]
+        parent_override = parent_node_ids is not None
+        approved_parents = [item for item in (parent_node_ids if parent_override else proposal.parent_node_ids) if item in valid_topic_ids]
+        if not parent_override:
+            approved_parents = list(
+                dict.fromkeys(
+                    [
+                        *approved_parents,
+                        *self._resolve_pending_parent_topic_ids(
+                            state=state,
+                            pending_parent_proposal_ids=proposal.pending_parent_proposal_ids,
+                        ),
+                    ]
+                )
+            )
         approved_edge_type = edge_type if edge_type in {"requires", "supports", "related"} else proposal.edge_type
         if approved_edge_type not in {"requires", "supports", "related"}:
             approved_edge_type = "requires"
@@ -347,10 +362,18 @@ class SessionBackend:
         proposal.summary = approved_summary
         proposal.tags = approved_tags
         proposal.parent_node_ids = approved_parents
+        if parent_override:
+            proposal.pending_parent_proposal_ids = []
         proposal.edge_type = approved_edge_type
         proposal.created_topic_id = created_topic_id
         self._activate_proposal_record(proposal, reason=(reason or "approved resource proposal")[:80])
         proposal.updated_ts = now
+        self._propagate_approved_parent_to_child_proposals(
+            state=state,
+            parent_proposal_id=proposal_id,
+            parent_topic_id=created_topic_id,
+            updated_ts=now,
+        )
         self.save_app_state(state)
 
         relinked_count = self._relink_segments_for_approved_proposal(proposal_id=proposal_id, topic_id=created_topic_id)
@@ -386,6 +409,45 @@ class SessionBackend:
     @staticmethod
     def _find_graph_proposal(state: AppState, proposal_id: str) -> GraphProposalRecord | None:
         return next((rec for rec in state.learning.graph_proposals if rec.proposal_id == proposal_id), None)
+
+    @staticmethod
+    def _resolve_pending_parent_topic_ids(*, state: AppState, pending_parent_proposal_ids: list[str]) -> list[str]:
+        valid_topic_ids = {topic.topic_id for topic in state.curriculum.topics}
+        proposal_by_id = {proposal.proposal_id: proposal for proposal in state.learning.graph_proposals}
+        resolved: list[str] = []
+        for proposal_id in pending_parent_proposal_ids:
+            parent_proposal = proposal_by_id.get(proposal_id)
+            if parent_proposal is None or not parent_proposal.created_topic_id:
+                continue
+            if parent_proposal.created_topic_id in valid_topic_ids:
+                resolved.append(parent_proposal.created_topic_id)
+        return list(dict.fromkeys(resolved))
+
+    @staticmethod
+    def _propagate_approved_parent_to_child_proposals(
+        *,
+        state: AppState,
+        parent_proposal_id: str,
+        parent_topic_id: str,
+        updated_ts: str,
+    ) -> None:
+        topic_by_id = {topic.topic_id: topic for topic in state.curriculum.topics}
+        for proposal in state.learning.graph_proposals:
+            if parent_proposal_id not in proposal.pending_parent_proposal_ids:
+                continue
+            if parent_topic_id not in proposal.parent_node_ids:
+                proposal.parent_node_ids.append(parent_topic_id)
+                proposal.updated_ts = updated_ts
+            if parent_proposal_id in proposal.pending_parent_proposal_ids:
+                proposal.pending_parent_proposal_ids = [
+                    item for item in proposal.pending_parent_proposal_ids if item != parent_proposal_id
+                ]
+                proposal.updated_ts = updated_ts
+            if not proposal.created_topic_id or proposal.edge_type != "requires":
+                continue
+            topic = topic_by_id.get(proposal.created_topic_id)
+            if topic is not None and parent_topic_id not in topic.prerequisite_ids:
+                topic.prerequisite_ids.append(parent_topic_id)
 
     def _activate_proposal_record(self, rec: GraphProposalRecord, *, reason: str) -> None:
         if rec.status == "proposed":
@@ -828,6 +890,7 @@ class SessionBackend:
                 rec.summary = proposal.summary
                 rec.tags = list(dict.fromkeys(proposal.tags))
                 rec.parent_node_ids = list(proposal.parent_node_ids)
+                rec.pending_parent_proposal_ids = list(dict.fromkeys(proposal.pending_parent_proposal_ids))
                 rec.edge_type = proposal.edge_type.value
                 self._transition_proposal_record(rec, to_status=target_status, reason=proposal.reason)
                 rec.reason = proposal.reason
@@ -843,6 +906,7 @@ class SessionBackend:
                 trigger=proposal.trigger,
                 tags=list(dict.fromkeys(proposal.tags)),
                 parent_node_ids=list(proposal.parent_node_ids),
+                pending_parent_proposal_ids=list(dict.fromkeys(proposal.pending_parent_proposal_ids)),
                 edge_type=proposal.edge_type.value,
                 status=target_status,
                 reason=proposal.reason,

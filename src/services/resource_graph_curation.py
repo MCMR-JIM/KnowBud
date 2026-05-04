@@ -396,24 +396,40 @@ def create_resource_level_proposals(
 
     parent_node_ids = _select_parent_node_ids(subject=subject, topics=topics, default_topic_id=default_topic_id, language_id=language_id)
     proposals: list[GraphProposalRecord] = []
+    pending_parent_proposal_ids: list[str] = []
     needs_new_content_proposal = any(
         _resolve_existing_topic(topic_map, subject=cluster.subject, language_id=cluster.language_id, facet=cluster.facet, normalized_title=cluster.title) is None
         and _resolve_existing_proposal(proposal_map, subject=cluster.subject, language_id=cluster.language_id, facet=cluster.facet, normalized_title=cluster.title) is None
         for cluster in clusters
     )
 
-    if subject != "general" and needs_new_content_proposal and not parent_node_ids and _should_create_subject_root(subject=subject, topics=topics, backend=backend, language_id=language_id):
-        root_title = _root_title_for_subject(subject=subject, language_id=language_id)
-        proposals.append(
-            backend.create_graph_proposal_from_resource(
-                title=root_title,
-                summary=f"facet: root；支撑片段 {len(candidate_topics)} 个；代表片段：{_representative_snippets([item.text for item in candidate_topics])}",
-                tags=_proposal_tags(subject=subject, facet="root", language_id=language_id),
-                parent_node_ids=[],
-                edge_type="related",
-                reason=f"resource batch root proposal; facet=root; segments={len(candidate_topics)}",
-            )
+    if subject != "general" and needs_new_content_proposal and not parent_node_ids:
+        existing_root_proposal = _select_pending_root_proposal(
+            proposals=state.learning.graph_proposals,
+            subject=subject,
+            language_id=language_id,
         )
+        if existing_root_proposal is not None:
+            pending_parent_proposal_ids = [existing_root_proposal.proposal_id]
+
+    if (
+        subject != "general"
+        and needs_new_content_proposal
+        and not parent_node_ids
+        and not pending_parent_proposal_ids
+        and _should_create_subject_root(subject=subject, topics=topics, backend=backend, language_id=language_id)
+    ):
+        root_title = _root_title_for_subject(subject=subject, language_id=language_id)
+        root_proposal = backend.create_graph_proposal_from_resource(
+            title=root_title,
+            summary=f"facet: root；支撑片段 {len(candidate_topics)} 个；代表片段：{_representative_snippets([item.text for item in candidate_topics])}",
+            tags=_proposal_tags(subject=subject, facet="root", language_id=language_id),
+            parent_node_ids=[],
+            edge_type="related",
+            reason=f"resource batch root proposal; facet=root; segments={len(candidate_topics)}",
+        )
+        proposals.append(root_proposal)
+        pending_parent_proposal_ids = [root_proposal.proposal_id]
 
     for cluster in clusters:
         existing_topic = _resolve_existing_topic(
@@ -446,16 +462,13 @@ def create_resource_level_proposals(
 
         cluster_summary = _build_cluster_summary(cluster)
         cluster_reason = f"resource batch cluster; facet={cluster.facet}; segments={len(cluster.candidates)}"
-        if subject != "general" and not parent_node_ids:
-            pending_label = _root_title_for_subject(subject=subject, language_id=language_id)
-            cluster_summary = f"{cluster_summary}；pending_subject_root={pending_label}"
-            cluster_reason = f"{cluster_reason}; pending_subject_root={pending_label}"
 
         proposal = backend.create_graph_proposal_from_resource(
             title=cluster.title,
             summary=cluster_summary,
             tags=_proposal_tags(subject=cluster.subject, facet=cluster.facet, language_id=language_id),
             parent_node_ids=parent_node_ids,
+            pending_parent_proposal_ids=pending_parent_proposal_ids if subject != "general" and not parent_node_ids else [],
             edge_type=cluster.edge_type,
             reason=cluster_reason,
         )
@@ -713,6 +726,21 @@ def _should_create_subject_root(*, subject: str, topics: list[TopicNode], backen
         if _is_root_like_proposal(proposal, subject=subject, language_id=language_id):
             return False
     return True
+
+
+def _select_pending_root_proposal(
+    *,
+    proposals: list[GraphProposalRecord],
+    subject: str,
+    language_id: str | None,
+) -> GraphProposalRecord | None:
+    reusable_statuses = {"proposed", "validated", "shadow"}
+    for proposal in proposals:
+        if proposal.status not in reusable_statuses:
+            continue
+        if _is_root_like_proposal(proposal, subject=subject, language_id=language_id):
+            return proposal
+    return None
 
 
 def _is_root_like_proposal(proposal: GraphProposalRecord, *, subject: str, language_id: str | None = None) -> bool:

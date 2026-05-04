@@ -182,11 +182,58 @@ def test_science_resource_uploaded_under_demo_topic_does_not_parent_demo_01(tmp_
         default_topic_id="demo_01",
     )
 
-    proposal = next(rec for rec in backend.load_app_state(include_history=False).learning.graph_proposals if rec.proposal_id == segments[0].proposal_id)
+    proposals = backend.load_app_state(include_history=False).learning.graph_proposals
+    proposal = next(rec for rec in proposals if rec.proposal_id == segments[0].proposal_id)
+    root = next(rec for rec in proposals if rec.title in {"物理", "科学"})
     assert proposal.parent_node_ids == []
-    assert "pending_subject_root=" in proposal.summary
-    assert "pending_subject_root=" in proposal.reason
+    assert proposal.pending_parent_proposal_ids == [root.proposal_id]
     assert proposal.tags[0] in {"subject:science", "subject:physics"}
+
+
+def test_approving_root_proposal_backfills_child_parent(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+
+    backend.llm_skill.classify_or_propose_resource_chunk = lambda **_: {
+        "decision": "propose",
+        "topic_id": None,
+        "confidence": 0.83,
+        "reason": "physics formula concept",
+        "proposed_topic": {
+            "title": "速度公式",
+            "summary": "v=d/t",
+            "parent_node_ids": ["demo_01"],
+            "edge_type": "requires",
+        },
+    }
+    record = _create_record(tmp_path, backend, name="初中物理速度", content="速度公式 v = d / t，用于描述路程、时间和速度的关系。")
+    segments = ingest_document_resource(
+        backend=backend,
+        record=record,
+        topics=backend.load_app_state(include_history=False).curriculum.topics,
+        default_topic_id="demo_01",
+    )
+
+    proposals = backend.load_app_state(include_history=False).learning.graph_proposals
+    child = next(rec for rec in proposals if rec.proposal_id == segments[0].proposal_id)
+    root = next(rec for rec in proposals if rec.proposal_id == child.pending_parent_proposal_ids[0])
+
+    _state, _root_proposal, root_topic, _relinked_count, _rescanned_count = backend.approve_graph_proposal(
+        proposal_id=root.proposal_id,
+        difficulty=1,
+    )
+    updated_child = next(
+        rec
+        for rec in backend.load_app_state(include_history=False).learning.graph_proposals
+        if rec.proposal_id == child.proposal_id
+    )
+    assert updated_child.parent_node_ids == [root_topic.topic_id]
+    assert updated_child.pending_parent_proposal_ids == []
+
+    _state, _child_proposal, child_topic, _relinked_count, _rescanned_count = backend.approve_graph_proposal(
+        proposal_id=child.proposal_id,
+        difficulty=1,
+    )
+    assert child_topic.prerequisite_ids == [root_topic.topic_id]
 
 
 def test_existing_english_topic_is_linked_instead_of_creating_proposal(tmp_path: Path) -> None:
@@ -403,8 +450,7 @@ def test_non_root_english_topic_is_not_used_as_parent(tmp_path: Path) -> None:
 
     proposal = next(rec for rec in backend.load_app_state(include_history=False).learning.graph_proposals if rec.proposal_id == segments[0].proposal_id and rec.title == "一般过去时")
     assert proposal.parent_node_ids == []
-    assert proposal.summary.endswith("pending_subject_root=英语")
-    assert proposal.reason.endswith("pending_subject_root=英语")
+    assert len(proposal.pending_parent_proposal_ids) == 1
     assert proposal.parent_node_ids != ["english_present_continuous"]
 
 
@@ -679,8 +725,9 @@ def test_chinese_resource_does_not_reuse_english_root(tmp_path: Path) -> None:
 
     proposals = backend.load_app_state(include_history=False).learning.graph_proposals
     content = next(rec for rec in proposals if rec.proposal_id == segments[0].proposal_id)
+    root = next(rec for rec in proposals if rec.title == "语文")
     assert content.parent_node_ids == []
-    assert "pending_subject_root=语文" in content.summary
+    assert content.pending_parent_proposal_ids == [root.proposal_id]
     assert any(rec.title == "语文" and "language:chinese" in rec.tags for rec in proposals)
 
 

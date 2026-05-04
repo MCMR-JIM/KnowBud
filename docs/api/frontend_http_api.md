@@ -187,6 +187,7 @@ uvicorn src.api.app:app --host 0.0.0.0 --port 8090 --reload
 | `summary` | `string` | 提案摘要，说明建议新增节点覆盖的知识点 |
 | `trigger` | `string` | 触发来源 |
 | `parent_node_ids` | `string[]` | 建议连接到的父/前置节点 ID 列表 |
+| `pending_parent_proposal_ids` | `string[]` | 待批准的父提案 ID 列表；父提案批准后会回填到 `parent_node_ids` |
 | `edge_type` | `string` | 建议边类型，常见值：`requires`、`supports`、`related` |
 | `status` | `string` | 当前状态 |
 | `reason` | `string` | 触发原因 |

@@ -583,6 +583,7 @@
         summary: proposal.summary || '',
         trigger: proposal.trigger || 'resource_ingest',
         parent_node_ids: proposal.parent_node_ids || [],
+        pending_parent_proposal_ids: proposal.pending_parent_proposal_ids || [],
         edge_type: proposal.edge_type || 'requires',
         status: proposal.status || 'proposed',
         reason: proposal.reason || '',
@@ -872,7 +873,7 @@
         <div class="item">
           <h3>${escapeHtml(proposal.title)}</h3>
           <p class="subtle">${escapeHtml(proposal.summary || proposal.reason || '')}</p>
-          <p class="subtle" style="margin-top:8px">父节点：${(proposal.parent_node_ids || []).join(', ') || '无'} · ${escapeHtml(proposal.edge_type || 'requires')}</p>
+          <p class="subtle" style="margin-top:8px">父节点：${(proposal.parent_node_ids || []).join(', ') || '无'} · 待父提案：${(proposal.pending_parent_proposal_ids || []).join(', ') || '无'} · ${escapeHtml(proposal.edge_type || 'requires')}</p>
           <div class="buttons" style="margin-top:10px">
             <button class="btn-green" onclick="approveProposal('${proposal.proposal_id}')">批准</button>
             <button class="btn-red" onclick="rejectProposal('${proposal.proposal_id}')">拒绝</button>
@@ -891,7 +892,7 @@
         <div class="item">
           <h3>${escapeHtml(p.title)}</h3>
           <p class="subtle">${escapeHtml(p.summary || p.reason || '')}</p>
-          <p class="subtle">父节点：${(p.parent_node_ids || []).join(', ') || '无'} · ${escapeHtml(p.edge_type || 'requires')}</p>
+          <p class="subtle">父节点：${(p.parent_node_ids || []).join(', ') || '无'} · 待父提案：${(p.pending_parent_proposal_ids || []).join(', ') || '无'} · ${escapeHtml(p.edge_type || 'requires')}</p>
           <div class="buttons" style="margin-top:8px">
             <button class="btn-green" onclick="approveProposal('${p.proposal_id}')">批准并回挂</button>
             <button class="btn-red" onclick="rejectProposal('${p.proposal_id}')">拒绝</button>
