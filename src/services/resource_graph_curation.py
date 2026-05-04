@@ -45,6 +45,25 @@ ENGLISH_ACTIVITY_MARKERS = (
     "两人一组",
 )
 
+ENGLISH_ACTIVITY_TITLE_MARKERS = (
+    "role-play",
+    "role play",
+    "project",
+    "draw a map",
+    "work in groups",
+    "group work",
+    "pair work",
+    "listen and repeat",
+    "complete the passage",
+    "fill in",
+    "choose",
+    "match",
+    "act out",
+    "design a zoo",
+    "设计动物园",
+    "制定班级规则",
+)
+
 
 @dataclass
 class CandidateKind:
@@ -161,16 +180,9 @@ def normalize_candidate_title(title: str, *, subject: str, facet: str, text: str
 def classify_candidate_kind(title: str, text: str, *, subject: str) -> CandidateKind:
     cleaned_title = _clean_title(title)
     lowered = f"{cleaned_title}\n{text}".lower()
+    title_lowered = cleaned_title.lower()
 
     if subject == "english":
-        if any(marker in lowered for marker in ENGLISH_ACTIVITY_MARKERS):
-            return CandidateKind(subject=subject, facet="activity", include=False, filter_reason="activity-like candidate")
-        if re.search(r"(设计|制定|制作|画).*(动物园|地图|海报|班级规则)", lowered):
-            return CandidateKind(subject=subject, facet="activity", include=False, filter_reason="activity-like candidate")
-        if re.search(r"\b(unit\s*\d+|lesson\s*\d+)\b", lowered):
-            return CandidateKind(subject=subject, facet="unit", include=False, filter_reason="unit wrapper candidate")
-        if re.search(r"\b(fill in|choose|tick|match)\b", lowered) or "练习题" in lowered:
-            return CandidateKind(subject=subject, facet="exercise", include=False, filter_reason="exercise fragment")
         if _is_story_title_only(cleaned_title, lowered):
             return CandidateKind(subject=subject, facet="reading", include=True, title_hint="英语故事阅读理解")
         if _is_english_grammar(lowered):
@@ -185,6 +197,10 @@ def classify_candidate_kind(title: str, text: str, *, subject: str) -> Candidate
             return CandidateKind(subject=subject, facet="vocabulary", include=True)
         if _is_english_reading(lowered):
             return CandidateKind(subject=subject, facet="reading", include=True, title_hint="英语故事阅读理解")
+        if re.search(r"\b(unit\s*\d+|lesson\s*\d+)\b", title_lowered):
+            return CandidateKind(subject=subject, facet="unit", include=False, filter_reason="unit wrapper candidate")
+        if _is_activity_dominant_english_candidate(title=title_lowered, text=lowered):
+            return CandidateKind(subject=subject, facet="activity", include=False, filter_reason="activity-like candidate")
         return CandidateKind(subject=subject, facet="culture_or_content", include=True)
 
     if subject == "math":
@@ -227,6 +243,8 @@ def create_resource_level_proposals(
 ) -> list[GraphProposalRecord]:
     subject = detect_resource_subject(record=record, segments=segments, topics=topics, default_topic_id=default_topic_id)
     candidate_topics: list[CandidateTopic] = []
+    state = backend.load_app_state(include_history=False)
+    topic_map, proposal_map = _build_existing_match_maps(topics=topics, proposals=state.learning.graph_proposals)
 
     for index, segment in enumerate(segments):
         if segment.decision != "propose" or not segment.proposed_topic_title:
@@ -287,21 +305,44 @@ def create_resource_level_proposals(
         )
 
     for cluster in clusters:
+        existing_topic = topic_map.get((cluster.subject, cluster.facet, cluster.title))
+        if existing_topic is not None:
+            for candidate in cluster.candidates:
+                _link_segment_to_existing_topic(segments[candidate.segment_index], topic_id=existing_topic.topic_id)
+            continue
+
+        existing_proposal = proposal_map.get((cluster.subject, cluster.facet, cluster.title))
+        if existing_proposal is not None:
+            for candidate in cluster.candidates:
+                _attach_segment_to_existing_proposal(
+                    segments[candidate.segment_index],
+                    proposal_id=existing_proposal.proposal_id,
+                    proposal_title=existing_proposal.title,
+                )
+            continue
+
+        cluster_summary = _build_cluster_summary(cluster)
+        cluster_reason = f"resource batch cluster; facet={cluster.facet}; segments={len(cluster.candidates)}"
+        if subject != "general" and not parent_node_ids:
+            pending_label = SUBJECT_LABELS.get(subject, subject.title())
+            cluster_summary = f"{cluster_summary}；pending_subject_root={pending_label}"
+            cluster_reason = f"{cluster_reason}; pending_subject_root={pending_label}"
+
         proposal = backend.create_graph_proposal_from_resource(
             title=cluster.title,
-            summary=_build_cluster_summary(cluster),
+            summary=cluster_summary,
             tags=[f"subject:{cluster.subject}", f"facet:{cluster.facet}"],
             parent_node_ids=parent_node_ids,
             edge_type=cluster.edge_type,
-            reason=f"resource batch cluster; facet={cluster.facet}; segments={len(cluster.candidates)}",
+            reason=cluster_reason,
         )
         proposals.append(proposal)
         for candidate in cluster.candidates:
-            segment = segments[candidate.segment_index]
-            segment.status = "proposed"
-            segment.decision = "propose"
-            segment.proposal_id = proposal.proposal_id
-            segment.proposed_topic_title = cluster.title
+            _attach_segment_to_existing_proposal(
+                segments[candidate.segment_index],
+                proposal_id=proposal.proposal_id,
+                proposal_title=cluster.title,
+            )
 
     proposed_indexes = {candidate.segment_index for cluster in clusters for candidate in cluster.candidates}
     for index, segment in enumerate(segments):
@@ -340,6 +381,12 @@ def _clean_title(title: str) -> str:
 
 def _normalize_english_candidate_title(title: str, *, facet: str, full_text: str) -> str | None:
     if facet == "grammar":
+        if re.search(r"\b(present continuous|be\s+doing)\b", full_text):
+            return "现在进行时"
+        if re.search(r"\b(simple past)\b", full_text):
+            return "一般过去时"
+        if re.search(r"\b(simple present)\b", full_text):
+            return "一般现在时"
         if "现在进行时" in full_text:
             return "现在进行时"
         if "一般过去时" in full_text:
@@ -417,8 +464,12 @@ def _is_english_grammar(text: str) -> bool:
 
 
 def _is_english_vocabulary(text: str) -> bool:
-    markers = ("词汇", "单词", "动物", "食物", "天气", "颜色", "家庭", "规则")
-    return any(marker in text for marker in markers)
+    markers = ("词汇", "单词", "vocabulary", "动物词汇", "食物词汇", "天气词汇", "规则词汇", "颜色词汇", "家庭词汇")
+    if any(marker in text for marker in markers):
+        return True
+    return bool(
+        re.search(r"\b(sunny|rainy|cloudy|windy|weather|tiger|lion|elephant|giraffe|animal|animals|food|rice|bread|apple|milk)\b", text)
+    )
 
 
 def _is_english_phonics(text: str) -> bool:
@@ -481,9 +532,7 @@ def _select_parent_node_ids(*, subject: str, topics: list[TopicNode], default_to
 
     if default_topic_id:
         default_topic = next((topic for topic in topics if topic.topic_id == default_topic_id), None)
-        if default_topic is not None and (
-            _infer_topic_subject(default_topic) == subject or subject in {"general", "math", "science", "physics", "chemistry", "biology"}
-        ):
+        if default_topic is not None and _infer_topic_subject(default_topic) == subject and _is_root_like_topic(default_topic, subject):
             return [default_topic_id]
     return []
 
@@ -505,3 +554,108 @@ def _should_create_subject_root(*, subject: str, topics: list[TopicNode], backen
         if proposal.title.strip() == root_title and f"subject:{subject}" in getattr(proposal, "tags", []):
             return False
     return True
+
+
+def _is_activity_dominant_english_candidate(*, title: str, text: str) -> bool:
+    has_activity_title = any(marker in title for marker in ENGLISH_ACTIVITY_TITLE_MARKERS)
+    if re.search(r"(设计|制定|制作|画).*(动物园|地图|海报|班级规则)", title):
+        has_activity_title = True
+    if re.search(r"^(如何|怎样|怎么).*(设计|制定|制作|画)", title):
+        has_activity_title = True
+    if not has_activity_title and any(marker in text for marker in ENGLISH_ACTIVITY_MARKERS):
+        has_activity_title = any(token in title for token in ("activity", "project", "role", "design", "规则", "动物园", "地图", "海报"))
+    if not has_activity_title:
+        return False
+    return not _has_english_substantive_markers(text)
+
+
+def _has_english_substantive_markers(text: str) -> bool:
+    return any(
+        checker(text)
+        for checker in (
+            _is_english_grammar,
+            _is_english_phonics,
+            _is_english_function,
+            _is_english_vocabulary,
+            _is_english_reading,
+            _is_english_writing,
+        )
+    )
+
+
+def _build_existing_match_maps(
+    *,
+    topics: list[TopicNode],
+    proposals: list[GraphProposalRecord],
+) -> tuple[dict[tuple[str, str, str], TopicNode], dict[tuple[str, str, str], GraphProposalRecord]]:
+    topic_map: dict[tuple[str, str, str], TopicNode] = {}
+    for topic in topics:
+        subject = _infer_topic_subject(topic)
+        facet = _infer_topic_facet(topic.title, getattr(topic, "tags", []), subject=subject)
+        normalized = normalize_candidate_title(topic.title, subject=subject, facet=facet or "general", text="")
+        if not normalized:
+            continue
+        topic_map.setdefault((subject, facet or "general", normalized), topic)
+
+    proposal_map: dict[tuple[str, str, str], GraphProposalRecord] = {}
+    reusable_statuses = {"proposed", "validated", "shadow"}
+    for proposal in proposals:
+        if proposal.status not in reusable_statuses:
+            continue
+        subject = _subject_from_tags(getattr(proposal, "tags", []))
+        facet = _facet_from_tags(getattr(proposal, "tags", []))
+        if subject is None:
+            subject = "general"
+        if facet is None:
+            facet = _infer_topic_facet(proposal.title, getattr(proposal, "tags", []), subject=subject) or "general"
+        normalized = normalize_candidate_title(proposal.title, subject=subject, facet=facet, text="")
+        if not normalized:
+            continue
+        proposal_map.setdefault((subject, facet, normalized), proposal)
+    return topic_map, proposal_map
+
+
+def _infer_topic_facet(title: str, tags: list[str], *, subject: str) -> str | None:
+    facet = _facet_from_tags(tags)
+    if facet is not None:
+        return facet
+    if subject == "english":
+        kind = classify_candidate_kind(title, "", subject=subject)
+        return kind.facet if kind.include else None
+    if subject in {"math", "science", "physics", "chemistry", "biology"}:
+        return "concept"
+    if subject == "general":
+        return "general"
+    return None
+
+
+def _subject_from_tags(tags: list[str]) -> str | None:
+    for tag in tags:
+        if tag.startswith("subject:"):
+            return tag.split(":", 1)[1]
+    return None
+
+
+def _facet_from_tags(tags: list[str]) -> str | None:
+    for tag in tags:
+        if tag.startswith("facet:"):
+            return tag.split(":", 1)[1]
+    return None
+
+
+def _link_segment_to_existing_topic(segment: ResourceSegment, *, topic_id: str) -> None:
+    segment.status = "classified"
+    segment.decision = "link"
+    segment.topic_id = topic_id
+    segment.proposal_id = None
+    segment.proposed_topic_title = None
+    segment.reason = "matched existing topic via resource curation"
+    segment.confidence = max(segment.confidence, 0.75)
+
+
+def _attach_segment_to_existing_proposal(segment: ResourceSegment, *, proposal_id: str, proposal_title: str) -> None:
+    segment.status = "proposed"
+    segment.decision = "propose"
+    segment.topic_id = None
+    segment.proposal_id = proposal_id
+    segment.proposed_topic_title = proposal_title

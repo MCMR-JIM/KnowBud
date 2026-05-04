@@ -195,7 +195,8 @@ def test_upload_txt_ingests_segments_and_records_events(monkeypatch, tmp_path: P
     assert proposal["trigger"] == "resource_ingest"
     assert proposal["tags"][0].startswith("subject:")
     assert proposal["tags"][1].startswith("facet:")
-    assert proposal["parent_node_ids"] == ["demo_01"]
+    assert proposal["parent_node_ids"] == []
+    assert "pending_subject_root=" in proposal["summary"]
     assert proposal["edge_type"] in {"requires", "related"}
     assert proposal["status"] == "proposed"
 
@@ -205,7 +206,7 @@ def test_upload_txt_ingests_segments_and_records_events(monkeypatch, tmp_path: P
     assert proposal_record.status == "proposed"
     assert proposal_record.tags[0].startswith("subject:")
     assert proposal_record.tags[1].startswith("facet:")
-    assert proposal_record.parent_node_ids == ["demo_01"]
+    assert proposal_record.parent_node_ids == []
 
 
 def test_document_ingestion_marks_null_and_low_confidence_as_unclassified(tmp_path: Path) -> None:
@@ -443,7 +444,7 @@ def test_document_ingestion_cleans_invalid_parent_ids_with_default_parent(tmp_pa
 
     state = backend.load_app_state(include_history=False)
     proposal = next(rec for rec in state.learning.graph_proposals if rec.proposal_id == segments[0].proposal_id)
-    assert proposal.parent_node_ids == ["demo_01"]
+    assert proposal.parent_node_ids == []
 
 
 def test_approve_resource_proposal_creates_topic_and_relinks_segments(monkeypatch, tmp_path: Path) -> None:
