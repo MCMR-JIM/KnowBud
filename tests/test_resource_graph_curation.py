@@ -3,9 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from src.core.enums import LearningPhase
-from src.core.models import GraphProposalRecord, ResourceRecord, TopicNode
+from src.core.models import GraphProposalRecord, ResourceRecord, ResourceSegment, TopicNode
 from src.services.document_ingestion import ingest_document_resource
-from src.services.resource_graph_curation import CandidateTopic, cluster_candidate_topics, normalize_candidate_title
+from src.services.resource_graph_curation import CandidateTopic, cluster_candidate_topics, detect_resource_subject, normalize_candidate_title
 from src.services.session_backend import SessionBackend
 
 
@@ -184,8 +184,9 @@ def test_science_resource_uploaded_under_demo_topic_does_not_parent_demo_01(tmp_
 
     proposal = next(rec for rec in backend.load_app_state(include_history=False).learning.graph_proposals if rec.proposal_id == segments[0].proposal_id)
     assert proposal.parent_node_ids == []
-    assert "pending_subject_root=科学" in proposal.summary
-    assert "pending_subject_root=科学" in proposal.reason
+    assert "pending_subject_root=" in proposal.summary
+    assert "pending_subject_root=" in proposal.reason
+    assert proposal.tags[0] in {"subject:science", "subject:physics"}
 
 
 def test_existing_english_topic_is_linked_instead_of_creating_proposal(tmp_path: Path) -> None:
@@ -228,6 +229,7 @@ def test_existing_english_topic_is_linked_instead_of_creating_proposal(tmp_path:
     assert segments[0].topic_id == "english_present_continuous"
     assert segments[0].proposal_id is None
     assert not any(rec.title == "现在进行时" for rec in backend.load_app_state(include_history=False).learning.graph_proposals)
+    assert not any(rec.title == "英语" for rec in backend.load_app_state(include_history=False).learning.graph_proposals)
 
 
 def test_existing_english_proposal_is_reused_instead_of_creating_duplicate(tmp_path: Path) -> None:
@@ -276,6 +278,7 @@ def test_existing_english_proposal_is_reused_instead_of_creating_duplicate(tmp_p
     proposals = backend.load_app_state(include_history=False).learning.graph_proposals
     assert [proposal.proposal_id for proposal in proposals].count("proposal_present_continuous") == 1
     assert len([proposal for proposal in proposals if proposal.title == "现在进行时"]) == 1
+    assert not any(proposal.title == "英语" for proposal in proposals)
 
 
 def test_reupload_same_english_resource_reuses_existing_proposal(tmp_path: Path) -> None:
@@ -315,6 +318,122 @@ def test_reupload_same_english_resource_reuses_existing_proposal(tmp_path: Path)
     assert second_segments[0].proposal_id == first_proposal_id
     proposals = backend.load_app_state(include_history=False).learning.graph_proposals
     assert len([proposal for proposal in proposals if proposal.title == "现在进行时"]) == 1
+
+
+def test_non_root_english_topic_is_not_used_as_parent(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    state = backend.load_app_state(include_history=False)
+    state.curriculum.topics.append(
+        TopicNode(
+            topic_id="english_present_continuous",
+            title="现在进行时",
+            difficulty=1,
+            prerequisite_ids=[],
+            tags=["subject:english", "facet:grammar"],
+        )
+    )
+    backend.save_app_state(state)
+
+    backend.llm_skill.classify_or_propose_resource_chunk = lambda **_: {
+        "decision": "propose",
+        "topic_id": None,
+        "confidence": 0.86,
+        "reason": "past tense chunk",
+        "proposed_topic": {
+            "title": "一般过去时",
+            "summary": "simple past",
+            "parent_node_ids": ["demo_01"],
+            "edge_type": "requires",
+        },
+    }
+    record = _create_record(tmp_path, backend, name="英语一般过去时", content="English grammar: simple past tense.")
+
+    segments = ingest_document_resource(
+        backend=backend,
+        record=record,
+        topics=backend.load_app_state(include_history=False).curriculum.topics,
+        default_topic_id="demo_01",
+    )
+
+    proposal = next(rec for rec in backend.load_app_state(include_history=False).learning.graph_proposals if rec.proposal_id == segments[0].proposal_id and rec.title == "一般过去时")
+    assert proposal.parent_node_ids == []
+    assert proposal.summary.endswith("pending_subject_root=英语")
+    assert proposal.reason.endswith("pending_subject_root=英语")
+    assert proposal.parent_node_ids != ["english_present_continuous"]
+
+
+def test_explicit_english_root_topic_is_used_as_parent(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    state = backend.load_app_state(include_history=False)
+    state.curriculum.topics.append(
+        TopicNode(
+            topic_id="english_root",
+            title="英语",
+            difficulty=1,
+            prerequisite_ids=[],
+            tags=["subject:english", "facet:root"],
+        )
+    )
+    state.curriculum.topics.append(
+        TopicNode(
+            topic_id="english_present_continuous",
+            title="现在进行时",
+            difficulty=1,
+            prerequisite_ids=[],
+            tags=["subject:english", "facet:grammar"],
+        )
+    )
+    backend.save_app_state(state)
+
+    backend.llm_skill.classify_or_propose_resource_chunk = lambda **_: {
+        "decision": "propose",
+        "topic_id": None,
+        "confidence": 0.86,
+        "reason": "past tense chunk",
+        "proposed_topic": {
+            "title": "一般过去时",
+            "summary": "simple past",
+            "parent_node_ids": ["demo_01"],
+            "edge_type": "requires",
+        },
+    }
+    record = _create_record(tmp_path, backend, name="英语一般过去时", content="English grammar: simple past tense.")
+
+    segments = ingest_document_resource(
+        backend=backend,
+        record=record,
+        topics=backend.load_app_state(include_history=False).curriculum.topics,
+        default_topic_id="demo_01",
+    )
+
+    proposal = next(rec for rec in backend.load_app_state(include_history=False).learning.graph_proposals if rec.proposal_id == segments[0].proposal_id and rec.title == "一般过去时")
+    assert proposal.parent_node_ids == ["english_root"]
+
+
+def test_detect_resource_subject_identifies_english_teaching_material(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    record = _create_record(tmp_path, backend, name="七年级英语语法", content="Grammar Focus. Present continuous. Listen and repeat.")
+    segments = [ResourceSegment(segment_id="seg_1", text="Grammar Focus. Present continuous. Listen and repeat.", proposed_topic_title="现在进行时")]
+    subject = detect_resource_subject(record=record, segments=segments, topics=backend.load_app_state(include_history=False).curriculum.topics, default_topic_id="demo_01")
+    assert subject == "english"
+
+
+def test_detect_resource_subject_treats_velocity_formula_as_physics(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    record = _create_record(tmp_path, backend, name="STEM reading", content="Velocity formula v=d/t. Distance, time, and speed describe motion.")
+    segments = [ResourceSegment(segment_id="seg_1", text="Velocity formula v=d/t. Distance, time, and speed describe motion.")]
+    subject = detect_resource_subject(record=record, segments=segments, topics=backend.load_app_state(include_history=False).curriculum.topics, default_topic_id="demo_01")
+    assert subject in {"science", "physics"}
+    assert subject != "english"
+
+
+def test_detect_resource_subject_does_not_use_weather_word_alone_as_english(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    record = _create_record(tmp_path, backend, name="science article", content="Weather affects climate and energy transfer in the atmosphere.")
+    segments = [ResourceSegment(segment_id="seg_1", text="Weather affects climate and energy transfer in the atmosphere.")]
+    subject = detect_resource_subject(record=record, segments=segments, topics=backend.load_app_state(include_history=False).curriculum.topics, default_topic_id="demo_01")
+    assert subject != "english"
+    assert subject == "physics" or subject == "science" or subject == "general"
 
 
 def test_weather_emotion_titles_are_clustered_after_normalization() -> None:

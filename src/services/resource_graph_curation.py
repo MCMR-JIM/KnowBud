@@ -64,6 +64,8 @@ ENGLISH_ACTIVITY_TITLE_MARKERS = (
     "制定班级规则",
 )
 
+ROOT_MARKER_TAGS = {"facet:root", "subject_root", "graph:root"}
+
 
 @dataclass
 class CandidateKind:
@@ -104,6 +106,8 @@ def detect_resource_subject(
     default_topic_id: str | None = None,
 ) -> str:
     topic_map = {topic.topic_id: topic for topic in topics}
+    resource_name = (record.resource_name or "").lower()
+    filename = (record.original_filename or "").lower()
     text = "\n".join(
         filter(
             None,
@@ -116,16 +120,56 @@ def detect_resource_subject(
         )
     ).lower()
 
-    english_markers = (
-        "英语",
-        "english",
+    if any(marker in resource_name or marker in filename for marker in ("英语", "english")):
+        return "english"
+
+    math_markers = ("数学", "方程", "函数", "几何", "分数", "加法", "减法", "乘法", "除法", "equation", "geometry", "algebra")
+    if any(marker in text for marker in math_markers):
+        return "math"
+
+    physics_markers = ("物理", "velocity", "distance", "time", "speed", "force", "energy", "acceleration", "motion")
+    if any(marker in text for marker in physics_markers):
+        return "physics"
+
+    science_markers = (
+        "科学",
+        "生物",
+        "化学",
+        "实验",
+        "细胞",
+        "力",
+        "能量",
+        "公式",
+        "定律",
+        "formula",
+        "cell",
+        "cells",
+        "experiment",
+        "ecosystem",
+        "matter",
+    )
+    if any(marker in text for marker in science_markers):
+        return "science"
+
+    english_teaching_markers = (
         "grammar",
         "vocabulary",
         "phonics",
+        "pronunciation",
+        "reading comprehension",
+        "guided writing",
+        "listen and repeat",
         "role-play",
-        "weather",
-        "story",
+        "role play",
+        "grammar focus",
+    )
+    if any(marker in text for marker in english_teaching_markers):
+        return "english"
+
+    english_language_markers = (
         "present continuous",
+        "simple past",
+        "simple present",
         "一般现在时",
         "一般过去时",
         "现在进行时",
@@ -137,16 +181,9 @@ def detect_resource_subject(
         "写作",
         "打电话",
     )
-    if any(marker in text for marker in english_markers):
+    english_marker_count = sum(1 for marker in english_language_markers if marker in text)
+    if english_marker_count >= 2:
         return "english"
-
-    math_markers = ("数学", "方程", "函数", "几何", "分数", "加法", "减法", "乘法", "除法")
-    if any(marker in text for marker in math_markers):
-        return "math"
-
-    science_markers = ("科学", "生物", "物理", "化学", "实验", "细胞", "力", "能量", "公式", "定律")
-    if any(marker in text for marker in science_markers):
-        return "science"
 
     for topic_id in filter(None, [record.topic_id, default_topic_id]):
         topic = topic_map.get(topic_id)
@@ -290,8 +327,13 @@ def create_resource_level_proposals(
 
     parent_node_ids = _select_parent_node_ids(subject=subject, topics=topics, default_topic_id=default_topic_id)
     proposals: list[GraphProposalRecord] = []
+    needs_new_content_proposal = any(
+        topic_map.get((cluster.subject, cluster.facet, cluster.title)) is None
+        and proposal_map.get((cluster.subject, cluster.facet, cluster.title)) is None
+        for cluster in clusters
+    )
 
-    if subject != "general" and not parent_node_ids and _should_create_subject_root(subject=subject, topics=topics, backend=backend):
+    if subject != "general" and needs_new_content_proposal and not parent_node_ids and _should_create_subject_root(subject=subject, topics=topics, backend=backend):
         root_title = SUBJECT_LABELS.get(subject, subject.title())
         proposals.append(
             backend.create_graph_proposal_from_resource(
@@ -542,18 +584,26 @@ def _is_root_like_topic(topic: TopicNode, subject: str) -> bool:
     subject_label = SUBJECT_LABELS.get(subject, "").lower()
     if title == subject_label:
         return True
-    return f"subject:{subject}" in topic.tags and len(topic.prerequisite_ids) == 0
+    return any(tag in ROOT_MARKER_TAGS for tag in topic.tags)
 
 
 def _should_create_subject_root(*, subject: str, topics: list[TopicNode], backend: "SessionBackend") -> bool:
     if any(_infer_topic_subject(topic) == subject and _is_root_like_topic(topic, subject) for topic in topics):
         return False
     state = backend.load_app_state(include_history=False)
-    root_title = SUBJECT_LABELS.get(subject, subject.title())
     for proposal in state.learning.graph_proposals:
-        if proposal.title.strip() == root_title and f"subject:{subject}" in getattr(proposal, "tags", []):
+        if _is_root_like_proposal(proposal, subject=subject):
             return False
     return True
+
+
+def _is_root_like_proposal(proposal: GraphProposalRecord, *, subject: str) -> bool:
+    title = proposal.title.strip().lower()
+    subject_label = SUBJECT_LABELS.get(subject, "").lower()
+    if title == subject_label:
+        return True
+    tags = getattr(proposal, "tags", [])
+    return any(tag in ROOT_MARKER_TAGS for tag in tags) and f"subject:{subject}" in tags
 
 
 def _is_activity_dominant_english_candidate(*, title: str, text: str) -> bool:
