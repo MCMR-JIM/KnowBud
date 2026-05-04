@@ -1115,6 +1115,7 @@ def _proposal_info(record) -> ProposalInfo:
         title=record.title,
         summary=record.summary,
         trigger=record.trigger,
+        tags=list(getattr(record, "tags", [])),
         parent_node_ids=list(record.parent_node_ids),
         edge_type=record.edge_type,
         status=record.status,

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 from src.core.models import ResourceRecord, ResourceSegment, TopicNode
+from src.services.resource_graph_curation import create_resource_level_proposals
 
 if TYPE_CHECKING:
     from src.services.session_backend import SessionBackend
@@ -103,6 +104,14 @@ def ingest_document_resource(
                 default_topic_id=default_topic_id or record.topic_id,
             )
         )
+
+    create_resource_level_proposals(
+        backend=backend,
+        record=record,
+        segments=segments,
+        topics=topics,
+        default_topic_id=default_topic_id or record.topic_id,
+    )
 
     backend.replace_resource_segments(record.resource_id, segments)
     return segments
@@ -303,7 +312,6 @@ def _classify_chunk(
     default_topic_id: str | None,
 ) -> ResourceSegment:
     text = chunk.text.strip()
-    status = "unclassified"
     normalized = {
         "decision": "unclassified",
         "topic_id": None,
@@ -313,7 +321,6 @@ def _classify_chunk(
         "guiding_question": "",
         "teaching_hint": "",
     }
-    proposal_id: str | None = None
     proposed_topic_title: str | None = None
 
     try:
@@ -327,26 +334,7 @@ def _classify_chunk(
             if normalized["decision"] == "propose":
                 proposed_topic = normalized["proposed_topic"]
                 if isinstance(proposed_topic, dict):
-                    try:
-                        proposal = backend.create_graph_proposal_from_resource(
-                            title=str(proposed_topic["title"]),
-                            summary=str(proposed_topic.get("summary", "")),
-                            parent_node_ids=[str(item) for item in proposed_topic.get("parent_node_ids", [])],
-                            edge_type=str(proposed_topic.get("edge_type", "requires")),
-                            reason=str(normalized["reason"]),
-                        )
-                        proposal_id = proposal.proposal_id
-                        proposed_topic_title = proposal.title
-                    except Exception:
-                        normalized = {
-                            "decision": "unclassified",
-                            "topic_id": None,
-                            "confidence": float(normalized["confidence"]),
-                            "reason": str(normalized["reason"]),
-                            "proposed_topic": None,
-                            "guiding_question": str(normalized.get("guiding_question", "")),
-                            "teaching_hint": str(normalized.get("teaching_hint", "")),
-                        }
+                    proposed_topic_title = str(proposed_topic.get("title", "")).strip() or None
     except Exception as exc:
         normalized = {
             "decision": "unclassified",
@@ -360,11 +348,10 @@ def _classify_chunk(
 
     if normalized["decision"] == "link" and normalized["topic_id"]:
         status = "classified"
-    elif normalized["decision"] == "propose" and proposal_id:
-        status = "proposed"
+    elif normalized["decision"] == "propose" and proposed_topic_title:
+        status = "unclassified"
     else:
         status = "unclassified"
-        proposal_id = None
         proposed_topic_title = None
 
     return ResourceSegment(
@@ -377,7 +364,7 @@ def _classify_chunk(
         text=text,
         locator=dict(chunk.locator),
         topic_id=str(normalized["topic_id"]) if normalized["topic_id"] is not None else None,
-        proposal_id=proposal_id,
+        proposal_id=None,
         proposed_topic_title=proposed_topic_title,
         decision=str(normalized["decision"]),
         confidence=float(normalized["confidence"]),

@@ -43,6 +43,7 @@ class ProposalInfo(BaseModel):
     title: str
     summary: str = ""
     trigger: str
+    tags: list[str] = Field(default_factory=list)
     parent_node_ids: list[str] = Field(default_factory=list)
     edge_type: str = "requires"
     status: str

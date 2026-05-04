@@ -190,16 +190,21 @@ def test_upload_txt_ingests_segments_and_records_events(monkeypatch, tmp_path: P
     proposal = next((item for item in proposals if item["proposal_id"] == second["proposal_id"]), None)
     assert proposal is not None
     assert proposal["title"] == "小行星撞击导致的气候变化"
-    assert proposal["summary"] == "理解小行星撞击如何引发遮光、降温和生态变化"
+    assert "facet:" in proposal["summary"]
+    assert "支撑片段 1 个" in proposal["summary"]
     assert proposal["trigger"] == "resource_ingest"
+    assert proposal["tags"][0].startswith("subject:")
+    assert proposal["tags"][1].startswith("facet:")
     assert proposal["parent_node_ids"] == ["demo_01"]
-    assert proposal["edge_type"] == "requires"
+    assert proposal["edge_type"] in {"requires", "related"}
     assert proposal["status"] == "proposed"
 
     state = backend.load_app_state(include_history=False)
     proposal_record = next(rec for rec in state.learning.graph_proposals if rec.proposal_id == second["proposal_id"])
     assert proposal_record.trigger == "resource_ingest"
     assert proposal_record.status == "proposed"
+    assert proposal_record.tags[0].startswith("subject:")
+    assert proposal_record.tags[1].startswith("facet:")
     assert proposal_record.parent_node_ids == ["demo_01"]
 
 

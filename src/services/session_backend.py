@@ -267,6 +267,7 @@ class SessionBackend:
         *,
         title: str,
         summary: str,
+        tags: list[str] | None = None,
         parent_node_ids: list[str],
         edge_type: str,
         reason: str,
@@ -279,6 +280,7 @@ class SessionBackend:
             trigger="resource_ingest",
             title=title.strip(),
             summary=summary.strip(),
+            tags=list(dict.fromkeys(tags or [])),
             parent_node_ids=list(parent_node_ids),
             edge_type=EdgeType(safe_edge_type),
             reason=reason[:80],
@@ -319,6 +321,7 @@ class SessionBackend:
         approved_edge_type = edge_type if edge_type in {"requires", "supports", "related"} else proposal.edge_type
         if approved_edge_type not in {"requires", "supports", "related"}:
             approved_edge_type = "requires"
+        approved_tags = list(dict.fromkeys([*proposal.tags, *(tags or [])]))
 
         created_topic_id = proposal.created_topic_id
         topic = next((item for item in state.curriculum.topics if item.topic_id == created_topic_id), None) if created_topic_id else None
@@ -329,7 +332,7 @@ class SessionBackend:
                 title=approved_title,
                 difficulty=max(1, min(5, difficulty)),
                 prerequisite_ids=approved_parents if approved_edge_type == "requires" else [],
-                tags=list(dict.fromkeys([*(tags or []), "resource-approved", "active"])),
+                tags=list(dict.fromkeys([*approved_tags, "resource-approved", "active"])),
             )
             state.curriculum.topics.append(topic)
             state.learning.mastery_map.setdefault(created_topic_id, NodeMastery(mastery_state="unknown"))
@@ -338,10 +341,11 @@ class SessionBackend:
             topic.difficulty = max(1, min(5, difficulty))
             if approved_edge_type == "requires":
                 topic.prerequisite_ids = approved_parents
-            topic.tags = list(dict.fromkeys([*topic.tags, *(tags or []), "resource-approved", "active"]))
+            topic.tags = list(dict.fromkeys([*topic.tags, *approved_tags, "resource-approved", "active"]))
 
         proposal.title = approved_title
         proposal.summary = approved_summary
+        proposal.tags = approved_tags
         proposal.parent_node_ids = approved_parents
         proposal.edge_type = approved_edge_type
         proposal.created_topic_id = created_topic_id
@@ -820,6 +824,11 @@ class SessionBackend:
         target_status = proposal.status.value
         for rec in state.learning.graph_proposals:
             if rec.proposal_id == proposal.proposal_id:
+                rec.title = proposal.title
+                rec.summary = proposal.summary
+                rec.tags = list(dict.fromkeys(proposal.tags))
+                rec.parent_node_ids = list(proposal.parent_node_ids)
+                rec.edge_type = proposal.edge_type.value
                 self._transition_proposal_record(rec, to_status=target_status, reason=proposal.reason)
                 rec.reason = proposal.reason
                 rec.created_topic_id = proposal.created_topic_id
@@ -832,6 +841,7 @@ class SessionBackend:
                 title=proposal.title,
                 summary=proposal.summary,
                 trigger=proposal.trigger,
+                tags=list(dict.fromkeys(proposal.tags)),
                 parent_node_ids=list(proposal.parent_node_ids),
                 edge_type=proposal.edge_type.value,
                 status=target_status,
