@@ -1,5 +1,6 @@
 services:
   tts:
+    build: ./    # 🌟 新增这一行，告诉 Docker 本地构建镜像
     image: looptutor/edge-tts-service:latest
     container_name: local-edge-tts
     ports:
@@ -9,7 +10,8 @@ services:
     restart: unless-stopped
 
   asr:
-    image: onerahmet/openai-whisper-asr-webservice:latest
+    # asr 服务是从公网拉取的，不用改
+    image: onerahmet/openai-whisper-asr-webservice:latest 
     container_name: local-whisper-asr
     ports:
       - "9000:9000"
