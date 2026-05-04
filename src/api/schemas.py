@@ -181,6 +181,8 @@ class ResourceInfo(BaseModel):
     resource_url: str
     size_bytes: int
     created_ts: str
+    ingestion_status: str = "pending"
+    ingestion_error: Optional[str] = None
     segments: list[ResourceSegmentInfo] = Field(default_factory=list)
 
 
@@ -221,6 +223,17 @@ class TopicTeachingCueListResponse(BaseModel):
 class ResourceSegmentListResponse(BaseModel):
     resource_id: str
     segments: list[ResourceSegmentInfo] = Field(default_factory=list)
+
+
+class ResourceIngestionStatusResponse(BaseModel):
+    resource_id: str
+    status: str
+    segment_count: int = 0
+    classified_count: int = 0
+    proposed_count: int = 0
+    unclassified_count: int = 0
+    parse_failed_count: int = 0
+    error: Optional[str] = None
 
 
 class CreateSessionRequest(BaseModel):

@@ -28,6 +28,7 @@ def ingest_document_resource(
     record: ResourceRecord,
     topics: list[TopicNode],
     default_topic_id: str | None = None,
+    progress_callback: Callable[[str, dict[str, object]], None] | None = None,
 ) -> list[ResourceSegment]:
     parser = _select_parser(record)
     if parser is None:
@@ -59,6 +60,15 @@ def ingest_document_resource(
         return segments
 
     chunks = _units_to_chunks(units)
+    if progress_callback is not None:
+        progress_callback(
+            "document_parsed",
+            {
+                "resource_id": record.resource_id,
+                "chunk_count": len(chunks),
+                "media_type": record.media_type,
+            },
+        )
     if not chunks:
         segments = [
             _status_segment(
@@ -74,6 +84,15 @@ def ingest_document_resource(
 
     segments: list[ResourceSegment] = []
     for index, chunk in enumerate(chunks):
+        if progress_callback is not None:
+            progress_callback(
+                "chunk_classification_progress",
+                {
+                    "resource_id": record.resource_id,
+                    "current": index + 1,
+                    "total": len(chunks),
+                },
+            )
         segments.append(
             _classify_chunk(
                 backend=backend,

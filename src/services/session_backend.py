@@ -144,6 +144,9 @@ class SessionBackend:
         original_filename: str,
         stored_path: str,
         size_bytes: int,
+        ingestion_status: str = "pending",
+        ingestion_error: str | None = None,
+        segments: list[ResourceSegment] | None = None,
     ) -> ResourceRecord:
         record = ResourceRecord(
             resource_id=f"res_{int(time.time() * 1000)}",
@@ -156,7 +159,11 @@ class SessionBackend:
             stored_path=stored_path,
             size_bytes=size_bytes,
             created_ts=datetime.datetime.now(timezone.utc).isoformat(),
-            segments=[
+            ingestion_status=ingestion_status,
+            ingestion_error=ingestion_error,
+            segments=segments
+            if segments is not None
+            else [
                 ResourceSegment(
                     segment_id="seg_full",
                     start_ms=0,
@@ -171,6 +178,21 @@ class SessionBackend:
             self._insert_resource_row(conn, record)
         return record
 
+    def update_resource_ingestion(
+        self,
+        resource_id: str,
+        *,
+        status: str,
+        error: str | None = None,
+    ) -> None:
+        with self._db_connection() as conn:
+            self._ensure_storage_initialized(conn)
+            conn.execute(
+                "UPDATE resource_library SET ingestion_status = ?, ingestion_error = ? WHERE resource_id = ?",
+                (status, error, resource_id),
+            )
+            conn.commit()
+
     def list_resources_by_topic(self, topic_id: str) -> list[ResourceRecord]:
         return self.list_resources_related_to_topic(topic_id)
 
@@ -180,7 +202,7 @@ class SessionBackend:
             rows = conn.execute(
                 """
                 SELECT resource_id, topic_id, resource_name, category, media_type, mime_type,
-                       original_filename, stored_path, size_bytes, created_ts, segments_json
+                       original_filename, stored_path, size_bytes, created_ts, ingestion_status, ingestion_error, segments_json
                 FROM resource_library
                 WHERE resource_id IN (
                     SELECT DISTINCT r.resource_id
@@ -200,7 +222,7 @@ class SessionBackend:
             row = conn.execute(
                 """
                 SELECT resource_id, topic_id, resource_name, category, media_type, mime_type,
-                       original_filename, stored_path, size_bytes, created_ts, segments_json
+                       original_filename, stored_path, size_bytes, created_ts, ingestion_status, ingestion_error, segments_json
                 FROM resource_library
                 WHERE resource_id = ?
                 """,
@@ -233,7 +255,7 @@ class SessionBackend:
             rows = conn.execute(
                 """
                 SELECT resource_id, topic_id, resource_name, category, media_type, mime_type,
-                       original_filename, stored_path, size_bytes, created_ts, segments_json
+                       original_filename, stored_path, size_bytes, created_ts, ingestion_status, ingestion_error, segments_json
                 FROM resource_library
                 ORDER BY created_ts DESC, resource_id DESC
                 """
@@ -1051,6 +1073,8 @@ class SessionBackend:
                 stored_path TEXT NOT NULL,
                 size_bytes INTEGER NOT NULL,
                 created_ts TEXT NOT NULL,
+                ingestion_status TEXT NOT NULL DEFAULT 'pending',
+                ingestion_error TEXT,
                 segments_json TEXT NOT NULL
             )
             """
@@ -1089,6 +1113,7 @@ class SessionBackend:
             """
         )
         self._ensure_resource_segment_columns(conn)
+        self._ensure_resource_library_columns(conn)
         conn.commit()
 
     @staticmethod
@@ -1108,6 +1133,18 @@ class SessionBackend:
             conn.execute("ALTER TABLE resource_segments ADD COLUMN guiding_question TEXT")
         if "teaching_hint" not in columns:
             conn.execute("ALTER TABLE resource_segments ADD COLUMN teaching_hint TEXT")
+
+    @staticmethod
+    def _ensure_resource_library_columns(conn: sqlite3.Connection) -> None:
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(resource_library)").fetchall()
+            if row["name"] is not None
+        }
+        if "ingestion_status" not in columns:
+            conn.execute("ALTER TABLE resource_library ADD COLUMN ingestion_status TEXT NOT NULL DEFAULT 'pending'")
+        if "ingestion_error" not in columns:
+            conn.execute("ALTER TABLE resource_library ADD COLUMN ingestion_error TEXT")
 
     def _load_state_row(self, conn: sqlite3.Connection) -> AppState | None:
         row = conn.execute("SELECT state_json FROM app_state WHERE state_id = 1").fetchone()
@@ -1195,9 +1232,9 @@ class SessionBackend:
             """
             INSERT INTO resource_library(
                 resource_id, topic_id, resource_name, category, media_type, mime_type,
-                original_filename, stored_path, size_bytes, created_ts, segments_json
+                original_filename, stored_path, size_bytes, created_ts, ingestion_status, ingestion_error, segments_json
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.resource_id,
@@ -1210,6 +1247,8 @@ class SessionBackend:
                 record.stored_path,
                 record.size_bytes,
                 record.created_ts,
+                record.ingestion_status,
+                record.ingestion_error,
                 json.dumps([segment.model_dump() for segment in record.segments], ensure_ascii=False),
             ),
         )
@@ -1301,6 +1340,8 @@ class SessionBackend:
             stored_path=str(row["stored_path"]),
             size_bytes=int(row["size_bytes"]),
             created_ts=str(row["created_ts"]),
+            ingestion_status=str(row["ingestion_status"] or "pending"),
+            ingestion_error=str(row["ingestion_error"]) if row["ingestion_error"] is not None else None,
             segments=segments,
         )
 

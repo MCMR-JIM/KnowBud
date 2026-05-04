@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 import mimetypes
 import os
 import shutil
@@ -36,6 +37,7 @@ from src.api.schemas import (
     PushReviewResponse,
     ReviewQueueItem,
     ResourceInfo,
+    ResourceIngestionStatusResponse,
     ResourceSegmentListResponse,
     ResourceSegmentInfo,
     ResourceTeachingCueInfo,
@@ -62,6 +64,7 @@ if TYPE_CHECKING:
 API_VERSION = "1.3.0"
 SINGLE_SESSION_ID = "default"
 TURN_EVENT_KIND = "api_turn_completed"
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="LoopTutor Frontend API",
@@ -249,6 +252,52 @@ def get_backend() -> "SessionBackend":
 @lru_cache(maxsize=1)
 def get_runtime() -> SingleSessionRuntime:
     return SingleSessionRuntime()
+
+
+def _start_ingestion_task(target: Callable[[], None]) -> None:
+    thread = threading.Thread(target=target, name="resource-ingestion", daemon=True)
+    thread.start()
+
+
+def _resource_segment_counts(record) -> dict[str, int]:
+    counts = {
+        "segment_count": len(record.segments),
+        "classified_count": 0,
+        "proposed_count": 0,
+        "unclassified_count": 0,
+        "parse_failed_count": 0,
+        "unsupported_count": 0,
+    }
+    for segment in record.segments:
+        if segment.status == "classified":
+            counts["classified_count"] += 1
+        elif segment.status == "proposed":
+            counts["proposed_count"] += 1
+        elif segment.status == "unclassified":
+            counts["unclassified_count"] += 1
+        elif segment.status in {"parse_failed", "ingestion_failed"}:
+            counts["parse_failed_count"] += 1
+        elif segment.status == "unsupported":
+            counts["unsupported_count"] += 1
+    return counts
+
+
+def _build_ingestion_failed_segment(resource_id: str, media_type: str, error: str):
+    from src.core.models import ResourceSegment
+
+    return ResourceSegment(
+        segment_id=f"{resource_id}_ingestion_failed_0",
+        start_ms=0,
+        end_ms=None,
+        label="chunk",
+        status="ingestion_failed",
+        sequence_index=0,
+        text=None,
+        locator={"kind": media_type or "unknown"},
+        decision="unclassified",
+        confidence=0.0,
+        reason=f"文档入库失败: {error[:120]}",
+    )
 
 
 @lru_cache(maxsize=1)
@@ -535,17 +584,10 @@ async def upload_resource(
         original_filename=original_name,
         stored_path=str(stored_path.resolve()),
         size_bytes=stored_path.stat().st_size,
+        ingestion_status="processing",
+        ingestion_error=None,
+        segments=[],
     )
-
-    if media_type in {"txt", "pdf", "docx", "pptx", "doc"}:
-        topics = backend.load_app_state(include_history=False).curriculum.topics
-        segments = ingest_document_resource(
-            backend=backend,
-            record=record,
-            topics=topics,
-            default_topic_id=normalized_topic_id,
-        )
-        record = record.model_copy(update={"segments": segments})
 
     runtime = get_runtime()
     if normalized_category == "review":
@@ -565,28 +607,19 @@ async def upload_resource(
             "original_filename": original_name,
             "stored_path": str(stored_path),
             "queued": queued,
+            "ingestion_status": record.ingestion_status,
         },
     )
 
-    if media_type in {"txt", "pdf", "docx", "pptx", "doc"}:
-        classified_count = sum(1 for segment in record.segments if segment.status == "classified")
-        proposed_count = sum(1 for segment in record.segments if segment.status == "proposed")
-        unclassified_count = sum(1 for segment in record.segments if segment.status == "unclassified")
-        parse_failed_count = sum(1 for segment in record.segments if segment.status == "parse_failed")
-        unsupported_count = sum(1 for segment in record.segments if segment.status == "unsupported")
-        backend.append_learning_event(
-            kind="resource_ingested",
-            payload={
-                "resource_id": record.resource_id,
-                "segment_count": len(record.segments),
-                "classified_count": classified_count,
-                "proposed_count": proposed_count,
-                "unclassified_count": unclassified_count,
-                "parse_failed_count": parse_failed_count,
-                "unsupported_count": unsupported_count,
-                "media_type": media_type,
-            },
-        )
+    logger.info(
+        "upload accepted",
+        extra={
+            "resource_id": record.resource_id,
+            "topic_id": normalized_topic_id,
+            "media_type": media_type,
+        },
+    )
+    _start_ingestion_task(lambda: _run_resource_ingestion(resource_id=record.resource_id, default_topic_id=normalized_topic_id))
 
     return ResourceUploadResponse(
         session_id=SINGLE_SESSION_ID,
@@ -594,6 +627,64 @@ async def upload_resource(
         review_queue_size=len(state.learning.review_queue),
         resource=_resource_info(record, topic.title),
     )
+
+
+def _run_resource_ingestion(*, resource_id: str, default_topic_id: str) -> None:
+    backend = get_backend()
+    record = backend.get_resource(resource_id)
+    if record is None:
+        logger.warning("ingestion skipped: resource missing", extra={"resource_id": resource_id})
+        return
+
+    logger.info("ingestion started", extra={"resource_id": resource_id, "media_type": record.media_type})
+
+    def progress(event: str, payload: dict[str, object]) -> None:
+        if event == "document_parsed":
+            logger.info("document parsed chunk count", extra=payload)
+        elif event == "chunk_classification_progress":
+            logger.info("chunk classification progress", extra=payload)
+
+    try:
+        topics = backend.load_app_state(include_history=False).curriculum.topics
+        segments = ingest_document_resource(
+            backend=backend,
+            record=record,
+            topics=topics,
+            default_topic_id=default_topic_id,
+            progress_callback=progress,
+        )
+        backend.update_resource_ingestion(resource_id, status="completed", error=None)
+        updated = backend.get_resource(resource_id)
+        if updated is None:
+            logger.warning("ingestion completed but resource missing", extra={"resource_id": resource_id})
+            return
+        counts = _resource_segment_counts(updated)
+        backend.append_learning_event(
+            kind="resource_ingested",
+            payload={
+                "resource_id": resource_id,
+                "segment_count": counts["segment_count"],
+                "classified_count": counts["classified_count"],
+                "proposed_count": counts["proposed_count"],
+                "unclassified_count": counts["unclassified_count"],
+                "parse_failed_count": counts["parse_failed_count"],
+                "unsupported_count": counts["unsupported_count"],
+                "media_type": record.media_type,
+            },
+        )
+        logger.info(
+            "ingestion completed",
+            extra={"resource_id": resource_id, "segment_count": len(segments), "media_type": record.media_type},
+        )
+    except Exception as exc:
+        error = str(exc)[:500]
+        failure_segments = [_build_ingestion_failed_segment(resource_id, record.media_type, error)]
+        try:
+            backend.replace_resource_segments(resource_id, failure_segments)
+        except Exception:
+            logger.exception("failed to persist ingestion failure segment", extra={"resource_id": resource_id})
+        backend.update_resource_ingestion(resource_id, status="failed", error=error)
+        logger.exception("ingestion failed", extra={"resource_id": resource_id, "media_type": record.media_type})
 
 
 @app.get("/v1/resource/topics/{topic_id}", response_model=TopicResourceListResponse, tags=["resource"])
@@ -609,6 +700,26 @@ def get_topic_resources(topic_id: str) -> TopicResourceListResponse:
         topic_id=topic.topic_id,
         topic_title=topic.title,
         resources=[_resource_info(resource, topic.title) for resource in resources],
+    )
+
+
+@app.get("/v1/resource/{resource_id}/ingestion-status", response_model=ResourceIngestionStatusResponse, tags=["resource"])
+def get_resource_ingestion_status(resource_id: str) -> ResourceIngestionStatusResponse:
+    backend = get_backend()
+    record = backend.get_resource(resource_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"resource_id not found: {resource_id}")
+
+    counts = _resource_segment_counts(record)
+    return ResourceIngestionStatusResponse(
+        resource_id=resource_id,
+        status=record.ingestion_status,
+        segment_count=counts["segment_count"],
+        classified_count=counts["classified_count"],
+        proposed_count=counts["proposed_count"],
+        unclassified_count=counts["unclassified_count"],
+        parse_failed_count=counts["parse_failed_count"],
+        error=record.ingestion_error,
     )
 
 
@@ -1039,6 +1150,8 @@ def _resource_info(record, topic_title: str) -> ResourceInfo:
         resource_url=f"/v1/resource/files/{record.resource_id}",
         size_bytes=record.size_bytes,
         created_ts=record.created_ts,
+        ingestion_status=record.ingestion_status,
+        ingestion_error=record.ingestion_error,
         segments=[_resource_segment_info(segment) for segment in record.segments],
     )
 

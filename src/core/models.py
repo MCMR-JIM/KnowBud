@@ -81,6 +81,8 @@ class ResourceRecord(BaseModel):
     stored_path: str
     size_bytes: int
     created_ts: str
+    ingestion_status: str = "pending"
+    ingestion_error: Optional[str] = None
     segments: list[ResourceSegment] = Field(default_factory=list)
 
 

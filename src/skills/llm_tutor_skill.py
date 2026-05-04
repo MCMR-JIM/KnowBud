@@ -52,10 +52,11 @@ class LLMTutorSkill(BaseSkill):
 
     @staticmethod
     def _build_http_client() -> httpx.Client:
+        timeout = httpx.Timeout(connect=10.0, read=60.0, write=60.0, pool=10.0)
         try:
-            return httpx.Client(trust_env=False)
+            return httpx.Client(timeout=timeout, trust_env=False)
         except TypeError:
-            return httpx.Client()
+            return httpx.Client(timeout=timeout)
 
     # ... 下面的 analyze_session_performance 等方法保持原样不动 ...
 
@@ -272,7 +273,8 @@ class LLMTutorSkill(BaseSkill):
                 response = self.client.chat.completions.create(
                     model=self.model_name,
                     messages=messages,
-                    temperature=0.3 
+                    temperature=0.3,
+                    timeout=60.0,
                 )
                 raw_content = response.choices[0].message.content.strip()
                 

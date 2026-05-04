@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib
+import threading
+import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -38,6 +40,26 @@ def _make_client(monkeypatch, tmp_path: Path, backend: SessionBackend) -> TestCl
     monkeypatch.setattr(app_module, "get_backend", lambda: backend)
     monkeypatch.setattr(app_module, "get_runtime", lambda: runtime)
     return TestClient(app_module.app)
+
+
+def _wait_for_ingestion(
+    client: TestClient,
+    resource_id: str,
+    *,
+    statuses: set[str] | None = None,
+    timeout: float = 5.0,
+) -> dict[str, object]:
+    expected = statuses or {"completed"}
+    deadline = time.time() + timeout
+    last_payload: dict[str, object] | None = None
+    while time.time() < deadline:
+        response = client.get(f"/v1/resource/{resource_id}/ingestion-status")
+        assert response.status_code == 200
+        last_payload = response.json()
+        if str(last_payload["status"]) in expected:
+            return last_payload
+        time.sleep(0.05)
+    raise AssertionError(f"ingestion did not reach {expected}: {last_payload}")
 
 
 def test_upload_txt_ingests_segments_and_records_events(monkeypatch, tmp_path: Path) -> None:
@@ -95,7 +117,26 @@ def test_upload_txt_ingests_segments_and_records_events(monkeypatch, tmp_path: P
     assert response.status_code == 200
     payload = response.json()
     resource = payload["resource"]
-    segments = resource["segments"]
+    assert resource["ingestion_status"] == "processing"
+    assert resource["ingestion_error"] is None
+    assert resource["segments"] == []
+
+    resource_id = resource["resource_id"]
+    status_payload = _wait_for_ingestion(client, resource_id)
+    assert status_payload == {
+        "resource_id": resource_id,
+        "status": "completed",
+        "segment_count": 2,
+        "classified_count": 1,
+        "proposed_count": 1,
+        "unclassified_count": 0,
+        "parse_failed_count": 0,
+        "error": None,
+    }
+
+    segments_response = client.get(f"/v1/resource/{resource_id}/segments")
+    assert segments_response.status_code == 200
+    segments = segments_response.json()["segments"]
     assert len(segments) == 2
 
     first = segments[0]
@@ -121,9 +162,6 @@ def test_upload_txt_ingests_segments_and_records_events(monkeypatch, tmp_path: P
     assert second["locator"] == {"kind": "txt", "line_start": 3, "line_end": 3}
     assert "3 加 2 等于 5" in second["text"]
 
-    resource_id = resource["resource_id"]
-    segments_response = client.get(f"/v1/resource/{resource_id}/segments")
-    assert segments_response.status_code == 200
     assert segments_response.json()["segments"] == segments
 
     events = client.get("/v1/session/events", params={"after": 0, "limit": 20})
@@ -235,7 +273,10 @@ def test_upload_doc_does_not_fail_and_creates_unsupported_segment(monkeypatch, t
     )
 
     assert response.status_code == 200
-    segments = response.json()["resource"]["segments"]
+    resource_id = response.json()["resource"]["resource_id"]
+    status_payload = _wait_for_ingestion(client, resource_id)
+    assert status_payload["status"] == "completed"
+    segments = client.get(f"/v1/resource/{resource_id}/segments").json()["segments"]
     assert len(segments) == 1
     assert segments[0]["status"] in {"unsupported", "parse_failed"}
     assert segments[0]["locator"]["kind"] == "doc"
@@ -266,6 +307,7 @@ def test_get_topic_resources_includes_resources_matched_by_segment_topic(monkeyp
 
     assert upload_response.status_code == 200
     resource_id = upload_response.json()["resource"]["resource_id"]
+    _wait_for_ingestion(client, resource_id)
 
     response = client.get("/v1/resource/topics/math_01")
 
@@ -274,6 +316,8 @@ def test_get_topic_resources_includes_resources_matched_by_segment_topic(monkeyp
     assert resources
     resource = next((item for item in resources if item["resource_id"] == resource_id), None)
     assert resource is not None
+    assert resource["ingestion_status"] == "completed"
+    assert resource["ingestion_error"] is None
     assert any(segment["topic_id"] == "math_01" for segment in resource["segments"])
     assert any(segment["topic_id"] == "demo_01" for segment in resource["segments"])
 
@@ -298,6 +342,7 @@ def test_get_topic_teaching_cues_returns_guiding_questions(monkeypatch, tmp_path
     )
     assert upload_response.status_code == 200
     resource_id = upload_response.json()["resource"]["resource_id"]
+    _wait_for_ingestion(client, resource_id)
 
     response = client.get("/v1/resource/topics/demo_01/teaching-cues")
 
@@ -420,7 +465,9 @@ def test_approve_resource_proposal_creates_topic_and_relinks_segments(monkeypatc
         files={"file": ("sample.txt", "小行星撞击会让天空变暗，气候变冷。".encode("utf-8"), "text/plain")},
     )
     assert response.status_code == 200
-    segment = response.json()["resource"]["segments"][0]
+    resource_id = response.json()["resource"]["resource_id"]
+    _wait_for_ingestion(client, resource_id)
+    segment = client.get(f"/v1/resource/{resource_id}/segments").json()["segments"][0]
     proposal_id = segment["proposal_id"]
     assert proposal_id
 
@@ -438,7 +485,7 @@ def test_approve_resource_proposal_creates_topic_and_relinks_segments(monkeypatc
     graph = client.get("/v1/knowledge/graph").json()
     assert any(topic["topic_id"] == topic_id for topic in graph["topics"])
 
-    segments_response = client.get(f"/v1/resource/{response.json()['resource']['resource_id']}/segments")
+    segments_response = client.get(f"/v1/resource/{resource_id}/segments")
     updated_segment = segments_response.json()["segments"][0]
     assert updated_segment["status"] == "classified"
     assert updated_segment["decision"] == "link"
@@ -469,16 +516,108 @@ def test_reject_resource_proposal_marks_segments_unclassified(monkeypatch, tmp_p
         data={"topic_id": "demo_01", "resource_name": "待拒绝提案", "category": "learn"},
         files={"file": ("sample.txt", "这是一段待审核新知识。".encode("utf-8"), "text/plain")},
     )
-    proposal_id = response.json()["resource"]["segments"][0]["proposal_id"]
+    resource_id = response.json()["resource"]["resource_id"]
+    _wait_for_ingestion(client, resource_id)
+    proposal_id = client.get(f"/v1/resource/{resource_id}/segments").json()["segments"][0]["proposal_id"]
 
     rejected = client.post(f"/v1/knowledge/proposals/{proposal_id}/reject", json={"reason": "不需要新增"})
     assert rejected.status_code == 200
     assert rejected.json()["proposal"]["status"] == "rejected"
     assert rejected.json()["relinked_segment_count"] == 1
 
-    segments_response = client.get(f"/v1/resource/{response.json()['resource']['resource_id']}/segments")
+    segments_response = client.get(f"/v1/resource/{resource_id}/segments")
     updated_segment = segments_response.json()["segments"][0]
     assert updated_segment["status"] == "unclassified"
     assert updated_segment["decision"] == "unclassified"
     assert updated_segment["topic_id"] is None
     assert updated_segment["proposal_id"] is None
+
+
+def test_upload_returns_processing_before_background_ingestion_finishes(monkeypatch, tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    started = threading.Event()
+    unblock = threading.Event()
+
+    def slow_classify(*, chunk_text: str, topics: list[TopicNode], default_parent_topic_id: str | None = None) -> dict[str, object]:
+        started.set()
+        assert unblock.wait(timeout=2.0)
+        return {
+            "decision": "link",
+            "topic_id": "demo_01",
+            "confidence": 0.9,
+            "reason": "片段讨论恐龙灭绝",
+            "proposed_topic": None,
+        }
+
+    backend.llm_skill.classify_or_propose_resource_chunk = slow_classify
+    client = _make_client(monkeypatch, tmp_path, backend)
+
+    response = client.post(
+        "/v1/resource/upload",
+        data={"topic_id": "demo_01", "resource_name": "异步处理测试", "category": "learn"},
+        files={"file": ("sample.txt", "恐龙为什么会灭绝？".encode("utf-8"), "text/plain")},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    resource_id = payload["resource"]["resource_id"]
+    assert payload["resource"]["ingestion_status"] == "processing"
+    assert payload["resource"]["segments"] == []
+    assert started.wait(timeout=1.0)
+
+    status_response = client.get(f"/v1/resource/{resource_id}/ingestion-status")
+    assert status_response.status_code == 200
+    assert status_response.json() == {
+        "resource_id": resource_id,
+        "status": "processing",
+        "segment_count": 0,
+        "classified_count": 0,
+        "proposed_count": 0,
+        "unclassified_count": 0,
+        "parse_failed_count": 0,
+        "error": None,
+    }
+
+    unblock.set()
+    completed = _wait_for_ingestion(client, resource_id)
+    assert completed["status"] == "completed"
+    assert completed["classified_count"] == 1
+
+
+def test_ingestion_failure_updates_status_and_error(monkeypatch, tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    client = _make_client(monkeypatch, tmp_path, backend)
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("synthetic ingestion failure")
+
+    monkeypatch.setattr(app_module, "ingest_document_resource", explode)
+
+    response = client.post(
+        "/v1/resource/upload",
+        data={"topic_id": "demo_01", "resource_name": "失败测试", "category": "learn"},
+        files={"file": ("sample.txt", "恐龙为什么会灭绝？".encode("utf-8"), "text/plain")},
+    )
+
+    assert response.status_code == 200
+    resource_id = response.json()["resource"]["resource_id"]
+
+    failed = _wait_for_ingestion(client, resource_id, statuses={"failed"})
+    assert failed["resource_id"] == resource_id
+    assert failed["status"] == "failed"
+    assert failed["segment_count"] == 1
+    assert failed["classified_count"] == 0
+    assert failed["proposed_count"] == 0
+    assert failed["unclassified_count"] == 0
+    assert failed["parse_failed_count"] == 1
+    assert "synthetic ingestion failure" in str(failed["error"])
+
+    resource = client.get("/v1/resource/topics/demo_01").json()["resources"][0]
+    assert resource["resource_id"] == resource_id
+    assert resource["ingestion_status"] == "failed"
+    assert "synthetic ingestion failure" in str(resource["ingestion_error"])
+
+    segments = client.get(f"/v1/resource/{resource_id}/segments").json()["segments"]
+    assert len(segments) == 1
+    assert segments[0]["status"] == "ingestion_failed"
+    assert "synthetic ingestion failure" in segments[0]["reason"]
