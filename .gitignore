@@ -1,0 +1,47 @@
+# Environment
+.env
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Runtime / local data (generated)
+data/
+data/state.json
+data/resource_index.json
+data/state.tmp
+data/audio_logs/
+data/audio_outputs/
+artifacts/audio/
+logs/*.jsonl
+logs/*.log
+
+# IDE
+.idea/
+.vscode/
+.cursor/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing / coverage
+.pytest_cache/
+.pytest_tmp/
+.coverage
+htmlcov/
+
+# 前端依赖与产物 (Frontend)
+node_modules/

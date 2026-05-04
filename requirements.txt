@@ -1,0 +1,15 @@
+streamlit>=1.28
+pydantic>=2.5
+python-dotenv>=1.0
+fastapi>=0.110
+uvicorn>=0.30
+python-multipart>=0.0.9
+openai>=1.0
+httpx>=0.24
+faster-whisper>=1.0
+edge-tts>=6.0
+numpy>=1.24
+pytest>=7.0
+pypdf>=4.2
+python-docx>=1.1
+python-pptx>=0.6.23

@@ -1,0 +1,18 @@
+services:
+  tts:
+    image: looptutor/edge-tts-service:latest
+    container_name: local-edge-tts
+    ports:
+      - "5501:5501"
+    environment:
+      - EDGE_TTS_VOICE=${EDGE_TTS_VOICE:-zh-CN-XiaoxiaoNeural}
+    restart: unless-stopped
+
+  asr:
+    image: onerahmet/openai-whisper-asr-webservice:latest
+    container_name: local-whisper-asr
+    ports:
+      - "9000:9000"
+    environment:
+      - ASR_MODEL=${ASR_MODEL:-tiny}
+    restart: unless-stopped
