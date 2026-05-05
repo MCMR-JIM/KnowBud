@@ -8,7 +8,11 @@ from typing import TYPE_CHECKING, Callable
 
 from src.core.models import ResourceRecord, ResourceSegment, TopicNode
 from src.agent.models import EdgeType
-from src.services.resource_graph_curation import create_resource_level_proposals
+from src.services.resource_graph_curation import (
+    _subject_from_tags,
+    create_resource_level_proposals,
+    detect_resource_subject,
+)
 
 if TYPE_CHECKING:
     from src.services.session_backend import SessionBackend
@@ -85,9 +89,20 @@ def ingest_document_resource(
         backend.replace_resource_segments(record.resource_id, segments)
         return segments
 
-    _ctx_subject, _ctx_language_id = _infer_context_subject_and_language(
-        topics=topics, default_topic_id=(default_topic_id or record.topic_id)
-    ) if enable_graph_search else (None, None)
+    _ctx_subject: str | None = None
+    _ctx_language_id: str | None = None
+    if enable_graph_search:
+        try:
+            detected = detect_resource_subject(
+                record=record,
+                segments=[],
+                topics=topics,
+                default_topic_id=default_topic_id or record.topic_id,
+            )
+            if detected != "general":
+                _ctx_subject = detected
+        except Exception:
+            _ctx_subject = None
 
     segments: list[ResourceSegment] = []
     for index, chunk in enumerate(chunks):
@@ -560,25 +575,13 @@ def _node_subject_tag(tags: list[str]) -> str:
     return raw
 
 
-def _infer_context_subject_and_language(
-    *,
-    topics: list[TopicNode],
-    default_topic_id: str | None,
-) -> tuple[str | None, str | None]:
-    if not default_topic_id:
-        return None, None
-    for topic in topics:
-        if topic.topic_id == default_topic_id:
-            subject: str | None = None
-            language_id: str | None = None
-            for tag in topic.tags:
-                if tag.startswith("subject:"):
-                    raw = tag.split(":", 1)[1]
-                    subject = "language" if raw in {"english", "chinese", "语文", "中文"} else raw
-                if tag.startswith("language:"):
-                    language_id = tag.split(":", 1)[1]
-            return subject, language_id
-    return None, None
+def _detect_lang_from_chunks(chunks: list[TextUnit], topics: list[TopicNode]) -> str | None:
+    sample = " ".join(c.text for c in chunks[:3]).lower()
+    if "english" in sample or "英语" in sample or re.search(r"\b(present continuous|simple past)\b", sample):
+        return "english"
+    if "语文" in sample or "中文" in sample or "chinese" in sample or "阅读理解" in sample:
+        return "chinese"
+    return None
 
 
 def _status_segment(
