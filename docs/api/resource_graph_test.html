@@ -753,7 +753,8 @@
       const depthMemo = new Map();
       function depth(topic) {
         if (depthMemo.has(topic.topic_id)) return depthMemo.get(topic.topic_id);
-        const parents = (topic.prerequisite_ids || []).filter(id => byId.has(id));
+        const allParents = [...(topic.prerequisite_ids || []), ...(topic.parent_ids || [])];
+        const parents = allParents.filter(id => byId.has(id));
         const value = parents.length ? 1 + Math.max(...parents.map(id => depth(byId.get(id)))) : 0;
         depthMemo.set(topic.topic_id, value);
         return value;
@@ -797,10 +798,16 @@
 
       for (const topic of topics) {
         const child = positions.get(topic.topic_id);
-        for (const parentId of topic.prerequisite_ids || []) {
+        const allParents = [...(topic.prerequisite_ids || []), ...(topic.parent_ids || [])];
+        for (const parentId of allParents) {
           const parent = positions.get(parentId);
           if (!parent || !child) continue;
-          svg.insertAdjacentHTML('beforeend', `<path class="edge" d="M${parent.x + 184},${parent.y + 38} C${parent.x + 228},${parent.y + 38} ${child.x - 44},${child.y + 38} ${child.x},${child.y + 38}" />`);
+          const isParentEdge = (topic.parent_ids || []).includes(parentId);
+          const strokeColor = isParentEdge ? '#c084fc' : '#94a3b8';
+          const strokeWidth = isParentEdge ? '1.2' : '1.6';
+          const dash = isParentEdge ? 'stroke-dasharray="4 2"' : '';
+          const marker = isParentEdge ? '' : 'marker-end="url(#arrow)"';
+          svg.insertAdjacentHTML('beforeend', `<path class="edge" style="stroke:${strokeColor};stroke-width:${strokeWidth};" ${dash} ${marker} d="M${parent.x + 184},${parent.y + 38} C${parent.x + 228},${parent.y + 38} ${child.x - 44},${child.y + 38} ${child.x},${child.y + 38}" />`);
         }
       }
 
@@ -820,12 +827,14 @@
         const selected = topic.topic_id === state.selectedTopicId;
         const fill = selected ? '#dbeafe' : '#ffffff';
         const stroke = selected ? '#3b82f6' : '#e6ddd2';
+        const prereqCount = (topic.prerequisite_ids || []).length;
+        const parentCount = (topic.parent_ids || []).length;
         svg.insertAdjacentHTML('beforeend', `
           <g class="node" data-topic-id="${escapeHtml(topic.topic_id)}" transform="translate(${pos.x},${pos.y})">
             <rect width="184" height="76" rx="18" fill="${fill}" stroke="${stroke}" stroke-width="2" />
             <text x="14" y="25" class="node-title">${escapeHtml(short(topic.title, 16))}</text>
             <text x="14" y="45" class="node-meta">${escapeHtml(topic.topic_id)}</text>
-            <text x="14" y="62" class="node-meta">前置 ${(topic.prerequisite_ids || []).length} · 片段 ${resourceByTopic.get(topic.topic_id) || 0}</text>
+            <text x="14" y="62" class="node-meta">层级 ${parentCount} · 前置 ${prereqCount} · 片段 ${resourceByTopic.get(topic.topic_id) || 0}</text>
           </g>`);
       }
 
@@ -872,8 +881,9 @@
           <div style="margin-top:8px">
             ${(topic.tags || []).map(t => `<span class="pill">${escapeHtml(t)}</span>`).join('') || '<span class="pill">无标签</span>'}
           </div>
-          <p class="subtle" style="margin-top:8px">前置节点：${(topic.prerequisite_ids || []).join(', ') || '无'}</p>
-          <p class="subtle" style="margin-top:6px">后继节点：${(topic.dependent_ids || []).join(', ') || '无'}</p>
+          <p class="subtle" style="margin-top:8px">层级父节点：${(topic.parent_ids || []).join(', ') || '无'}</p>
+          <p class="subtle" style="margin-top:4px">前置依赖：${(topic.prerequisite_ids || []).join(', ') || '无'}</p>
+          <p class="subtle" style="margin-top:4px">后继节点：${(topic.dependent_ids || []).join(', ') || '无'}</p>
         </div>`;
     }
 
@@ -945,8 +955,37 @@
       form.append('resource_name', name || filename.replace(/\.[^.]+$/, ''));
       form.append('category', 'learn');
       const result = await api('/resource/upload', { method: 'POST', body: form });
-      log('上传完成', { resource_id: result.resource?.resource_id, segments: result.resource?.segments?.length });
-      await refreshAll();
+      const resourceId = result.resource?.resource_id;
+      log('开始处理资源', { resource_id: resourceId });
+
+      if (resourceId) {
+        log('正在后台提炼知识点，请稍候...');
+        // Start polling for ingestion status
+        const pollInterval = setInterval(async () => {
+          try {
+            const statusRes = await api(`/resource/${resourceId}/ingestion-status`);
+            if (statusRes.status === 'completed') {
+              clearInterval(pollInterval);
+              log('解析完成！', { 
+                segments: statusRes.segment_count, 
+                proposed: statusRes.proposed_count,
+                classified: statusRes.classified_count 
+              });
+              await refreshAll();
+            } else if (statusRes.status === 'failed') {
+              clearInterval(pollInterval);
+              log('解析失败', { error: statusRes.error });
+            } else {
+              log(`处理中... 已分类: ${statusRes.classified_count}/${statusRes.segment_count}，新提案: ${statusRes.proposed_count}`);
+            }
+          } catch (err) {
+            log('轮询状态失败', { error: err.message });
+            clearInterval(pollInterval);
+          }
+        }, 3000);
+      } else {
+        await refreshAll();
+      }
     }
 
     async function uploadSelectedFile() {

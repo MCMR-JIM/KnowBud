@@ -512,6 +512,9 @@ def _representative_snippets(texts: list[str]) -> str:
 
 def _clean_title(title: str) -> str:
     cleaned = re.sub(r"[《》\"“”'']", "", title or "")
+    # Remove common question words and descriptive suffixes to aid deduplication
+    cleaned = re.sub(r"^(什么是|什么是|关于|浅析|探究|理解|掌握|学习)", "", cleaned)
+    cleaned = re.sub(r"(是什么|及其应用|的应用|的证明|的推导|的意义|的概念|简介|概述)$", "", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned[:120]
 
@@ -598,6 +601,12 @@ def _normalize_language_candidate_title(title: str, *, facet: str, full_text: st
 
 
 def _normalize_profile_candidate_title(title: str, *, facet: str, full_text: str, profile: SubjectProfile) -> str | None:
+    # First apply subject-specific heuristic cleanup to the title itself
+    if profile.subject_id == "math":
+        title = re.sub(r"(定理|公理|推论|法则|定律|公式)证明.*", r"\1", title)
+        title = re.sub(r"的?(完备性|连续性|介值性|有界性).*", r"\1", title)
+        title = title.split("：")[0].split(":")[0].split("_")[0]
+
     for pattern, replacement in profile.canonical_title_rules.get(facet, ()):
         if re.search(pattern, full_text):
             return replacement
@@ -614,7 +623,7 @@ def _normalize_profile_candidate_title(title: str, *, facet: str, full_text: str
             return "细胞结构与功能"
     if profile.subject_id == "geography" and ("地图" in full_text or "map" in full_text):
         return "地图技能"
-    return None
+    return title
 
 
 def _is_language_grammar(text: str) -> bool:
