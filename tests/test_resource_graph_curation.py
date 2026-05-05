@@ -945,3 +945,149 @@ def test_prerequisite_inference_on_new_cluster(tmp_path: Path) -> None:
         assert "math_add" in prereq_ids, f"expected math_add in prereqs, got {prereq_ids}"
     finally:
         backend.llm_skill.client.chat.completions.create = backend.llm_skill._original_create
+
+
+def test_missing_prereq_creates_proposal(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    backend.llm_skill.client.api_key = "test_key"
+
+    backend.llm_skill.classify_or_propose_resource_chunk = lambda **_: {
+        "decision": "propose",
+        "topic_id": None,
+        "confidence": 0.85,
+        "reason": "new concept",
+        "proposed_topic": {
+            "title": "乘法",
+            "summary": "乘法概念",
+            "parent_node_ids": ["demo_01"],
+            "edge_type": "requires",
+        },
+    }
+
+    import json
+    from unittest.mock import MagicMock
+    from types import SimpleNamespace
+
+    responses: list[list[dict]] = [
+        [{"keyword": "重复加", "priority": "direct"}],
+    ]
+
+    def mock_create(**kwargs):
+        data = responses.pop(0) if responses else []
+        msg = MagicMock()
+        msg.content = json.dumps(data)
+        return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+
+    backend.llm_skill._original_create = backend.llm_skill.client.chat.completions.create
+    backend.llm_skill.client.chat.completions.create = mock_create
+
+    try:
+        record = _create_record(tmp_path, backend, name="数学乘法", content="学习乘法的基本概念 数学")
+        topics = backend.load_app_state(include_history=False).curriculum.topics
+        ingest_document_resource(
+            backend=backend, record=record, topics=topics, default_topic_id="demo_01",
+        )
+
+        proposals = backend.load_app_state(include_history=False).learning.graph_proposals
+        prereq_proposals = [p for p in proposals if p.title == "重复加"]
+        assert len(prereq_proposals) == 1, f"expected 1 prereq proposal, got titles: {[p.title for p in proposals]}"
+        assert prereq_proposals[0].reason == "prerequisite of 乘法"
+    finally:
+        backend.llm_skill.client.chat.completions.create = backend.llm_skill._original_create
+
+
+def test_missing_prereq_inherits_root_pending_parent(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    backend.llm_skill.client.api_key = "test_key"
+
+    backend.llm_skill.classify_or_propose_resource_chunk = lambda **_: {
+        "decision": "propose",
+        "topic_id": None,
+        "confidence": 0.85,
+        "reason": "new concept",
+        "proposed_topic": {
+            "title": "乘法",
+            "summary": "乘法概念",
+            "parent_node_ids": ["demo_01"],
+            "edge_type": "requires",
+        },
+    }
+
+    import json
+    from unittest.mock import MagicMock
+    from types import SimpleNamespace
+
+    responses: list[list[dict]] = [
+        [{"keyword": "重复加", "priority": "direct"}],
+    ]
+
+    def mock_create(**kwargs):
+        data = responses.pop(0) if responses else []
+        msg = MagicMock()
+        msg.content = json.dumps(data)
+        return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+
+    backend.llm_skill._original_create = backend.llm_skill.client.chat.completions.create
+    backend.llm_skill.client.chat.completions.create = mock_create
+
+    try:
+        record = _create_record(tmp_path, backend, name="数学乘法", content="学习乘法的基本概念 数学")
+        topics = backend.load_app_state(include_history=False).curriculum.topics
+        ingest_document_resource(
+            backend=backend, record=record, topics=topics, default_topic_id="demo_01",
+        )
+
+        proposals = backend.load_app_state(include_history=False).learning.graph_proposals
+        prereq_proposal = next((p for p in proposals if p.title == "重复加"), None)
+        assert prereq_proposal is not None
+        assert prereq_proposal.pending_parent_proposal_ids != []
+    finally:
+        backend.llm_skill.client.chat.completions.create = backend.llm_skill._original_create
+
+
+def test_missing_prereq_not_duplicated(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    backend.llm_skill.client.api_key = "test_key"
+
+    backend.llm_skill.classify_or_propose_resource_chunk = lambda **_: {
+        "decision": "propose",
+        "topic_id": None,
+        "confidence": 0.85,
+        "reason": "new concept",
+        "proposed_topic": {
+            "title": "乘法",
+            "summary": "乘法概念",
+            "parent_node_ids": ["demo_01"],
+            "edge_type": "requires",
+        },
+    }
+
+    import json
+    from unittest.mock import MagicMock
+    from types import SimpleNamespace
+
+    responses: list[list[dict]] = [
+        [{"keyword": "重复加", "priority": "direct"}, {"keyword": "重复加", "priority": "direct"}],
+    ]
+
+    def mock_create(**kwargs):
+        data = responses.pop(0) if responses else []
+        msg = MagicMock()
+        msg.content = json.dumps(data)
+        return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+
+    backend.llm_skill._original_create = backend.llm_skill.client.chat.completions.create
+    backend.llm_skill.client.chat.completions.create = mock_create
+
+    try:
+        record = _create_record(tmp_path, backend, name="数学乘法", content="学习乘法的基本概念 数学")
+        topics = backend.load_app_state(include_history=False).curriculum.topics
+        ingest_document_resource(
+            backend=backend, record=record, topics=topics, default_topic_id="demo_01",
+        )
+
+        proposals = backend.load_app_state(include_history=False).learning.graph_proposals
+        prereq_proposals = [p for p in proposals if p.title == "重复加"]
+        assert len(prereq_proposals) == 1, f"expected 1, got {len(prereq_proposals)}"
+    finally:
+        backend.llm_skill.client.chat.completions.create = backend.llm_skill._original_create

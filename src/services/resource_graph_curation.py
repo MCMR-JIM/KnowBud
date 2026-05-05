@@ -517,7 +517,55 @@ def create_resource_level_proposals(
                     concept_text=_representative_snippets([c.text for c in cluster.candidates]),
                     max_depth=2,
                 )
-                cluster_prereq_ids = [r["topic_id"] for r in prereq_results if r.get("topic_id")]
+                missing_prereq_proposals: list[GraphProposalRecord] = []
+                created_prereq_titles: set[str] = set()
+                for r in prereq_results:
+                    if r.get("topic_id"):
+                        cluster_prereq_ids.append(r["topic_id"])
+                    elif r.get("title"):
+                        prereq_title = str(r["title"]).strip()
+                        if not prereq_title or prereq_title in created_prereq_titles:
+                            continue
+                        created_prereq_titles.add(prereq_title)
+                        prereq_facet = profile.default_facet
+                        prereq_norm = normalize_candidate_title(
+                            prereq_title, subject=cluster.subject,
+                            facet=prereq_facet, text="",
+                        )
+                        if not prereq_norm:
+                            continue
+                        existing_t = _resolve_existing_topic(
+                            topic_map,
+                            subject=cluster.subject, language_id=cluster.language_id,
+                            facet=prereq_facet, normalized_title=prereq_norm,
+                        )
+                        if existing_t is not None:
+                            cluster_prereq_ids.append(existing_t.topic_id)
+                            continue
+                        existing_p = _resolve_existing_proposal(
+                            proposal_map,
+                            subject=cluster.subject, language_id=cluster.language_id,
+                            facet=prereq_facet, normalized_title=prereq_norm,
+                        )
+                        if existing_p is not None:
+                            cluster_prereq_ids.append(existing_p.proposal_id)
+                            continue
+                        prereq_proposal = backend.create_graph_proposal_from_resource(
+                            title=prereq_title,
+                            summary=f"前置知识节点：{cluster.title} 的前置依赖",
+                            tags=_proposal_tags(
+                                subject=cluster.subject, facet=prereq_facet,
+                                language_id=language_id,
+                            ),
+                            parent_node_ids=[],
+                            prerequisite_node_ids=[],
+                            pending_parent_proposal_ids=list(pending_parent_proposal_ids),
+                            edge_type="requires",
+                            reason=f"prerequisite of {cluster.title}",
+                        )
+                        missing_prereq_proposals.append(prereq_proposal)
+                        cluster_prereq_ids.append(prereq_proposal.proposal_id)
+                proposals.extend(missing_prereq_proposals)
             except Exception:
                 cluster_prereq_ids = []
 

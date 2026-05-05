@@ -107,12 +107,17 @@ class GraphSearchAgent:
             depth=1, max_depth=max_depth,
             visited=visited, results=results,
         )
-        seen: set[str] = set()
+        seen_tids: set[str] = set()
+        seen_titles: set[str] = set()
         deduped: list[dict] = []
         for r in results:
             tid = r.get("topic_id")
-            if tid and tid not in seen:
-                seen.add(tid)
+            title = r.get("title", "")
+            if tid and tid not in seen_tids:
+                seen_tids.add(tid)
+                deduped.append(r)
+            elif not tid and title and title not in seen_titles:
+                seen_titles.add(title)
                 deduped.append(r)
         return deduped
 
@@ -168,6 +173,16 @@ class GraphSearchAgent:
                         depth=depth + 1, max_depth=max_depth,
                         visited=visited, results=results,
                     )
+            elif not found_id and keyword not in visited:
+                visited.add(keyword)
+                results.append(
+                    {
+                        "topic_id": None,
+                        "title": keyword,
+                        "relation": "requires",
+                        "depth": depth,
+                    }
+                )
 
     def _analyze_prereq_keywords(self, title: str, text: str) -> list[dict]:
         system = (

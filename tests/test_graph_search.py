@@ -521,7 +521,9 @@ class TestInferPrerequisites:
         monkeypatch.setattr(backend.llm_skill.client.chat.completions, "create", mock_create)
         agent = GraphSearchAgent(backend, "physics")
         result = agent.infer_prerequisites("广义相对论", "广义相对论是爱因斯坦的引力理论", max_depth=2)
-        assert result == []
+        assert len(result) == 2
+        assert all(r["topic_id"] is None for r in result)
+        assert {r["title"] for r in result} == {"黎曼几何", "张量分析"}
 
     def test_language_grammar_prereqs(self, monkeypatch, tmp_path: Path):
         backend = _build_search_backend(tmp_path)

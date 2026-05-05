@@ -353,7 +353,7 @@ class SessionBackend:
                 parent_ids=list(approved_parents) if approved_edge_type != "requires" else [],
                 prerequisite_ids=list(dict.fromkeys(
                     [*(approved_parents if approved_edge_type == "requires" else []),
-                     *(getattr(proposal, "prerequisite_node_ids", []))]
+                     *(pid for pid in getattr(proposal, "prerequisite_node_ids", []) if pid in valid_topic_ids)]
                 )),
                 tags=list(dict.fromkeys([*approved_tags, "resource-approved", "active"])),
             )
@@ -368,7 +368,7 @@ class SessionBackend:
                 topic.parent_ids = list(dict.fromkeys([*(getattr(topic, "parent_ids", [])), *approved_parents]))
             topic.prerequisite_ids = list(dict.fromkeys(
                 [*(getattr(topic, "prerequisite_ids", [])),
-                 *(getattr(proposal, "prerequisite_node_ids", []))]
+                 *(pid for pid in getattr(proposal, "prerequisite_node_ids", []) if pid in valid_topic_ids)]
             ))
             topic.tags = list(dict.fromkeys([*topic.tags, *approved_tags, "resource-approved", "active"]))
 
