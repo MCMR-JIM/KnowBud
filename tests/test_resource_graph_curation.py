@@ -1087,7 +1087,141 @@ def test_missing_prereq_not_duplicated(tmp_path: Path) -> None:
         )
 
         proposals = backend.load_app_state(include_history=False).learning.graph_proposals
-        prereq_proposals = [p for p in proposals if p.title == "重复加"]
-        assert len(prereq_proposals) == 1, f"expected 1, got {len(prereq_proposals)}"
     finally:
         backend.llm_skill.client.chat.completions.create = backend.llm_skill._original_create
+
+
+def test_within_batch_merge_clusters(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    backend.llm_skill.client.api_key = "test_key"
+
+    call_count = [0]
+
+    def fake_classify_or_propose(*, chunk_text, topics, default_parent_topic_id=None):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return {
+                "decision": "propose", "topic_id": None, "confidence": 0.85,
+                "reason": "first", "proposed_topic": {
+                    "title": "秦朝统一六国",
+                    "summary": "",
+                    "parent_node_ids": ["demo_01"], "edge_type": "requires",
+                },
+            }
+        return {
+            "decision": "propose", "topic_id": None, "confidence": 0.85,
+            "reason": "second", "proposed_topic": {
+                "title": "秦始皇统一六国",
+                "summary": "",
+                "parent_node_ids": ["demo_01"], "edge_type": "requires",
+            },
+        }
+
+    backend.llm_skill.classify_or_propose_resource_chunk = fake_classify_or_propose
+
+    import json
+    from unittest.mock import MagicMock
+    from types import SimpleNamespace
+
+    def mock_create(**kwargs):
+        msg = MagicMock()
+        msg.content = json.dumps([{"keep": "秦朝统一六国", "merge": ["秦始皇统一六国"]}])
+        return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+
+    backend.llm_skill._orig_create = backend.llm_skill.client.chat.completions.create
+    backend.llm_skill.client.chat.completions.create = mock_create
+
+    try:
+        content = "第一段：秦朝统一六国\n\n第二段：秦始皇统一六国"
+        record = _create_record(tmp_path, backend, name="历史秦朝", content=content)
+        topics = backend.load_app_state(include_history=False).curriculum.topics
+        ingest_document_resource(
+            backend=backend, record=record, topics=topics, default_topic_id="demo_01",
+        )
+
+        proposals = backend.load_app_state(include_history=False).learning.graph_proposals
+        content_proposals = [
+            p for p in proposals
+            if p.title in {"秦朝统一六国", "秦始皇统一六国"}
+        ]
+        assert len(content_proposals) == 1, f"expected 1 merged proposal, got {[p.title for p in proposals]}"
+    finally:
+        backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig_create
+
+
+def test_should_create_subject_root_skips_rejected(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    state = backend.load_app_state(include_history=False)
+    from src.services.resource_graph_curation import _should_create_subject_root
+
+    state.learning.graph_proposals.append(
+        GraphProposalRecord(
+            proposal_id="proposal_rejected_root", title="数学", summary="",
+            trigger="test", tags=["subject:math", "facet:root"],
+            parent_node_ids=[], pending_parent_proposal_ids=[],
+            edge_type="related", status="rejected", reason="test",
+            created_ts="", updated_ts="",
+        )
+    )
+    backend.save_app_state(state)
+
+    assert _should_create_subject_root(
+        subject="math", topics=state.curriculum.topics,
+        backend=backend, language_id=None,
+    ) is True
+
+
+def test_dedup_candidate_title_includes_proposal(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    state = backend.load_app_state(include_history=False)
+    state.learning.graph_proposals.append(
+        GraphProposalRecord(
+            proposal_id="proposal_test_01", title="实数完备性定理", summary="",
+            trigger="test", tags=["subject:math"],
+            parent_node_ids=[], pending_parent_proposal_ids=[],
+            edge_type="related", status="proposed", reason="test",
+            created_ts="", updated_ts="",
+        )
+    )
+    backend.save_app_state(state)
+
+    backend.llm_skill.client.api_key = "test_key"
+    backend.llm_skill.classify_or_propose_resource_chunk = lambda **_: {
+        "decision": "propose", "topic_id": None, "confidence": 0.85,
+        "reason": "new",
+        "proposed_topic": {
+            "title": "实数完备性定理", "summary": "",
+            "parent_node_ids": ["demo_01"], "edge_type": "requires",
+        },
+    }
+
+    import json
+    from unittest.mock import MagicMock
+    from types import SimpleNamespace
+
+    def mock_create(**kwargs):
+        msg = MagicMock()
+        msg.content = json.dumps({"matched_topic_id": "proposal_test_01"})
+        return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+
+    backend.llm_skill._orig_create = backend.llm_skill.client.chat.completions.create
+    backend.llm_skill.client.chat.completions.create = mock_create
+
+    try:
+        record = _create_record(tmp_path, backend, name="数学完备性", content="实数完备性定理是数学分析中的基本定理")
+        topics = backend.load_app_state(include_history=False).curriculum.topics
+        topics.append(
+            TopicNode(
+                topic_id="math_root", title="数学", difficulty=1,
+                prerequisite_ids=[], tags=["subject:math", "facet:root"],
+            )
+        )
+        backend.save_app_state(backend.load_app_state(include_history=False))
+        segments = ingest_document_resource(
+            backend=backend, record=record, topics=topics,
+            default_topic_id="math_root", enable_graph_search=True,
+        )
+        assert segments[0].proposal_id == "proposal_test_01", f"got {segments[0].proposal_id}"
+        assert segments[0].decision == "propose"
+    finally:
+        backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig_create

@@ -356,6 +356,102 @@ def cluster_candidate_topics(candidates: list[CandidateTopic]) -> list[Candidate
     return clusters
 
 
+def _deduplicate_clusters_within_batch(
+    *,
+    backend: "SessionBackend",
+    clusters: list[CandidateCluster],
+    subject: str,
+    language_id: str | None,
+) -> list[CandidateCluster]:
+    if len(clusters) <= 1:
+        return clusters
+
+    unique_titles: list[str] = []
+    for cluster in clusters:
+        if cluster.title not in unique_titles:
+            unique_titles.append(cluster.title)
+
+    if len(unique_titles) <= 1:
+        return clusters
+
+    title_list = json.dumps(unique_titles, ensure_ascii=False)
+    system = (
+        "你是语义消歧专家。给定一组知识节点标题，判断哪些标题本质是同一概念（仅表述不同）。\n"
+        "对每组等价标题，保留最规范的那个，合并其余到该标题下。\n"
+        '只返回 JSON 数组: [{"keep":"保留的规范标题","merge":["待合并标题1","待合并标题2"]}]。\n'
+        "不需要合并的标题不返回。"
+    )
+    user = (
+        f"学科: {subject}\n"
+        f"节点标题列表:\n{title_list}\n\n"
+        "请输出需要合并的等价标题组。"
+    )
+
+    merge_groups: list[dict] = []
+    try:
+        client = backend.llm_skill.client
+        model = backend.llm_skill.model_name
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            temperature=0.3,
+            timeout=60.0,
+        )
+        raw = (response.choices[0].message.content or "").strip()
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+        data = json.loads(raw)
+        if isinstance(data, list):
+            merge_groups = data
+    except Exception:
+        return clusters  # On LLM failure, return unchanged
+
+    merge_map: dict[str, str] = {}
+    for group in merge_groups:
+        if not isinstance(group, dict):
+            continue
+        keep = str(group.get("keep", "")).strip()
+        merge_list = group.get("merge", [])
+        if not keep or not isinstance(merge_list, list):
+            continue
+        for m in merge_list:
+            if isinstance(m, str) and m.strip() and m.strip() != keep:
+                merge_map[m.strip()] = keep
+
+    if not merge_map:
+        return clusters
+
+    title_to_cluster: dict[str, CandidateCluster] = {c.title: c for c in clusters}
+    titles_merged: set[str] = set()
+    merged: list[CandidateCluster] = []
+    for cluster in clusters:
+        target = merge_map.get(cluster.title)
+        if target is None:
+            if cluster.title not in titles_merged:
+                merged.append(cluster)
+        else:
+            if cluster.title in titles_merged:
+                continue
+            titles_merged.add(cluster.title)
+            keeper = title_to_cluster.get(target)
+            if keeper is not None:
+                keeper.candidates.extend(cluster.candidates)
+                for pid in cluster.parent_node_ids:
+                    if pid not in keeper.parent_node_ids:
+                        keeper.parent_node_ids.append(pid)
+                if target not in titles_merged:
+                    titles_merged.add(target)
+                    merged.append(keeper)
+            else:
+                merged.append(cluster)
+
+    merged.sort(key=lambda c: (-len(c.candidates), -c.candidates[0].confidence, c.title))
+    return merged
+
+
 def create_resource_level_proposals(
     *,
     backend: "SessionBackend",
@@ -414,6 +510,15 @@ def create_resource_level_proposals(
     clusters = cluster_candidate_topics(candidate_topics)
     if not clusters:
         return []
+
+    if len(clusters) > 1 and backend.llm_skill.client.api_key:
+        try:
+            clusters = _deduplicate_clusters_within_batch(
+                backend=backend, clusters=clusters,
+                subject=subject, language_id=language_id,
+            )
+        except Exception:
+            pass
 
     parent_node_ids = _select_parent_node_ids(subject=subject, topics=topics, default_topic_id=default_topic_id, language_id=language_id)
     proposals: list[GraphProposalRecord] = []
@@ -938,6 +1043,8 @@ def _should_create_subject_root(*, subject: str, topics: list[TopicNode], backen
         return False
     state = backend.load_app_state(include_history=False)
     for proposal in state.learning.graph_proposals:
+        if proposal.status in {"rejected"}:
+            continue
         if _is_root_like_proposal(proposal, subject=subject, language_id=language_id):
             return False
     return True

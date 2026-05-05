@@ -435,6 +435,31 @@ class TestDeduplicateCandidateTitle:
         )
         assert result is None
 
+    def test_returns_proposal_id_for_proposal_match(self, monkeypatch, tmp_path: Path):
+        from src.services.resource_graph_curation import deduplicate_candidate_title
+
+        backend = _build_search_backend(tmp_path)
+        existing = [
+            {"topic_id": "proposal_existing_01", "title": "实数完备性定理", "subject": "math", "facet": "concept", "language_id": None, "tags": ["subject:math"]},
+        ]
+
+        def mock_create(**kwargs):
+            msg = MagicMock()
+            msg.content = '{"matched_topic_id": "proposal_existing_01"}'
+            choice = SimpleNamespace(message=msg)
+            return SimpleNamespace(choices=[choice])
+
+        monkeypatch.setattr(backend.llm_skill.client.chat.completions, "create", mock_create)
+        result = deduplicate_candidate_title(
+            backend=backend,
+            candidate_title="实数完备性定理",
+            candidate_subject="math",
+            candidate_facet="concept",
+            candidate_text="实数完备性定理的讲解",
+            existing_nodes=existing,
+        )
+        assert result == "proposal_existing_01"
+
 
 class TestInferPrerequisites:
     def test_simple_prereq_chain(self, monkeypatch, tmp_path: Path):

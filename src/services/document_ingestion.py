@@ -393,6 +393,19 @@ def _classify_chunk(
                             }
                             for t in state.curriculum.topics
                         ]
+                        for p in state.learning.graph_proposals:
+                            if p.status in {"rejected"}:
+                                continue
+                            existing.append(
+                                {
+                                    "topic_id": p.proposal_id,
+                                    "title": p.title,
+                                    "subject": _node_subject_tag(getattr(p, "tags", [])),
+                                    "facet": _tag_value(getattr(p, "tags", []), "facet:"),
+                                    "language_id": _tag_value(getattr(p, "tags", []), "language:"),
+                                    "tags": getattr(p, "tags", []),
+                                }
+                            )
                         matched_id = deduplicate_candidate_title(
                             backend=backend,
                             candidate_title=proposed_topic_title,
@@ -403,8 +416,13 @@ def _classify_chunk(
                             existing_nodes=existing,
                         )
                         if matched_id:
-                            normalized["decision"] = "link"
-                            normalized["topic_id"] = matched_id
+                            if isinstance(matched_id, str) and matched_id.startswith("proposal_"):
+                                normalized["decision"] = "propose"
+                                normalized["topic_id"] = None
+                                normalized["proposal_id"] = matched_id
+                            else:
+                                normalized["decision"] = "link"
+                                normalized["topic_id"] = matched_id
                             normalized["confidence"] = max(normalized["confidence"], 0.8)
                             normalized["reason"] = f"[语义消歧] 归并到已有节点 {matched_id}"
                             normalized["proposed_topic"] = None
@@ -417,6 +435,8 @@ def _classify_chunk(
 
     if normalized["decision"] == "link" and normalized["topic_id"]:
         status = "classified"
+    elif normalized.get("proposal_id") and normalized["decision"] == "propose":
+        status = "proposed"
     elif normalized["decision"] == "propose" and proposed_topic_title:
         status = "unclassified"
     else:
@@ -433,7 +453,7 @@ def _classify_chunk(
         text=text,
         locator=dict(chunk.locator),
         topic_id=str(normalized["topic_id"]) if normalized["topic_id"] is not None else None,
-        proposal_id=None,
+        proposal_id=str(normalized.get("proposal_id")) if normalized.get("proposal_id") is not None else None,
         proposed_topic_title=proposed_topic_title,
         proposed_parent_node_ids=proposed_parent_node_ids,
         decision=str(normalized["decision"]),
