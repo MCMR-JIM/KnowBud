@@ -435,6 +435,206 @@ class TestDeduplicateCandidateTitle:
         )
         assert result is None
 
+
+class TestInferPrerequisites:
+    def test_simple_prereq_chain(self, monkeypatch, tmp_path: Path):
+        backend = _build_search_backend(tmp_path)
+        state = backend.load_app_state(include_history=False)
+        state.curriculum.topics.append(
+            TopicNode(
+                topic_id="math_count", title="数数", difficulty=1,
+                prerequisite_ids=[], tags=["subject:math", "facet:concept"],
+            )
+        )
+        backend.save_app_state(state)
+
+        responses: list[list[dict]] = [
+            [{"keyword": "数数", "priority": "direct"}],
+            [],
+        ]
+
+        def mock_create(**kwargs):
+            data = responses.pop(0) if responses else []
+            msg = MagicMock()
+            msg.content = json.dumps(data)
+            return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+
+        monkeypatch.setattr(backend.llm_skill.client.chat.completions, "create", mock_create)
+        agent = GraphSearchAgent(backend, "math")
+        result = agent.infer_prerequisites("加法", "学习加法运算", max_depth=2)
+        assert len(result) == 1
+        assert result[0]["topic_id"] == "math_count"
+        assert result[0]["depth"] == 1
+        assert result[0]["relation"] == "requires"
+
+    def test_multi_step_prereq_chain(self, monkeypatch, tmp_path: Path):
+        backend = _build_search_backend(tmp_path)
+        state = backend.load_app_state(include_history=False)
+        state.curriculum.topics.append(
+            TopicNode(
+                topic_id="math_add", title="加法运算", difficulty=1,
+                prerequisite_ids=[], tags=["subject:math", "facet:operation"],
+            )
+        )
+        state.curriculum.topics.append(
+            TopicNode(
+                topic_id="math_count", title="数数基础", difficulty=1,
+                prerequisite_ids=[], tags=["subject:math", "facet:concept"],
+            )
+        )
+        backend.save_app_state(state)
+
+        responses: list[list[dict]] = [
+            [{"keyword": "加法运算", "priority": "direct"}, {"keyword": "重复加", "priority": "direct"}],
+            [{"keyword": "数数基础", "priority": "direct"}],
+            [],
+        ]
+
+        def mock_create(**kwargs):
+            data = responses.pop(0) if responses else []
+            msg = MagicMock()
+            msg.content = json.dumps(data)
+            return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+
+        monkeypatch.setattr(backend.llm_skill.client.chat.completions, "create", mock_create)
+        agent = GraphSearchAgent(backend, "math")
+        result = agent.infer_prerequisites("乘法", "乘法是基于重复加的运算", max_depth=2)
+        tids = {r["topic_id"] for r in result}
+        assert "math_add" in tids
+        assert "math_count" in tids
+        assert any(r["depth"] == 1 and r["topic_id"] == "math_add" for r in result)
+        assert any(r["depth"] == 2 and r["topic_id"] == "math_count" for r in result)
+
+    def test_prereq_not_found_returns_empty(self, monkeypatch, tmp_path: Path):
+        backend = _build_search_backend(tmp_path)
+
+        responses: list[list[dict]] = [
+            [{"keyword": "黎曼几何", "priority": "direct"}, {"keyword": "张量分析", "priority": "direct"}],
+        ]
+
+        def mock_create(**kwargs):
+            data = responses.pop(0) if responses else []
+            msg = MagicMock()
+            msg.content = json.dumps(data)
+            return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+
+        monkeypatch.setattr(backend.llm_skill.client.chat.completions, "create", mock_create)
+        agent = GraphSearchAgent(backend, "physics")
+        result = agent.infer_prerequisites("广义相对论", "广义相对论是爱因斯坦的引力理论", max_depth=2)
+        assert result == []
+
+    def test_language_grammar_prereqs(self, monkeypatch, tmp_path: Path):
+        backend = _build_search_backend(tmp_path)
+        state = backend.load_app_state(include_history=False)
+        state.curriculum.topics.append(
+            TopicNode(
+                topic_id="eng_simple_present", title="一般现在时", difficulty=1,
+                prerequisite_ids=[], tags=["subject:language", "facet:grammar", "language:english"],
+            )
+        )
+        state.curriculum.topics.append(
+            TopicNode(
+                topic_id="eng_be_verb", title="be动词", difficulty=1,
+                prerequisite_ids=[], tags=["subject:language", "facet:grammar", "language:english"],
+            )
+        )
+        backend.save_app_state(state)
+
+        responses: list[list[dict]] = [
+            [{"keyword": "一般现在时", "priority": "direct"}, {"keyword": "be动词", "priority": "direct"}],
+            [],
+            [],
+        ]
+
+        def mock_create(**kwargs):
+            data = responses.pop(0) if responses else []
+            msg = MagicMock()
+            msg.content = json.dumps(data)
+            return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+
+        monkeypatch.setattr(backend.llm_skill.client.chat.completions, "create", mock_create)
+        agent = GraphSearchAgent(backend, "language", "english")
+        result = agent.infer_prerequisites("现在进行时", "现在进行时描述正在发生的动作", max_depth=2)
+        tids = {r["topic_id"] for r in result}
+        assert "eng_simple_present" in tids
+        assert "eng_be_verb" in tids
+
+    def test_cross_subject_no_inference(self, monkeypatch, tmp_path: Path):
+        backend = _build_search_backend(tmp_path)
+        state = backend.load_app_state(include_history=False)
+        state.curriculum.topics.append(
+            TopicNode(
+                topic_id="eng_grammar_01", title="现在进行时", difficulty=1,
+                prerequisite_ids=[], tags=["subject:language", "facet:grammar", "language:english"],
+            )
+        )
+        state.curriculum.topics.append(
+            TopicNode(
+                topic_id="physics_velocity", title="速度", difficulty=1,
+                prerequisite_ids=[], tags=["subject:physics", "facet:quantity"],
+            )
+        )
+        backend.save_app_state(state)
+
+        responses: list[list[dict]] = [
+            [{"keyword": "速度", "priority": "direct"}, {"keyword": "距离", "priority": "direct"}],
+        ]
+
+        def mock_create(**kwargs):
+            data = responses.pop(0) if responses else []
+            msg = MagicMock()
+            msg.content = json.dumps(data)
+            return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+
+        monkeypatch.setattr(backend.llm_skill.client.chat.completions, "create", mock_create)
+        agent = GraphSearchAgent(backend, "physics")
+        result = agent.infer_prerequisites("速度公式", "速度公式 v=d/t", max_depth=2)
+        tids = {r["topic_id"] for r in result}
+        assert "eng_grammar_01" not in tids
+        if "physics_velocity" in tids:
+            assert len(result) >= 1
+
+    def test_depth_truncation(self, monkeypatch, tmp_path: Path):
+        backend = _build_search_backend(tmp_path)
+        state = backend.load_app_state(include_history=False)
+        state.curriculum.topics.extend(
+            [
+                TopicNode(
+                    topic_id="math_a", title="A概念", difficulty=1,
+                    prerequisite_ids=[], tags=["subject:math", "facet:concept"],
+                ),
+                TopicNode(
+                    topic_id="math_b", title="B概念", difficulty=1,
+                    prerequisite_ids=[], tags=["subject:math", "facet:concept"],
+                ),
+                TopicNode(
+                    topic_id="math_c", title="C概念", difficulty=1,
+                    prerequisite_ids=[], tags=["subject:math", "facet:concept"],
+                ),
+            ]
+        )
+        backend.save_app_state(state)
+
+        responses: list[list[dict]] = [
+            [{"keyword": "A概念", "priority": "direct"}],
+            [{"keyword": "B概念", "priority": "direct"}],
+            [{"keyword": "C概念", "priority": "direct"}],
+        ]
+
+        def mock_create(**kwargs):
+            data = responses.pop(0) if responses else []
+            msg = MagicMock()
+            msg.content = json.dumps(data)
+            return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+
+        monkeypatch.setattr(backend.llm_skill.client.chat.completions, "create", mock_create)
+        agent = GraphSearchAgent(backend, "math")
+        result = agent.infer_prerequisites("根概念", "根概念描述", max_depth=2)
+        assert all(r["depth"] <= 2 for r in result)
+        depths = {r["depth"] for r in result}
+        assert 1 in depths
+        assert 3 not in depths
+
     def test_coarse_filter_skips_wrong_subject(self, monkeypatch, tmp_path: Path):
         from src.services.resource_graph_curation import deduplicate_candidate_title
 

@@ -94,6 +94,125 @@ class GraphSearchAgent:
                 reason=f"graph search error: {str(exc)[:80]}",
             )
 
+    def infer_prerequisites(
+        self,
+        concept_title: str,
+        concept_text: str,
+        max_depth: int = 2,
+    ) -> list[dict]:
+        results: list[dict] = []
+        visited: set[str] = {concept_title}
+        self._infer_prereqs_recurse(
+            concept_title, concept_text,
+            depth=1, max_depth=max_depth,
+            visited=visited, results=results,
+        )
+        seen: set[str] = set()
+        deduped: list[dict] = []
+        for r in results:
+            tid = r.get("topic_id")
+            if tid and tid not in seen:
+                seen.add(tid)
+                deduped.append(r)
+        return deduped
+
+    def _infer_prereqs_recurse(
+        self,
+        title: str,
+        text: str,
+        depth: int,
+        max_depth: int,
+        visited: set[str],
+        results: list[dict],
+    ) -> None:
+        if depth > max_depth or not title:
+            return
+        keywords = self._analyze_prereq_keywords(title, text)
+        for kw in keywords:
+            keyword = kw.get("keyword", "").strip()
+            if not keyword:
+                continue
+            search_results = self._search_topics_by_title(keyword, limit=5)
+            found_id: str | None = None
+            found_title: str = ""
+            if len(search_results) == 1:
+                found_id = search_results[0]["topic_id"]
+                found_title = search_results[0]["title"]
+            elif len(search_results) > 1:
+                candidate_ids = [r["topic_id"] for r in search_results]
+                reranked = self._rerank_topics_by_relevance(
+                    candidate_ids, f"{keyword}: {text[:200]}"
+                )
+                for rr in reranked:
+                    if rr.get("relevance") == "high":
+                        found_id = rr["topic_id"]
+                        break
+                if found_id:
+                    for sr in search_results:
+                        if sr["topic_id"] == found_id:
+                            found_title = sr["title"]
+                            break
+            if found_id and found_title not in visited:
+                visited.add(found_title)
+                results.append(
+                    {
+                        "topic_id": found_id,
+                        "title": found_title,
+                        "relation": "requires",
+                        "depth": depth,
+                    }
+                )
+                if depth < max_depth:
+                    self._infer_prereqs_recurse(
+                        found_title, "",
+                        depth=depth + 1, max_depth=max_depth,
+                        visited=visited, results=results,
+                    )
+
+    def _analyze_prereq_keywords(self, title: str, text: str) -> list[dict]:
+        system = (
+            "你是知识图谱前置关系分析助手。分析一个学习概念需要哪些前置知识。\n"
+            "对每个前置给出搜索关键词（核心术语，不要完整标题）。\n"
+        )
+        if self._subject == "language":
+            lang = self._language_id or ""
+            system += (
+                "语言学科规则：\n"
+                "- grammar 概念 → 前置为更低年级的 grammar 或 vocabulary\n"
+                "- reading 概念 → 前置为 vocabulary + grammar\n"
+                "- writing 概念 → 前置为 reading + grammar\n"
+                f"- 在 {lang} 语言内推断，不跨语言\n"
+            )
+        system += "只返回 JSON 数组。"
+        user = (
+            f"概念: {title[:120]}\n"
+            f"描述: {text[:500]}\n"
+            f"学科: {self._subject}\n"
+            '输出: [{"keyword": "...", "priority": "direct|recommended"}]'
+        )
+        try:
+            response = self._client.chat.completions.create(
+                model=self._model_name,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                temperature=0.3,
+                timeout=60.0,
+            )
+            raw = (response.choices[0].message.content or "").strip()
+            raw = re.sub(r"^```(?:json)?\s*", "", raw)
+            raw = re.sub(r"\s*```$", "", raw)
+            data = json.loads(raw)
+            if isinstance(data, list):
+                return [
+                    item for item in data
+                    if isinstance(item, dict) and "keyword" in item
+                ]
+            return []
+        except Exception:
+            return []
+
     def _build_initial_messages(self, chunk_text: str, chunk_context: str) -> list[dict]:
         language_hint = f"语言范围: {self._language_id}\n" if self._language_id else ""
         system = (
