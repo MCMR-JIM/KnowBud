@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -526,6 +527,85 @@ def create_resource_level_proposals(
             segment.proposal_id = None
 
     return proposals
+
+
+def deduplicate_candidate_title(
+    *,
+    backend: "SessionBackend",
+    candidate_title: str,
+    candidate_subject: str,
+    candidate_facet: str,
+    candidate_text: str,
+    candidate_language_id: str | None = None,
+    existing_nodes: list[dict],
+) -> str | None:
+    if not candidate_title or not existing_nodes:
+        return None
+
+    coarse: list[dict] = []
+    for node in existing_nodes:
+        node_subject = node.get("subject") or _subject_from_tags(node.get("tags", [])) or "general"
+        if node_subject != candidate_subject and node_subject != "general":
+            continue
+        if candidate_subject == "language" and candidate_language_id:
+            node_lang = node.get("language_id")
+            if node_lang is not None and node_lang != candidate_language_id:
+                continue
+        coarse.append(node)
+
+    if not coarse:
+        return None
+
+    candidate_list = json.dumps(
+        [
+            {
+                "topic_id": node.get("topic_id", ""),
+                "title": node.get("title", ""),
+            }
+            for node in coarse
+        ],
+        ensure_ascii=False,
+    )
+
+    system = (
+        "你是语义消歧专家。比较候选概念与已有知识节点的标题，判断它们是否本质相同。\n"
+        "概念本质相同指：同一学术概念的不同叫法、不同语言或简繁表述（如「现在进行时」与「Present Continuous」）。\n"
+        "以下情况判定为不同概念：概念包含不同知识维度、明显不同的学术范畴、粒度差异显著（如「实数完备性定理」vs「实数完备性的证明方法」）。\n"
+        "仅返回 JSON。"
+    )
+    user = (
+        f"候选概念标题: {candidate_title[:120]}\n"
+        f"候选概念描述: {candidate_text[:500]}\n"
+        f"候选学科: {candidate_subject}\n"
+        f"已有节点列表:\n{candidate_list}\n\n"
+        '如果候选概念与已有节点本质相同，返回 {"matched_topic_id": "xxx"}。'
+        '如果不同，返回 {"matched_topic_id": null}。'
+    )
+
+    try:
+        client = backend.llm_skill.client
+        model = backend.llm_skill.model_name
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            temperature=0.3,
+            timeout=60.0,
+        )
+        raw = (response.choices[0].message.content or "").strip()
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+        data = json.loads(raw)
+        matched = data.get("matched_topic_id") if isinstance(data, dict) else None
+        if isinstance(matched, str) and matched:
+            node_ids = {node.get("topic_id") for node in coarse}
+            if matched in node_ids:
+                return matched
+        return None
+    except Exception:
+        return None
 
 
 def _build_cluster_summary(cluster: CandidateCluster) -> str:

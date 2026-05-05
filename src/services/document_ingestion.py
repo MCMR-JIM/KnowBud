@@ -377,6 +377,41 @@ def _classify_chunk(
                     proposed_topic_title = search_result.proposed_title
                 if search_result.parent_node_ids:
                     proposed_parent_node_ids = search_result.parent_node_ids
+                if proposed_topic_title:
+                    try:
+                        from src.services.resource_graph_curation import deduplicate_candidate_title
+
+                        state = backend.load_app_state(include_history=False)
+                        existing = [
+                            {
+                                "topic_id": t.topic_id,
+                                "title": t.title,
+                                "subject": _node_subject_tag(t.tags),
+                                "facet": _tag_value(t.tags, "facet:"),
+                                "language_id": _tag_value(t.tags, "language:"),
+                                "tags": t.tags,
+                            }
+                            for t in state.curriculum.topics
+                        ]
+                        matched_id = deduplicate_candidate_title(
+                            backend=backend,
+                            candidate_title=proposed_topic_title,
+                            candidate_subject=subject,
+                            candidate_facet="",
+                            candidate_text=text,
+                            candidate_language_id=language_id,
+                            existing_nodes=existing,
+                        )
+                        if matched_id:
+                            normalized["decision"] = "link"
+                            normalized["topic_id"] = matched_id
+                            normalized["confidence"] = max(normalized["confidence"], 0.8)
+                            normalized["reason"] = f"[语义消歧] 归并到已有节点 {matched_id}"
+                            normalized["proposed_topic"] = None
+                            proposed_topic_title = None
+                            proposed_parent_node_ids = []
+                    except Exception:
+                        pass
         except Exception:
             pass
 
@@ -487,6 +522,22 @@ def _normalize_chunk_decision(
         "guiding_question": guiding_question,
         "teaching_hint": teaching_hint,
     }
+
+
+def _tag_value(tags: list[str], prefix: str, default: str | None = None) -> str | None:
+    for tag in tags:
+        if tag.startswith(prefix):
+            return tag.split(":", 1)[1]
+    return default
+
+
+def _node_subject_tag(tags: list[str]) -> str:
+    raw = _tag_value(tags, "subject:")
+    if raw is None:
+        return "general"
+    if raw in {"english", "chinese", "语文", "中文"}:
+        return "language"
+    return raw
 
 
 def _infer_context_subject_and_language(

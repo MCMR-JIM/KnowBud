@@ -290,3 +290,187 @@ class TestSearchAgentE2E:
         result = agent.search("现在进行时")
         assert result.decision == "propose"
         assert "error" in result.reason
+
+
+class TestDeduplicateCandidateTitle:
+    def test_exact_synonym_merge(self, monkeypatch, tmp_path: Path):
+        from src.services.resource_graph_curation import deduplicate_candidate_title
+
+        backend = _build_search_backend(tmp_path)
+        existing = [
+            {"topic_id": "math_01", "title": "实数完备性", "subject": "math", "facet": "concept", "language_id": None, "tags": ["subject:math"]},
+        ]
+
+        def mock_create(**kwargs):
+            msg = MagicMock()
+            msg.content = '{"matched_topic_id": "math_01"}'
+            choice = SimpleNamespace(message=msg)
+            return SimpleNamespace(choices=[choice])
+
+        monkeypatch.setattr(backend.llm_skill.client.chat.completions, "create", mock_create)
+        result = deduplicate_candidate_title(
+            backend=backend,
+            candidate_title="实数的完备性",
+            candidate_subject="math",
+            candidate_facet="concept",
+            candidate_text="实数的完备性讲解",
+            existing_nodes=existing,
+        )
+        assert result == "math_01"
+
+    def test_cross_language_grammar_merge(self, monkeypatch, tmp_path: Path):
+        from src.services.resource_graph_curation import deduplicate_candidate_title
+
+        backend = _build_search_backend(tmp_path)
+        existing = [
+            {"topic_id": "eng_grammar_01", "title": "现在进行时", "subject": "language", "facet": "grammar", "language_id": "english", "tags": ["subject:language", "language:english"]},
+        ]
+
+        def mock_create(**kwargs):
+            msg = MagicMock()
+            msg.content = '{"matched_topic_id": "eng_grammar_01"}'
+            choice = SimpleNamespace(message=msg)
+            return SimpleNamespace(choices=[choice])
+
+        monkeypatch.setattr(backend.llm_skill.client.chat.completions, "create", mock_create)
+        result = deduplicate_candidate_title(
+            backend=backend,
+            candidate_title="Present Continuous",
+            candidate_subject="language",
+            candidate_facet="grammar",
+            candidate_text="Present Continuous describes ongoing actions",
+            candidate_language_id="english",
+            existing_nodes=existing,
+        )
+        assert result == "eng_grammar_01"
+
+    def test_different_concepts_no_merge(self, monkeypatch, tmp_path: Path):
+        from src.services.resource_graph_curation import deduplicate_candidate_title
+
+        backend = _build_search_backend(tmp_path)
+        existing = [
+            {"topic_id": "math_01", "title": "介值性定理", "subject": "math", "facet": "concept", "language_id": None, "tags": ["subject:math"]},
+        ]
+
+        def mock_create(**kwargs):
+            msg = MagicMock()
+            msg.content = '{"matched_topic_id": null}'
+            choice = SimpleNamespace(message=msg)
+            return SimpleNamespace(choices=[choice])
+
+        monkeypatch.setattr(backend.llm_skill.client.chat.completions, "create", mock_create)
+        result = deduplicate_candidate_title(
+            backend=backend,
+            candidate_title="零点定理",
+            candidate_subject="math",
+            candidate_facet="concept",
+            candidate_text="零点定理是数学分析中的重要定理",
+            existing_nodes=existing,
+        )
+        assert result is None
+
+    def test_cross_language_no_merge(self, monkeypatch, tmp_path: Path):
+        from src.services.resource_graph_curation import deduplicate_candidate_title
+
+        backend = _build_search_backend(tmp_path)
+        existing = [
+            {"topic_id": "eng_reading", "title": "阅读理解", "subject": "language", "facet": "reading", "language_id": "english", "tags": ["subject:language", "language:english"]},
+        ]
+
+        def mock_create(**kwargs):
+            msg = MagicMock()
+            msg.content = '{"matched_topic_id": null}'
+            choice = SimpleNamespace(message=msg)
+            return SimpleNamespace(choices=[choice])
+
+        monkeypatch.setattr(backend.llm_skill.client.chat.completions, "create", mock_create)
+        result = deduplicate_candidate_title(
+            backend=backend,
+            candidate_title="阅读理解",
+            candidate_subject="language",
+            candidate_facet="reading",
+            candidate_text="分析文章结构，回答课后问题",
+            candidate_language_id="chinese",
+            existing_nodes=existing,
+        )
+        assert result is None
+
+    def test_same_title_different_domain_no_merge(self, monkeypatch, tmp_path: Path):
+        from src.services.resource_graph_curation import deduplicate_candidate_title
+
+        backend = _build_search_backend(tmp_path)
+        existing = [
+            {"topic_id": "eng_writing", "title": "英语写作", "subject": "language", "facet": "writing", "language_id": "english", "tags": ["subject:language", "language:english"]},
+        ]
+
+        def mock_create(**kwargs):
+            msg = MagicMock()
+            msg.content = '{"matched_topic_id": null}'
+            choice = SimpleNamespace(message=msg)
+            return SimpleNamespace(choices=[choice])
+
+        monkeypatch.setattr(backend.llm_skill.client.chat.completions, "create", mock_create)
+        result = deduplicate_candidate_title(
+            backend=backend,
+            candidate_title="语文写作",
+            candidate_subject="language",
+            candidate_facet="writing",
+            candidate_text="学习写记叙文和议论文",
+            candidate_language_id="chinese",
+            existing_nodes=existing,
+        )
+        assert result is None
+
+    def test_empty_candidates_returns_none(self, monkeypatch, tmp_path: Path):
+        from src.services.resource_graph_curation import deduplicate_candidate_title
+
+        backend = _build_search_backend(tmp_path)
+        result = deduplicate_candidate_title(
+            backend=backend,
+            candidate_title="新概念",
+            candidate_subject="math",
+            candidate_facet="concept",
+            candidate_text="text",
+            existing_nodes=[],
+        )
+        assert result is None
+
+    def test_coarse_filter_skips_wrong_subject(self, monkeypatch, tmp_path: Path):
+        from src.services.resource_graph_curation import deduplicate_candidate_title
+
+        backend = _build_search_backend(tmp_path)
+        existing = [
+            {"topic_id": "eng_01", "title": "现在进行时", "subject": "language", "facet": "grammar", "language_id": "english", "tags": []},
+        ]
+
+        result = deduplicate_candidate_title(
+            backend=backend,
+            candidate_title="现在进行时",
+            candidate_subject="math",
+            candidate_facet="concept",
+            candidate_text="text",
+            existing_nodes=existing,
+        )
+        assert result is None
+
+    def test_llm_error_returns_none(self, monkeypatch, tmp_path: Path):
+        from src.services.resource_graph_curation import deduplicate_candidate_title
+
+        backend = _build_search_backend(tmp_path)
+        existing = [
+            {"topic_id": "math_01", "title": "实数完备性", "subject": "math", "facet": "concept", "language_id": None, "tags": []},
+        ]
+
+        def mock_create(**kwargs):
+            raise RuntimeError("API error")
+
+        monkeypatch.setattr(backend.llm_skill.client.chat.completions, "create", mock_create)
+        result = deduplicate_candidate_title(
+            backend=backend,
+            candidate_title="实数的完备性",
+            candidate_subject="math",
+            candidate_facet="concept",
+            candidate_text="text",
+            existing_nodes=existing,
+        )
+        assert result is None
