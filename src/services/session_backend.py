@@ -348,7 +348,7 @@ class SessionBackend:
                 topic_id=created_topic_id,
                 title=approved_title,
                 difficulty=max(1, min(5, difficulty)),
-                prerequisite_ids=approved_parents if approved_edge_type == "requires" else [],
+                prerequisite_ids=list(approved_parents),
                 tags=list(dict.fromkeys([*approved_tags, "resource-approved", "active"])),
             )
             state.curriculum.topics.append(topic)
@@ -356,8 +356,7 @@ class SessionBackend:
         else:
             topic.title = approved_title
             topic.difficulty = max(1, min(5, difficulty))
-            if approved_edge_type == "requires":
-                topic.prerequisite_ids = approved_parents
+            topic.prerequisite_ids = list(dict.fromkeys([*topic.prerequisite_ids, *approved_parents]))
             topic.tags = list(dict.fromkeys([*topic.tags, *approved_tags, "resource-approved", "active"]))
 
         proposal.title = approved_title

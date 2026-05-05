@@ -810,7 +810,7 @@ def _build_existing_match_maps(
         topic_map.setdefault(key, topic)
 
     proposal_map: dict[tuple[str, str | None, str, str], GraphProposalRecord] = {}
-    reusable_statuses = {"proposed", "validated", "shadow"}
+    reusable_statuses = {"proposed", "validated", "shadow", "active"}
     for proposal in proposals:
         if proposal.status not in reusable_statuses:
             continue
