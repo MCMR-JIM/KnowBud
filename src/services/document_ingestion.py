@@ -412,18 +412,6 @@ def _classify_chunk(
                             proposed_parent_node_ids = []
                     except Exception:
                         pass
-            if normalized["decision"] == "propose" and proposed_topic_title and not proposed_parent_node_ids:
-                try:
-                    prereq_results = agent.infer_prerequisites(
-                        concept_title=proposed_topic_title,
-                        concept_text=text,
-                        max_depth=2,
-                    )
-                    found_parents = [r["topic_id"] for r in prereq_results if r.get("topic_id")]
-                    if found_parents:
-                        proposed_parent_node_ids = found_parents
-                except Exception:
-                    pass
         except Exception:
             pass
 

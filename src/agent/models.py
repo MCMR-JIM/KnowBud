@@ -50,6 +50,7 @@ class GraphMutationProposal(BaseModel):
     summary: str
     tags: list[str] = Field(default_factory=list)
     parent_node_ids: list[str] = Field(default_factory=list)
+    prerequisite_node_ids: list[str] = Field(default_factory=list)
     pending_parent_proposal_ids: list[str] = Field(default_factory=list)
     edge_type: EdgeType = EdgeType.REQUIRES
     status: ProposalStatus = ProposalStatus.PROPOSED

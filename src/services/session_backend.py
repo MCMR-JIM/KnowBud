@@ -272,6 +272,7 @@ class SessionBackend:
         tags: list[str] | None = None,
         parent_node_ids: list[str],
         pending_parent_proposal_ids: list[str] | None = None,
+        prerequisite_node_ids: list[str] | None = None,
         edge_type: str,
         reason: str,
     ) -> GraphProposalRecord:
@@ -285,6 +286,7 @@ class SessionBackend:
             summary=summary.strip(),
             tags=list(dict.fromkeys(tags or [])),
             parent_node_ids=list(parent_node_ids),
+            prerequisite_node_ids=list(dict.fromkeys(prerequisite_node_ids or [])),
             pending_parent_proposal_ids=list(dict.fromkeys(pending_parent_proposal_ids or [])),
             edge_type=EdgeType(safe_edge_type),
             reason=reason[:80],
@@ -349,7 +351,10 @@ class SessionBackend:
                 title=approved_title,
                 difficulty=max(1, min(5, difficulty)),
                 parent_ids=list(approved_parents) if approved_edge_type != "requires" else [],
-                prerequisite_ids=list(approved_parents) if approved_edge_type == "requires" else [],
+                prerequisite_ids=list(dict.fromkeys(
+                    [*(approved_parents if approved_edge_type == "requires" else []),
+                     *(getattr(proposal, "prerequisite_node_ids", []))]
+                )),
                 tags=list(dict.fromkeys([*approved_tags, "resource-approved", "active"])),
             )
             state.curriculum.topics.append(topic)
@@ -361,6 +366,10 @@ class SessionBackend:
                 topic.prerequisite_ids = list(dict.fromkeys([*(getattr(topic, "prerequisite_ids", [])), *approved_parents]))
             else:
                 topic.parent_ids = list(dict.fromkeys([*(getattr(topic, "parent_ids", [])), *approved_parents]))
+            topic.prerequisite_ids = list(dict.fromkeys(
+                [*(getattr(topic, "prerequisite_ids", [])),
+                 *(getattr(proposal, "prerequisite_node_ids", []))]
+            ))
             topic.tags = list(dict.fromkeys([*topic.tags, *approved_tags, "resource-approved", "active"]))
 
         proposal.title = approved_title
@@ -902,6 +911,7 @@ class SessionBackend:
                 rec.summary = proposal.summary
                 rec.tags = list(dict.fromkeys(proposal.tags))
                 rec.parent_node_ids = list(proposal.parent_node_ids)
+                rec.prerequisite_node_ids = list(dict.fromkeys(getattr(proposal, "prerequisite_node_ids", [])))
                 rec.pending_parent_proposal_ids = list(dict.fromkeys(proposal.pending_parent_proposal_ids))
                 rec.edge_type = proposal.edge_type.value
                 self._transition_proposal_record(rec, to_status=target_status, reason=proposal.reason)
@@ -918,6 +928,7 @@ class SessionBackend:
                 trigger=proposal.trigger,
                 tags=list(dict.fromkeys(proposal.tags)),
                 parent_node_ids=list(proposal.parent_node_ids),
+                prerequisite_node_ids=list(dict.fromkeys(getattr(proposal, "prerequisite_node_ids", []))),
                 pending_parent_proposal_ids=list(dict.fromkeys(proposal.pending_parent_proposal_ids)),
                 edge_type=proposal.edge_type.value,
                 status=target_status,

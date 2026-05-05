@@ -501,12 +501,33 @@ def create_resource_level_proposals(
 
         cluster_parents = list(dict.fromkeys(valid_parent_ids)) if valid_parent_ids else parent_node_ids
 
+        cluster_prereq_ids: list[str] = []
+        if (
+            existing_topic is None
+            and existing_proposal is None
+            and cluster.subject != "general"
+            and backend.llm_skill.client.api_key
+        ):
+            try:
+                from src.services.graph_search import GraphSearchAgent
+
+                search_agent = GraphSearchAgent(backend, cluster.subject, cluster.language_id)
+                prereq_results = search_agent.infer_prerequisites(
+                    concept_title=cluster.title,
+                    concept_text=_representative_snippets([c.text for c in cluster.candidates]),
+                    max_depth=2,
+                )
+                cluster_prereq_ids = [r["topic_id"] for r in prereq_results if r.get("topic_id")]
+            except Exception:
+                cluster_prereq_ids = []
+
         has_subject_parent = subject != "general" and (bool(cluster_parents) or bool(pending_parent_proposal_ids))
         proposal = backend.create_graph_proposal_from_resource(
             title=cluster.title,
             summary=cluster_summary,
             tags=_proposal_tags(subject=cluster.subject, facet=cluster.facet, language_id=language_id),
             parent_node_ids=cluster_parents,
+            prerequisite_node_ids=cluster_prereq_ids,
             pending_parent_proposal_ids=pending_parent_proposal_ids if subject != "general" and not cluster_parents else [],
             edge_type="part_of" if has_subject_parent else cluster.edge_type,
             reason=cluster_reason,

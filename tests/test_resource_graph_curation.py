@@ -874,3 +874,74 @@ def test_weather_emotion_titles_are_clustered_after_normalization() -> None:
     assert len(clusters) == 1
     assert clusters[0].title == "天气如何影响我们的心情"
     assert len(clusters[0].candidates) == 2
+
+
+def test_prerequisite_inference_on_new_cluster(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    backend.llm_skill.client.api_key = "test_key"
+
+    state = backend.load_app_state(include_history=False)
+    state.curriculum.topics.append(
+        TopicNode(
+            topic_id="math_count", title="数数", difficulty=1,
+            prerequisite_ids=[], tags=["subject:math", "facet:concept"],
+        )
+    )
+    state.curriculum.topics.append(
+        TopicNode(
+            topic_id="math_add", title="加法运算", difficulty=1,
+            prerequisite_ids=[], tags=["subject:math", "facet:operation"],
+        )
+    )
+    backend.save_app_state(state)
+
+    backend.llm_skill.classify_or_propose_resource_chunk = lambda **_: {
+        "decision": "propose",
+        "topic_id": None,
+        "confidence": 0.85,
+        "reason": "new concept",
+        "proposed_topic": {
+            "title": "乘法",
+            "summary": "乘法是重复加法",
+            "parent_node_ids": ["demo_01"],
+            "edge_type": "requires",
+        },
+    }
+
+    import json
+    from unittest.mock import MagicMock
+    from types import SimpleNamespace
+
+    responses: list[list[dict]] = [
+        [{"keyword": "加法运算", "priority": "direct"}],
+        [],
+    ]
+
+    def mock_create(**kwargs):
+        data = responses.pop(0) if responses else []
+        msg = MagicMock()
+        msg.content = json.dumps(data)
+        return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+
+    backend.llm_skill._original_create = backend.llm_skill.client.chat.completions.create
+    backend.llm_skill.client.chat.completions.create = mock_create
+
+    try:
+        record = _create_record(tmp_path, backend, name="数学乘法", content="学习乘法的基本概念 数学")
+        topics = backend.load_app_state(include_history=False).curriculum.topics
+        segments = ingest_document_resource(
+            backend=backend, record=record, topics=topics, default_topic_id="demo_01",
+        )
+        assert len(segments) >= 1
+        assert segments[0].decision == "propose", f"expected propose, got {segments[0].decision} with status {segments[0].status}"
+
+        proposals = backend.load_app_state(include_history=False).learning.graph_proposals
+        content_proposal = next(
+            (p for p in proposals if p.title == "乘法"),
+            None,
+        )
+        assert content_proposal is not None, f"proposal titles: {[p.title for p in proposals]}, segment status: {segments[0].status}, decision: {segments[0].decision}, proposed_title: {segments[0].proposed_topic_title}"
+        prereq_ids = list(getattr(content_proposal, "prerequisite_node_ids", []))
+        assert "math_add" in prereq_ids, f"expected math_add in prereqs, got {prereq_ids}"
+    finally:
+        backend.llm_skill.client.chat.completions.create = backend.llm_skill._original_create
