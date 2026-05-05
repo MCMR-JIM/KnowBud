@@ -98,6 +98,7 @@ def ingest_document_resource(
                 segments=[],
                 topics=topics,
                 default_topic_id=default_topic_id or record.topic_id,
+                backend=backend,
             )
             if detected != "general":
                 _ctx_subject = detected

@@ -88,8 +88,8 @@ SUBJECT_PROFILES: dict[str, SubjectProfile] = {
         subject_id="math",
         root_title="数学",
         aliases=("数学", "math"),
-        strong_markers=("数学", "equation", "geometry", "algebra", "fraction"),
-        weak_markers=("加法", "减法", "乘法", "除法", "方程", "函数", "几何", "面积", "周长"),
+        strong_markers=("数学", "equation", "geometry", "algebra", "fraction", "定理", "证明", "推论", "坐标系", "勾股定理", "方程"),
+        weak_markers=("加法", "减法", "乘法", "除法", "函数", "几何", "面积", "周长", "一元一次方程", "不等式", "统计"),
         facets=("concept", "operation", "theorem_or_rule", "method", "application"),
         default_facet="concept",
         non_node_patterns=(r"练习", r"活动", r"project"),
@@ -100,7 +100,7 @@ SUBJECT_PROFILES: dict[str, SubjectProfile] = {
         subject_id="science",
         root_title="科学",
         aliases=("科学", "science"),
-        strong_markers=("科学", "experiment", "ecosystem", "matter"),
+        strong_markers=("科学", "experiment", "ecosystem", "matter", "光合作用", "细胞", "化合物", "元素周期", "电路"),
         weak_markers=("实验", "现象", "模型", "能量", "定律", "公式"),
         facets=("concept", "quantity", "formula", "law", "experiment", "phenomenon", "model"),
         default_facet="concept",
@@ -224,6 +224,7 @@ def detect_resource_subject(
     segments: list[ResourceSegment],
     topics: list[TopicNode],
     default_topic_id: str | None = None,
+    backend: "SessionBackend" | None = None,
 ) -> str:
     topic_map = {topic.topic_id: topic for topic in topics}
     resource_name = (record.resource_name or "").lower()
@@ -256,6 +257,35 @@ def detect_resource_subject(
         topic_subject = _infer_topic_subject(topic)
         if topic_subject != "general":
             return topic_subject
+
+    if backend is not None and backend.llm_skill.client.api_key:
+        try:
+            sample = text[:800]
+            subject_list = ", ".join(sorted(k for k in SUBJECT_PROFILES if k != "general"))
+            response = backend.llm_skill.client.chat.completions.create(
+                model=backend.llm_skill.model_name,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            f"你是学科分类助手。给定文档名和片段，判断最匹配的学科：{subject_list}。"
+                            "只返回学科 key，例如 'math'。"
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": f"文档名: {record.resource_name}\n片段: {sample}",
+                    },
+                ],
+                temperature=0.1,
+                timeout=30.0,
+            )
+            llm = (response.choices[0].message.content or "").strip().lower()
+            if llm in SUBJECT_PROFILES and llm != "general":
+                return llm
+        except Exception:
+            pass
+
     return "general"
 
 
@@ -460,7 +490,7 @@ def create_resource_level_proposals(
     topics: list[TopicNode],
     default_topic_id: str | None = None,
 ) -> list[GraphProposalRecord]:
-    subject = detect_resource_subject(record=record, segments=segments, topics=topics, default_topic_id=default_topic_id)
+    subject = detect_resource_subject(record=record, segments=segments, topics=topics, default_topic_id=default_topic_id, backend=backend)
     profile = SUBJECT_PROFILES.get(subject, SUBJECT_PROFILES["general"])
     language_id = _detect_language_id(record.resource_name, "\n".join(filter(None, [record.original_filename, *(segment.text or "" for segment in segments)]))) if subject == "language" else None
     candidate_topics: list[CandidateTopic] = []

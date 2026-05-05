@@ -36,10 +36,21 @@ def _build_backend(tmp_path: Path) -> SessionBackend:
 def _make_client(monkeypatch, tmp_path: Path, backend: SessionBackend) -> TestClient:
     data_root = tmp_path / "data"
     monkeypatch.setenv("DATA_ROOT", str(data_root))
+    if hasattr(backend.llm_skill, "client") and hasattr(backend.llm_skill.client, "chat"):
+        monkeypatch.setattr(
+            backend.llm_skill.client.chat.completions,
+            "create",
+            lambda **_: _make_subject_detection_mock(),
+        )
     runtime = app_module.SingleSessionRuntime(backend_factory=lambda: backend)
     monkeypatch.setattr(app_module, "get_backend", lambda: backend)
     monkeypatch.setattr(app_module, "get_runtime", lambda: runtime)
     return TestClient(app_module.app)
+
+
+def _make_subject_detection_mock():
+    from types import SimpleNamespace
+    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="general"))])
 
 
 def _wait_for_ingestion(
