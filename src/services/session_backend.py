@@ -348,7 +348,8 @@ class SessionBackend:
                 topic_id=created_topic_id,
                 title=approved_title,
                 difficulty=max(1, min(5, difficulty)),
-                prerequisite_ids=list(approved_parents),
+                parent_ids=list(approved_parents) if approved_edge_type != "requires" else [],
+                prerequisite_ids=list(approved_parents) if approved_edge_type == "requires" else [],
                 tags=list(dict.fromkeys([*approved_tags, "resource-approved", "active"])),
             )
             state.curriculum.topics.append(topic)
@@ -356,7 +357,10 @@ class SessionBackend:
         else:
             topic.title = approved_title
             topic.difficulty = max(1, min(5, difficulty))
-            topic.prerequisite_ids = list(dict.fromkeys([*topic.prerequisite_ids, *approved_parents]))
+            if approved_edge_type == "requires":
+                topic.prerequisite_ids = list(dict.fromkeys([*(getattr(topic, "prerequisite_ids", [])), *approved_parents]))
+            else:
+                topic.parent_ids = list(dict.fromkeys([*(getattr(topic, "parent_ids", [])), *approved_parents]))
             topic.tags = list(dict.fromkeys([*topic.tags, *approved_tags, "resource-approved", "active"]))
 
         proposal.title = approved_title
@@ -444,11 +448,18 @@ class SessionBackend:
                     item for item in proposal.pending_parent_proposal_ids if item != parent_proposal_id
                 ]
                 proposal.updated_ts = updated_ts
-            if not proposal.created_topic_id or proposal.edge_type != "requires":
+            if not proposal.created_topic_id:
                 continue
             topic = topic_by_id.get(proposal.created_topic_id)
-            if topic is not None and parent_topic_id not in topic.prerequisite_ids:
-                topic.prerequisite_ids.append(parent_topic_id)
+            if topic is not None:
+                if proposal.edge_type == "requires":
+                    if parent_topic_id not in topic.prerequisite_ids:
+                        topic.prerequisite_ids.append(parent_topic_id)
+                else:
+                    if parent_topic_id not in getattr(topic, "parent_ids", []):
+                        if not hasattr(topic, "parent_ids"):
+                            topic.parent_ids = []
+                        topic.parent_ids.append(parent_topic_id)
 
     def _activate_proposal_record(self, rec: GraphProposalRecord, *, reason: str) -> None:
         if rec.status == "proposed":

@@ -1231,6 +1231,7 @@ def _topic_info(topic) -> TopicInfo:
         topic_id=topic.topic_id,
         title=topic.title,
         difficulty=topic.difficulty,
+        parent_ids=list(getattr(topic, "parent_ids", [])),
         prerequisite_ids=list(topic.prerequisite_ids),
         tags=list(topic.tags),
     )

@@ -15,7 +15,8 @@ class TopicNode(BaseModel):
     topic_id: str
     title: str
     difficulty: int
-    prerequisite_ids: list[str]
+    parent_ids: list[str] = Field(default_factory=list)
+    prerequisite_ids: list[str] = Field(default_factory=list)
     tags: list[str]
 
 class PendingQuestion(BaseModel):

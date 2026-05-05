@@ -34,6 +34,7 @@ class TopicInfo(BaseModel):
     topic_id: str
     title: str
     difficulty: int
+    parent_ids: list[str] = Field(default_factory=list)
     prerequisite_ids: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
 
