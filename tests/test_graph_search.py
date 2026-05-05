@@ -1,0 +1,292 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+from src.core.enums import LearningPhase
+from src.core.models import TopicNode
+from src.services.graph_search import GraphSearchAgent, SearchResult
+from src.services.session_backend import SessionBackend
+
+
+def _build_search_backend(tmp_path: Path) -> SessionBackend:
+    backend = SessionBackend()
+    backend.state_file = tmp_path / "state.json"
+    backend.state_db_file = str(tmp_path / "state.db")
+    backend.log_file = tmp_path / "decision_trace.jsonl"
+
+    state = backend.load_app_state()
+    state.learning.current_phase = LearningPhase.LEARNING
+    state.curriculum.topics = [
+        TopicNode(
+            topic_id="eng_present_continuous",
+            title="现在进行时",
+            difficulty=1,
+            tags=["subject:language", "facet:grammar", "language:english"],
+        ),
+        TopicNode(
+            topic_id="eng_simple_past",
+            title="一般过去时",
+            difficulty=1,
+            tags=["subject:language", "facet:grammar", "language:english"],
+        ),
+        TopicNode(
+            topic_id="chi_reading",
+            title="阅读理解",
+            difficulty=2,
+            tags=["subject:language", "facet:reading", "language:chinese"],
+        ),
+        TopicNode(
+            topic_id="eng_reading",
+            title="Reading Comprehension",
+            difficulty=2,
+            tags=["subject:language", "facet:reading", "language:english"],
+        ),
+        TopicNode(
+            topic_id="math_addition",
+            title="一位数加法",
+            difficulty=1,
+            tags=["subject:math", "facet:operation"],
+        ),
+    ]
+    backend.save_app_state(state)
+    return backend
+
+
+def _make_mock_response(finish_reason, *, content=None, tool_calls=None):
+    msg = MagicMock()
+    msg.content = content
+    msg.tool_calls = tool_calls or []
+    if tool_calls:
+        msg.model_dump.return_value = {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                }
+                for tc in tool_calls
+            ],
+        }
+    else:
+        msg.model_dump.return_value = {"role": "assistant", "content": content}
+    choice = SimpleNamespace(finish_reason=finish_reason, message=msg)
+    return SimpleNamespace(choices=[choice])
+
+
+def _make_tool_call(call_id, name, arguments):
+    tc = MagicMock()
+    tc.id = call_id
+    tc.function.name = name
+    tc.function.arguments = json.dumps(arguments)
+    return tc
+
+
+class TestToolFunctions:
+    def test_list_topics_by_subject_facet_filters_by_language(self, tmp_path: Path):
+        backend = _build_search_backend(tmp_path)
+        agent = GraphSearchAgent(backend, "language", "english")
+        topics = agent._list_topics_by_subject_facet()
+        titles = {t["title"] for t in topics}
+        assert "现在进行时" in titles
+        assert "一般过去时" in titles
+        assert "Reading Comprehension" in titles
+
+    def test_list_topics_by_subject_facet_filters_chinese(self, tmp_path: Path):
+        backend = _build_search_backend(tmp_path)
+        agent = GraphSearchAgent(backend, "language", "chinese")
+        topics = agent._list_topics_by_subject_facet()
+        titles = {t["title"] for t in topics}
+        assert "阅读理解" in titles
+        assert "现在进行时" not in titles
+
+    def test_list_topics_by_subject_facet_with_facet(self, tmp_path: Path):
+        backend = _build_search_backend(tmp_path)
+        agent = GraphSearchAgent(backend, "language", "english")
+        topics = agent._list_topics_by_subject_facet(facet="grammar")
+        titles = {t["title"] for t in topics}
+        assert "现在进行时" in titles
+        assert "一般过去时" in titles
+        assert "Reading Comprehension" not in titles
+
+    def test_list_topics_by_math_subject(self, tmp_path: Path):
+        backend = _build_search_backend(tmp_path)
+        agent = GraphSearchAgent(backend, "math")
+        topics = agent._list_topics_by_subject_facet()
+        titles = {t["title"] for t in topics}
+        assert "一位数加法" in titles
+
+    def test_search_topics_by_title_exact_chinese(self, tmp_path: Path):
+        backend = _build_search_backend(tmp_path)
+        agent = GraphSearchAgent(backend, "language", "english")
+        results = agent._search_topics_by_title("现在进行时")
+        assert len(results) > 0
+        assert results[0]["topic_id"] == "eng_present_continuous"
+
+    def test_search_topics_by_title_english_substring(self, tmp_path: Path):
+        backend = _build_search_backend(tmp_path)
+        agent = GraphSearchAgent(backend, "language", "english")
+        results = agent._search_topics_by_title("Reading")
+        assert len(results) > 0
+        assert results[0]["topic_id"] == "eng_reading"
+
+    def test_search_topics_by_title_no_match(self, tmp_path: Path):
+        backend = _build_search_backend(tmp_path)
+        agent = GraphSearchAgent(backend, "language", "english")
+        results = agent._search_topics_by_title("黑洞蒸发")
+        assert len(results) == 0
+
+    def test_search_topics_by_title_cross_language(self, tmp_path: Path):
+        backend = _build_search_backend(tmp_path)
+        agent = GraphSearchAgent(backend, "language", "chinese")
+        results = agent._search_topics_by_title("Reading Comprehension")
+        assert len(results) > 0
+        assert results[0]["topic_id"] == "eng_reading"
+
+    def test_get_topic_detail(self, tmp_path: Path):
+        backend = _build_search_backend(tmp_path)
+        agent = GraphSearchAgent(backend, "language", "english")
+        detail = agent._get_topic_detail("eng_present_continuous")
+        assert detail is not None
+        assert detail["title"] == "现在进行时"
+        assert "subject:language" in detail["tags"]
+
+    def test_get_topic_detail_missing(self, tmp_path: Path):
+        backend = _build_search_backend(tmp_path)
+        agent = GraphSearchAgent(backend, "language", "english")
+        detail = agent._get_topic_detail("nonexistent")
+        assert detail is None
+
+
+class TestSearchResultParsing:
+    def test_parse_link(self):
+        agent = GraphSearchAgent.__new__(GraphSearchAgent)
+        raw = '{"decision":"link","matched_topic_id":"eng_present_continuous","matched_title":"现在进行时","parent_node_ids":[],"confidence":0.95,"reason":"精确匹配","proposed_title":null}'
+        result = agent._parse_search_result(raw)
+        assert result.decision == "link"
+        assert result.matched_topic_id == "eng_present_continuous"
+        assert result.confidence == 0.95
+
+    def test_parse_propose(self):
+        agent = GraphSearchAgent.__new__(GraphSearchAgent)
+        raw = '{"decision":"propose","matched_topic_id":null,"matched_title":null,"parent_node_ids":["eng_root"],"confidence":0.8,"reason":"新概念","proposed_title":"黑洞蒸发"}'
+        result = agent._parse_search_result(raw)
+        assert result.decision == "propose"
+        assert result.proposed_title == "黑洞蒸发"
+        assert result.parent_node_ids == ["eng_root"]
+
+    def test_parse_with_markdown_wrapper(self):
+        agent = GraphSearchAgent.__new__(GraphSearchAgent)
+        raw = '```json\n{"decision":"ambiguous","matched_topic_id":null,"matched_title":null,"parent_node_ids":[],"confidence":0.5,"reason":"模糊","proposed_title":null}\n```'
+        result = agent._parse_search_result(raw)
+        assert result.decision == "ambiguous"
+
+    def test_parse_invalid_json(self):
+        agent = GraphSearchAgent.__new__(GraphSearchAgent)
+        result = agent._parse_search_result("not json")
+        assert result.decision == "ambiguous"
+
+    def test_parse_rerank(self):
+        agent = GraphSearchAgent.__new__(GraphSearchAgent)
+        raw = '[{"topic_id":"a","relevance":"high"},{"topic_id":"b","relevance":"low"}]'
+        result = agent._parse_rerank_result(raw)
+        assert len(result) == 2
+        assert result[0]["relevance"] == "high"
+
+
+class TestSearchAgentE2E:
+    def test_exact_match_returns_link(self, monkeypatch, tmp_path: Path):
+        backend = _build_search_backend(tmp_path)
+        call_log = []
+
+        def mock_create(**kwargs):
+            call_log.append(kwargs.get("tools") is not None)
+            if len(call_log) == 1:
+                tc = _make_tool_call("call_1", "search_topics_by_title", {"query": "现在进行时"})
+                return _make_mock_response("tool_calls", tool_calls=[tc])
+            return _make_mock_response(
+                "stop",
+                content='{"decision":"link","matched_topic_id":"eng_present_continuous","matched_title":"现在进行时","parent_node_ids":[],"confidence":0.95,"reason":"exact title match","proposed_title":null}',
+            )
+
+        monkeypatch.setattr(backend.llm_skill.client.chat.completions, "create", mock_create)
+        agent = GraphSearchAgent(backend, "language", "english")
+        result = agent.search("现在进行时")
+        assert result.decision == "link"
+        assert result.matched_topic_id == "eng_present_continuous"
+        assert result.confidence >= 0.55
+
+    def test_alias_match_returns_link(self, monkeypatch, tmp_path: Path):
+        backend = _build_search_backend(tmp_path)
+        call_log = []
+
+        def mock_create(**kwargs):
+            call_log.append(kwargs.get("tools") is not None)
+            if len(call_log) == 1:
+                tc = _make_tool_call("call_1", "search_topics_by_title", {"query": "present continuous"})
+                return _make_mock_response("tool_calls", tool_calls=[tc])
+            return _make_mock_response(
+                "stop",
+                content='{"decision":"link","matched_topic_id":"eng_present_continuous","matched_title":"现在进行时","parent_node_ids":[],"confidence":0.88,"reason":"alias match via search and rerank","proposed_title":null}',
+            )
+
+        monkeypatch.setattr(backend.llm_skill.client.chat.completions, "create", mock_create)
+        agent = GraphSearchAgent(backend, "language", "english")
+        result = agent.search("present continuous is used for ongoing actions")
+        assert result.decision == "link"
+        assert result.matched_topic_id == "eng_present_continuous"
+
+    def test_no_match_returns_propose(self, monkeypatch, tmp_path: Path):
+        backend = _build_search_backend(tmp_path)
+        call_log = []
+
+        def mock_create(**kwargs):
+            call_log.append(kwargs.get("tools") is not None)
+            if len(call_log) == 1:
+                tc = _make_tool_call("call_1", "search_topics_by_title", {"query": "黑洞蒸发"})
+                return _make_mock_response("tool_calls", tool_calls=[tc])
+            return _make_mock_response(
+                "stop",
+                content='{"decision":"propose","matched_topic_id":null,"matched_title":null,"parent_node_ids":[],"confidence":0.85,"reason":"no existing topic for this concept","proposed_title":"黑洞蒸发"}',
+            )
+
+        monkeypatch.setattr(backend.llm_skill.client.chat.completions, "create", mock_create)
+        agent = GraphSearchAgent(backend, "language", "english")
+        result = agent.search("黑洞蒸发是霍金提出的理论")
+        assert result.decision == "propose"
+        assert result.proposed_title == "黑洞蒸发"
+
+    def test_cross_language_no_link(self, monkeypatch, tmp_path: Path):
+        backend = _build_search_backend(tmp_path)
+        call_log = []
+
+        def mock_create(**kwargs):
+            call_log.append(kwargs.get("tools") is not None)
+            if len(call_log) == 1:
+                tc = _make_tool_call("call_1", "search_topics_by_title", {"query": "阅读理解"})
+                return _make_mock_response("tool_calls", tool_calls=[tc])
+            return _make_mock_response(
+                "stop",
+                content='{"decision":"propose","matched_topic_id":null,"matched_title":null,"parent_node_ids":[],"confidence":0.8,"reason":"english reading is a different concept","proposed_title":"阅读理解"}',
+            )
+
+        monkeypatch.setattr(backend.llm_skill.client.chat.completions, "create", mock_create)
+        agent = GraphSearchAgent(backend, "language", "english")
+        result = agent.search("阅读理解")
+        assert result.decision == "propose"
+
+    def test_search_handles_error_gracefully(self, monkeypatch, tmp_path: Path):
+        backend = _build_search_backend(tmp_path)
+
+        def mock_create(**kwargs):
+            raise RuntimeError("API error")
+
+        monkeypatch.setattr(backend.llm_skill.client.chat.completions, "create", mock_create)
+        agent = GraphSearchAgent(backend, "language", "english")
+        result = agent.search("现在进行时")
+        assert result.decision == "propose"
+        assert "error" in result.reason

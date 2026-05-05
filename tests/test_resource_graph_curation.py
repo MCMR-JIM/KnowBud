@@ -853,6 +853,7 @@ def test_weather_emotion_titles_are_clustered_after_normalization() -> None:
                 reason="候选 1",
                 text="Weather can change how people feel.",
                 edge_type="related",
+                proposed_parent_node_ids=[],
             ),
             CandidateTopic(
                 segment_index=1,
@@ -865,6 +866,7 @@ def test_weather_emotion_titles_are_clustered_after_normalization() -> None:
                 reason="候选 2",
                 text="The weather affects our moods.",
                 edge_type="related",
+                proposed_parent_node_ids=[],
             ),
         ]
     )

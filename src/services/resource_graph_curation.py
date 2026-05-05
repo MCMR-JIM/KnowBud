@@ -288,6 +288,17 @@ def classify_candidate_kind(title: str, text: str, *, subject: str) -> Candidate
     lowered = f"{cleaned_title}\n{text}".lower()
     title_lowered = cleaned_title.lower()
 
+    # Reject titles that are still derivation-chains after _clean_title
+    # (i.e. _clean_title didn't strip them because the arrow chars weren't decoded)
+    # Use unicode escapes to avoid encoding issues in the source file
+    _derivation_re = re.compile(
+        r"[\u21d2\u21d4\u2192\u2190\u2194]"  # ⇒⇔→←↔
+        r"|\u63a8\u51fa.+"                    # 推出...
+        r"|(\u4e0e|\u548c).+\u7684\u7b49\u4ef7\u6027"  # 与/和...的等价性
+    )
+    if _derivation_re.search(cleaned_title):
+        return CandidateKind(subject=subject, facet=profile.default_facet, include=False, filter_reason="derivation-chain, not a standalone topic")
+
     if subject == "language":
         if _is_story_title_only(cleaned_title, lowered):
             return CandidateKind(subject=subject, facet="reading", include=True, title_hint=_language_reading_title(lowered))
@@ -472,8 +483,22 @@ def create_resource_level_proposals(
         cluster_summary = _build_cluster_summary(cluster)
         cluster_reason = f"resource batch cluster; facet={cluster.facet}; segments={len(cluster.candidates)}"
 
-        # If the LLM specifically proposed parent node IDs, respect them. Otherwise fallback.
-        cluster_parents = cluster.parent_node_ids if cluster.parent_node_ids else parent_node_ids
+        # Validate LLM-proposed parent IDs: keep only same-subject compatible parents
+        valid_parent_ids: list[str] = []
+        if cluster.parent_node_ids:
+            topic_lookup = {topic.topic_id: topic for topic in topics}
+            for pid in cluster.parent_node_ids:
+                parent_topic = topic_lookup.get(pid)
+                if parent_topic is None:
+                    continue
+                parent_subject = _infer_topic_subject(parent_topic)
+                if parent_subject != subject:
+                    continue
+                if not _is_root_like_topic(parent_topic, subject):
+                    continue
+                valid_parent_ids.append(pid)
+
+        cluster_parents = list(dict.fromkeys(valid_parent_ids)) if valid_parent_ids else parent_node_ids
 
         has_subject_parent = subject != "general" and (bool(cluster_parents) or bool(pending_parent_proposal_ids))
         proposal = backend.create_graph_proposal_from_resource(
@@ -523,10 +548,16 @@ def _representative_snippets(texts: list[str]) -> str:
 
 
 def _clean_title(title: str) -> str:
-    cleaned = re.sub(r"[《》\"“”'']", "", title or "")
-    # Remove common question words and descriptive suffixes to aid deduplication
-    cleaned = re.sub(r"^(什么是|什么是|关于|浅析|探究|理解|掌握|学习)", "", cleaned)
+    cleaned = re.sub(r'[《》“”‘’"\']', "", title or "")
+    # Remove common question words and descriptive suffixes
+    cleaned = re.sub(r"^(什么是|关于|浅析|探究|理解|掌握|学习)", "", cleaned)
     cleaned = re.sub(r"(是什么|及其应用|的应用|的证明|的推导|的意义|的概念|简介|概述)$", "", cleaned)
+    # Strip derivation-chain tails: "A⇒B" -> "A"; "A推出B" -> "A"
+    cleaned = re.sub(r"[\u21d2\u21d4\u2192\u2190\u2194].+$", "", cleaned)
+    cleaned = re.sub(r"\u63a8\u51fa.+$", "", cleaned)
+    # Strip conjunction-equivalence tails only when "的" precedes the suffix:
+    # "A与B的等价性" -> "A", but "实数完备性六大定理等价性" stays as-is
+    cleaned = re.sub(r"(\u4e0e|\u548c)[^\s]{2,}?\u7684(\u7b49\u4ef7\u6027|\u8054\u7cfb|\u5173\u7cfb)$", "", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned[:120]
 

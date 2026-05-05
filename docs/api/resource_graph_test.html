@@ -987,15 +987,12 @@
                 proposed: statusRes.proposed_count,
                 classified: statusRes.classified_count 
               });
-              await refreshAll();
+              log('>>> 请手动点击顶部【刷新图结构】查看最新大图与侧边栏 <<<');
             } else if (statusRes.status === 'failed') {
               clearInterval(pollInterval);
               log('解析失败', { error: statusRes.error });
             } else {
               log(`处理中... 已分类: ${statusRes.classified_count}/${statusRes.segment_count}，新提案: ${statusRes.proposed_count}`);
-              if (statusRes.proposed_count > 0) {
-                await refreshProposalsOnly();
-              }
             }
           } catch (err) {
             log('轮询状态失败', { error: err.message });
@@ -1003,7 +1000,7 @@
           }
         }, 3000);
       } else {
-        await refreshAll();
+        log('>>> 请手动点击顶部【刷新图结构】查看最新大图与侧边栏 <<<');
       }
     }
 

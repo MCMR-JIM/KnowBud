@@ -653,6 +653,7 @@ def _run_resource_ingestion(*, resource_id: str, default_topic_id: str) -> None:
             topics=topics,
             default_topic_id=default_topic_id,
             progress_callback=progress,
+            enable_graph_search=True,
         )
         backend.update_resource_ingestion(resource_id, status="completed", error=None)
         updated = backend.get_resource(resource_id)

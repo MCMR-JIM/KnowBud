@@ -31,6 +31,7 @@ def ingest_document_resource(
     topics: list[TopicNode],
     default_topic_id: str | None = None,
     progress_callback: Callable[[str, dict[str, object]], None] | None = None,
+    enable_graph_search: bool = False,
 ) -> list[ResourceSegment]:
     parser = _select_parser(record)
     if parser is None:
@@ -84,6 +85,10 @@ def ingest_document_resource(
         backend.replace_resource_segments(record.resource_id, segments)
         return segments
 
+    _ctx_subject, _ctx_language_id = _infer_context_subject_and_language(
+        topics=topics, default_topic_id=(default_topic_id or record.topic_id)
+    ) if enable_graph_search else (None, None)
+
     segments: list[ResourceSegment] = []
     for index, chunk in enumerate(chunks):
         if progress_callback is not None:
@@ -103,6 +108,8 @@ def ingest_document_resource(
                 chunk=chunk,
                 topics=topics,
                 default_topic_id=default_topic_id or record.topic_id,
+                subject=_ctx_subject,
+                language_id=_ctx_language_id,
             )
         )
 
@@ -311,6 +318,8 @@ def _classify_chunk(
     chunk: TextUnit,
     topics: list[TopicNode],
     default_topic_id: str | None,
+    subject: str | None = None,
+    language_id: str | None = None,
 ) -> ResourceSegment:
     text = chunk.text.strip()
     normalized = {
@@ -348,6 +357,28 @@ def _classify_chunk(
             "guiding_question": "",
             "teaching_hint": "",
         }
+
+    if normalized["decision"] == "propose" and subject is not None and backend.llm_skill.client.api_key:
+        try:
+            from src.services.graph_search import GraphSearchAgent
+
+            agent = GraphSearchAgent(backend, subject, language_id)
+            search_result = agent.search(chunk_text=text)
+            if search_result.decision == "link" and search_result.confidence >= 0.55:
+                normalized["decision"] = "link"
+                normalized["topic_id"] = search_result.matched_topic_id
+                normalized["confidence"] = max(normalized["confidence"], search_result.confidence)
+                normalized["reason"] = f"[图谱去重] {search_result.reason[:60]}"
+                normalized["proposed_topic"] = None
+                proposed_topic_title = None
+                proposed_parent_node_ids = []
+            elif search_result.decision == "propose":
+                if search_result.proposed_title:
+                    proposed_topic_title = search_result.proposed_title
+                if search_result.parent_node_ids:
+                    proposed_parent_node_ids = search_result.parent_node_ids
+        except Exception:
+            pass
 
     if normalized["decision"] == "link" and normalized["topic_id"]:
         status = "classified"
@@ -456,6 +487,27 @@ def _normalize_chunk_decision(
         "guiding_question": guiding_question,
         "teaching_hint": teaching_hint,
     }
+
+
+def _infer_context_subject_and_language(
+    *,
+    topics: list[TopicNode],
+    default_topic_id: str | None,
+) -> tuple[str | None, str | None]:
+    if not default_topic_id:
+        return None, None
+    for topic in topics:
+        if topic.topic_id == default_topic_id:
+            subject: str | None = None
+            language_id: str | None = None
+            for tag in topic.tags:
+                if tag.startswith("subject:"):
+                    raw = tag.split(":", 1)[1]
+                    subject = "language" if raw in {"english", "chinese", "语文", "中文"} else raw
+                if tag.startswith("language:"):
+                    language_id = tag.split(":", 1)[1]
+            return subject, language_id
+    return None, None
 
 
 def _status_segment(
