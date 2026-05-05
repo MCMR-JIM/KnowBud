@@ -323,6 +323,7 @@ def _classify_chunk(
         "teaching_hint": "",
     }
     proposed_topic_title: str | None = None
+    proposed_parent_node_ids: list[str] = []
 
     try:
         result = backend.llm_skill.classify_or_propose_resource_chunk(
@@ -336,6 +337,7 @@ def _classify_chunk(
                 proposed_topic = normalized["proposed_topic"]
                 if isinstance(proposed_topic, dict):
                     proposed_topic_title = str(proposed_topic.get("title", "")).strip() or None
+                    proposed_parent_node_ids = proposed_topic.get("parent_node_ids") or []
     except Exception as exc:
         normalized = {
             "decision": "unclassified",
@@ -367,6 +369,7 @@ def _classify_chunk(
         topic_id=str(normalized["topic_id"]) if normalized["topic_id"] is not None else None,
         proposal_id=None,
         proposed_topic_title=proposed_topic_title,
+        proposed_parent_node_ids=proposed_parent_node_ids,
         decision=str(normalized["decision"]),
         confidence=float(normalized["confidence"]),
         reason=str(normalized["reason"]),

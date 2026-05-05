@@ -203,6 +203,7 @@ class CandidateTopic:
     reason: str
     text: str
     edge_type: str
+    proposed_parent_node_ids: list[str]
 
 
 @dataclass
@@ -212,6 +213,7 @@ class CandidateCluster:
     language_id: str | None
     facet: str
     edge_type: str
+    parent_node_ids: list[str]
     candidates: list[CandidateTopic]
 
 
@@ -322,6 +324,11 @@ def cluster_candidate_topics(candidates: list[CandidateTopic]) -> list[Candidate
     for (subject, language_id, facet, normalized_title), items in buckets.items():
         edge_type = _pick_edge_type(items, subject=subject)
         ordered = sorted(items, key=lambda item: (-item.confidence, item.segment_index))
+        all_parents = []
+        for item in ordered:
+            for pid in item.proposed_parent_node_ids:
+                if pid not in all_parents:
+                    all_parents.append(pid)
         clusters.append(
             CandidateCluster(
                 title=normalized_title,
@@ -329,6 +336,7 @@ def cluster_candidate_topics(candidates: list[CandidateTopic]) -> list[Candidate
                 language_id=language_id,
                 facet=facet,
                 edge_type=edge_type,
+                parent_node_ids=all_parents,
                 candidates=ordered,
             )
         )
@@ -387,6 +395,7 @@ def create_resource_level_proposals(
                 reason=segment.reason,
                 text=segment.text or "",
                 edge_type=profile.default_edge_type,
+                proposed_parent_node_ids=segment.proposed_parent_node_ids,
             )
         )
 
@@ -463,13 +472,16 @@ def create_resource_level_proposals(
         cluster_summary = _build_cluster_summary(cluster)
         cluster_reason = f"resource batch cluster; facet={cluster.facet}; segments={len(cluster.candidates)}"
 
-        has_subject_parent = subject != "general" and (bool(parent_node_ids) or bool(pending_parent_proposal_ids))
+        # If the LLM specifically proposed parent node IDs, respect them. Otherwise fallback.
+        cluster_parents = cluster.parent_node_ids if cluster.parent_node_ids else parent_node_ids
+
+        has_subject_parent = subject != "general" and (bool(cluster_parents) or bool(pending_parent_proposal_ids))
         proposal = backend.create_graph_proposal_from_resource(
             title=cluster.title,
             summary=cluster_summary,
             tags=_proposal_tags(subject=cluster.subject, facet=cluster.facet, language_id=language_id),
-            parent_node_ids=parent_node_ids,
-            pending_parent_proposal_ids=pending_parent_proposal_ids if subject != "general" and not parent_node_ids else [],
+            parent_node_ids=cluster_parents,
+            pending_parent_proposal_ids=pending_parent_proposal_ids if subject != "general" and not cluster_parents else [],
             edge_type="part_of" if has_subject_parent else cluster.edge_type,
             reason=cluster_reason,
         )

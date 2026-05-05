@@ -64,6 +64,7 @@ class ResourceSegment(BaseModel):
     topic_id: Optional[str] = None
     proposal_id: Optional[str] = None
     proposed_topic_title: Optional[str] = None
+    proposed_parent_node_ids: list[str] = Field(default_factory=list)
     decision: str = "link"
     confidence: float = 0.0
     reason: str = ""
