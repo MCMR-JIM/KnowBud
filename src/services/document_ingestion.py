@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 TARGET_CHARS = 1000
 MAX_CHARS = 1800
 CLASSIFIED_THRESHOLD = 0.55
+CLASSIFY_BATCH_SIZE = 1
 
 
 @dataclass
@@ -36,6 +37,9 @@ def ingest_document_resource(
     default_topic_id: str | None = None,
     progress_callback: Callable[[str, dict[str, object]], None] | None = None,
     enable_graph_search: bool = False,
+    enable_new_pipeline: bool = False,
+    subject: str | None = None,
+    language_id: str | None = None,
 ) -> list[ResourceSegment]:
     parser = _select_parser(record)
     if parser is None:
@@ -89,6 +93,14 @@ def ingest_document_resource(
         backend.replace_resource_segments(record.resource_id, segments)
         return segments
 
+    if enable_new_pipeline and subject:
+        segments = _run_structured_ingestion(
+            backend=backend, record=record, chunks=chunks,
+            topics=topics, subject=subject, language_id=language_id,
+        )
+        backend.replace_resource_segments(record.resource_id, segments)
+        return segments
+
     _ctx_subject: str | None = None
     _ctx_language_id: str | None = None
     if enable_graph_search:
@@ -106,28 +118,34 @@ def ingest_document_resource(
             _ctx_subject = None
 
     segments: list[ResourceSegment] = []
-    for index, chunk in enumerate(chunks):
-        if progress_callback is not None:
-            progress_callback(
-                "chunk_classification_progress",
-                {
-                    "resource_id": record.resource_id,
-                    "current": index + 1,
-                    "total": len(chunks),
-                },
+    batch_size = 1 if len(chunks) <= 1 else CLASSIFY_BATCH_SIZE
+    for batch_start in range(0, len(chunks), batch_size):
+        batch = chunks[batch_start:batch_start + batch_size]
+        if batch_size == 1:
+            segments.append(
+                _classify_chunk(
+                    backend=backend,
+                    resource_id=record.resource_id,
+                    sequence_index=batch_start,
+                    chunk=batch[0],
+                    topics=topics,
+                    default_topic_id=default_topic_id or record.topic_id,
+                    subject=_ctx_subject,
+                    language_id=_ctx_language_id,
+                )
             )
-        segments.append(
-            _classify_chunk(
+        else:
+            batch_segments = _classify_chunks_batch(
                 backend=backend,
                 resource_id=record.resource_id,
-                sequence_index=index,
-                chunk=chunk,
+                start_index=batch_start,
+                chunks=batch,
                 topics=topics,
                 default_topic_id=default_topic_id or record.topic_id,
                 subject=_ctx_subject,
                 language_id=_ctx_language_id,
             )
-        )
+            segments.extend(batch_segments)
 
     create_resource_level_proposals(
         backend=backend,
@@ -480,6 +498,140 @@ def _classify_chunk(
     )
 
 
+def _classify_chunks_batch(
+    *,
+    backend: "SessionBackend",
+    resource_id: str,
+    start_index: int,
+    chunks: list[TextUnit],
+    topics: list[TopicNode],
+    default_topic_id: str | None,
+    subject: str | None = None,
+    language_id: str | None = None,
+) -> list[ResourceSegment]:
+    import json as _json
+
+    topic_payload = [
+        {
+            "topic_id": t.topic_id,
+            "title": t.title,
+            "tags": t.tags,
+            "prerequisite_ids": t.prerequisite_ids,
+        }
+        for t in topics
+    ]
+
+    chunk_texts = []
+    for i, chunk in enumerate(chunks):
+        chunk_texts.append(f"片段 {i}:\n```text\n{chunk.text.strip()[:2000]}\n```\n")
+    combined = "\n".join(chunk_texts)
+
+    system = (
+        "你是儿童学习知识图谱策展助手。你的任务是判断多个教学资源片段各自应该挂到已有知识节点，"
+        "还是应该提出一个新知识节点。\n"
+        "返回一个 JSON 数组，每个元素对应一个片段，顺序与输入一致。\n"
+        "【节点合并与复用规则】\n"
+        "1. 只能复用给定的已有节点；如果没有合适节点，但片段表达了明确、可教学的知识点，请提出新节点。\n"
+        "2. 如果你要提出的新节点和已有节点的概念本质相同（只是换了种说法），请直接选择 link 到已有节点！\n"
+        "3. 不要为了泛泛内容创建节点。\n"
+        "【新节点命名规范】\n"
+        "1. 提取最精炼的专业术语或核心概念，作为新知识点的名称。\n"
+        "2. 绝对不要包含「什么是」、「关于」、「浅析」等冗余前缀。\n"
+        "3. 绝对不要包含「是什么」、「及其应用」、「的证明」等冗余后缀。\n"
+    )
+    user = (
+        f"已有知识节点列表：\n{_json.dumps(topic_payload, ensure_ascii=False)}\n\n"
+        f"默认父节点：\n{_json.dumps(default_topic_id, ensure_ascii=False)}\n\n"
+        f"{combined}"
+        "返回 JSON 数组：\n"
+        '[{"decision":"link|propose|unclassified","topic_id":string|null,'
+        '"confidence":number,"reason":string,"proposed_topic":{"title":string,'
+        '"summary":string,"parent_node_ids":[string],"edge_type":"requires"|...}|null,'
+        '"guiding_question":string,"teaching_hint":string}]'
+    )
+
+    raw_results: list[dict] = []
+    try:
+        response = backend.llm_skill.client.chat.completions.create(
+            model=backend.llm_skill.model_name,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            temperature=0.3,
+            timeout=120.0,
+        )
+        content = (response.choices[0].message.content or "").strip()
+        content = re.sub(r"^```(?:json)?\s*", "", content)
+        content = re.sub(r"\s*```$", "", content)
+        parsed = _json.loads(content)
+        if isinstance(parsed, list):
+            raw_results = [item for item in parsed if isinstance(item, dict)]
+    except Exception:
+        raw_results = []
+
+    segments: list[ResourceSegment] = []
+    for i, chunk in enumerate(chunks):
+        seg_index = start_index + i
+        if i < len(raw_results):
+            result = raw_results[i]
+            normalized = _normalize_chunk_decision(
+                result=result, topics=topics,
+                default_topic_id=default_topic_id,
+            )
+        else:
+            normalized = {
+                "decision": "unclassified",
+                "topic_id": None,
+                "confidence": 0.0,
+                "reason": "batch classify missed this chunk",
+                "proposed_topic": None,
+                "guiding_question": "",
+                "teaching_hint": "",
+            }
+
+        proposed_topic_title: str | None = None
+        proposed_parent_node_ids: list[str] = []
+        if normalized["decision"] == "propose":
+            pt = normalized["proposed_topic"]
+            if isinstance(pt, dict):
+                proposed_topic_title = str(pt.get("title", "")).strip() or None
+                proposed_parent_node_ids = pt.get("parent_node_ids") or []
+
+        if normalized["decision"] == "link" and normalized["topic_id"]:
+            status = "classified"
+        elif normalized.get("proposal_id") and normalized["decision"] == "propose":
+            status = "proposed"
+        elif normalized["decision"] == "propose" and proposed_topic_title:
+            status = "unclassified"
+        else:
+            status = "unclassified"
+            proposed_topic_title = None
+
+        segments.append(
+            ResourceSegment(
+                segment_id=_segment_id(resource_id, seg_index),
+                start_ms=0,
+                end_ms=None,
+                label="chunk",
+                status=status,
+                sequence_index=seg_index,
+                text=chunk.text.strip(),
+                locator=dict(chunk.locator),
+                topic_id=str(normalized["topic_id"]) if normalized["topic_id"] is not None else None,
+                proposal_id=str(normalized.get("proposal_id")) if normalized.get("proposal_id") is not None else None,
+                proposed_topic_title=proposed_topic_title,
+                proposed_parent_node_ids=proposed_parent_node_ids,
+                decision=str(normalized["decision"]),
+                confidence=float(normalized["confidence"]),
+                reason=str(normalized["reason"]),
+                guiding_question=str(normalized.get("guiding_question", "")) or None,
+                teaching_hint=str(normalized.get("teaching_hint", "")) or None,
+            )
+        )
+    return segments
+
+
 def _normalize_chunk_decision(
     *,
     result: dict[str, object],
@@ -583,6 +735,151 @@ def _detect_lang_from_chunks(chunks: list[TextUnit], topics: list[TopicNode]) ->
     if "语文" in sample or "中文" in sample or "chinese" in sample or "阅读理解" in sample:
         return "chinese"
     return None
+
+
+def _run_structured_ingestion(
+    *,
+    backend: "SessionBackend",
+    record: ResourceRecord,
+    chunks: list[TextUnit],
+    topics: list[TopicNode],
+    subject: str,
+    language_id: str | None = None,
+) -> list[ResourceSegment]:
+    from src.services.document_analyzer import analyze_document_structure, SKIP_SECTION_TYPES
+    from src.services.graph_search import GraphSearchAgent
+    from src.services.graph_walker import GraphWalker
+    from src.services.resource_graph_curation import (
+        SUBJECT_PROFILES, _proposal_tags,
+    )
+
+    profile = SUBJECT_PROFILES.get(subject, SUBJECT_PROFILES["general"])
+    sections = analyze_document_structure(
+        backend=backend, chunks=chunks, subject=subject, language_id=language_id,
+    )
+    if not sections:
+        return [
+            _status_segment(
+                resource_id=record.resource_id, sequence_index=0,
+                status="unclassified", reason="structured analysis returned no sections",
+                locator={"kind": record.media_type or "unknown"},
+            )
+        ]
+
+    walker = GraphWalker(backend, subject, language_id)
+    search_agent = GraphSearchAgent(backend, subject, language_id)
+
+    segments: list[ResourceSegment] = []
+    last_topic_id: str | None = None
+    last_proposal_id: str | None = None
+    seg_index = 0
+
+    for section in sections:
+        if section.section_type in SKIP_SECTION_TYPES:
+            seg_index += 1
+            segments.append(
+                ResourceSegment(
+                    segment_id=_segment_id(record.resource_id, seg_index),
+                    start_ms=0, end_ms=None, label=section.section_type,
+                    status="unclassified", sequence_index=seg_index,
+                    text=section.text[:2000], locator={"kind": "structured", "section_type": section.section_type},
+                    topic_id=None, proposal_id=None,
+                    decision="unclassified", confidence=0.0,
+                    reason=f"{section.section_type} section skipped",
+                )
+            )
+            continue
+
+        section_topic_id: str | None = None
+        section_proposal_id: str | None = None
+
+        for topic_title in section.topic_candidates:
+            if not topic_title.strip():
+                continue
+
+            search_result = search_agent.search(topic_title, section.text[:1000])
+            if search_result.decision == "link" and search_result.confidence >= 0.55:
+                section_topic_id = search_result.matched_topic_id
+                last_topic_id = section_topic_id
+                continue
+
+            walk_result = walker.walk_and_insert(topic_title, section.text[:500])
+            if walk_result.action == "link_existing":
+                section_topic_id = walk_result.anchor_topic_id
+                last_topic_id = section_topic_id
+                continue
+
+            try:
+                proposal = backend.create_graph_proposal_from_resource(
+                    title=topic_title,
+                    summary=section.text[:200],
+                    tags=_proposal_tags(
+                        subject=subject, facet=profile.default_facet,
+                        language_id=language_id,
+                    ),
+                    parent_node_ids=walk_result.parent_node_ids,
+                    prerequisite_node_ids=walk_result.prerequisite_node_ids,
+                    edge_type=walk_result.relation,
+                    reason=walk_result.reason[:80],
+                )
+                section_proposal_id = proposal.proposal_id
+                last_proposal_id = section_proposal_id
+            except Exception:
+                pass
+
+        if section.bound_exercises:
+            exercise_text = "\n".join(section.bound_exercises)
+            seg_index += 1
+            segments.append(
+                ResourceSegment(
+                    segment_id=_segment_id(record.resource_id, seg_index),
+                    start_ms=0, end_ms=None, label="exercise",
+                    status="classified" if section_topic_id else "unclassified",
+                    sequence_index=seg_index,
+                    text=exercise_text[:2000],
+                    locator={"kind": "structured", "section_type": "exercise"},
+                    topic_id=section_topic_id or last_topic_id,
+                    proposal_id=None,
+                    decision="link" if (section_topic_id or last_topic_id) else "unclassified",
+                    confidence=0.85,
+                    reason="bound exercise" if (section_topic_id or last_topic_id) else "no topic to bind",
+                )
+            )
+
+        seg_index += 1
+        segments.append(
+            ResourceSegment(
+                segment_id=_segment_id(record.resource_id, seg_index),
+                start_ms=0, end_ms=None, label="chunk",
+                status=(
+                    "classified" if section_topic_id
+                    else "proposed" if section_proposal_id
+                    else "unclassified"
+                ),
+                sequence_index=seg_index,
+                text=section.text[:2000],
+                locator={"kind": "structured", "section_type": section.section_type},
+                topic_id=section_topic_id or last_topic_id,
+                proposal_id=section_proposal_id,
+                proposed_topic_title=section.topic_candidates[0] if section.topic_candidates else None,
+                decision=(
+                    "link" if section_topic_id or last_topic_id
+                    else "propose" if section_proposal_id
+                    else "unclassified"
+                ),
+                confidence=0.85,
+                reason=(
+                    "matched existing topic" if section_topic_id
+                    else "new topic proposed" if section_proposal_id
+                    else "no topic extracted"
+                ),
+            )
+        )
+
+        if section_topic_id:
+            last_topic_id = section_topic_id
+
+    return segments
 
 
 def _status_segment(

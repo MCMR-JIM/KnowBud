@@ -639,3 +639,310 @@ def test_ingestion_failure_updates_status_and_error(monkeypatch, tmp_path: Path)
     assert len(segments) == 1
     assert segments[0]["status"] == "ingestion_failed"
     assert "synthetic ingestion failure" in segments[0]["reason"]
+
+
+def test_batch_classify_two_chunks(tmp_path: Path) -> None:
+    import json
+    from unittest.mock import MagicMock
+    from types import SimpleNamespace
+
+    backend = _build_backend(tmp_path)
+    backend.llm_skill.client.api_key = "test_key"
+
+    call_count = [0]
+
+    def mock_create(**kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            batch_result = [
+                {"decision": "link", "topic_id": "demo_01", "confidence": 0.9,
+                 "reason": "恐龙讨论", "proposed_topic": None, "guiding_question": "?", "teaching_hint": "!"},
+                {"decision": "propose", "topic_id": None, "confidence": 0.85,
+                 "reason": "新概念", "proposed_topic": {"title": "一位数加法", "summary": "加法", "parent_node_ids": ["demo_01"], "edge_type": "requires"},
+                 "guiding_question": "?", "teaching_hint": "!"},
+            ]
+        else:
+            batch_result = []
+        msg = MagicMock()
+        msg.content = json.dumps(batch_result)
+        return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+
+    orig_create = backend.llm_skill.client.chat.completions.create
+    backend.llm_skill.client.chat.completions.create = mock_create
+
+    try:
+        source_path = tmp_path / "sample.txt"
+        source_path.write_text("恐龙生活在很久以前。\n\n3 加 2 等于 5。", encoding="utf-8")
+        record = backend.create_resource_record(
+            topic_id="demo_01", resource_name="测试批量", category="learn",
+            media_type="txt", mime_type="text/plain", original_filename="sample.txt",
+            stored_path=str(source_path), size_bytes=source_path.stat().st_size,
+        )
+        topics = backend.load_app_state(include_history=False).curriculum.topics
+
+        from src.services.document_ingestion import _classify_chunks_batch, TextUnit
+
+        chunks_list = [
+            TextUnit(text="恐龙生活在很久以前。", locator={"kind": "txt"}),
+            TextUnit(text="3 加 2 等于 5。", locator={"kind": "txt"}),
+        ]
+        batch_segments = _classify_chunks_batch(
+            backend=backend, resource_id=record.resource_id, start_index=0,
+            chunks=chunks_list, topics=topics, default_topic_id="demo_01",
+        )
+
+        assert len(batch_segments) == 2, f"got {len(batch_segments)}"
+        assert batch_segments[0].decision == "link"
+        assert batch_segments[0].status == "classified"
+        assert batch_segments[1].decision == "propose"
+        assert batch_segments[1].status == "unclassified"
+        assert batch_segments[1].proposed_topic_title == "一位数加法"
+    finally:
+        backend.llm_skill.client.chat.completions.create = orig_create
+
+
+def test_batch_classify_fallback_on_short_response(tmp_path: Path) -> None:
+    import json
+    from unittest.mock import MagicMock
+    from types import SimpleNamespace
+
+    backend = _build_backend(tmp_path)
+    backend.llm_skill.client.api_key = "test_key"
+
+    call_count = [0]
+
+    def mock_create(**kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            batch_result = [
+                {"decision": "link", "topic_id": "demo_01", "confidence": 0.9,
+                 "reason": "恐龙讨论", "proposed_topic": None, "guiding_question": "?", "teaching_hint": "!"},
+            ]
+        else:
+            batch_result = []
+        msg = MagicMock()
+        msg.content = json.dumps(batch_result)
+        return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+
+    orig_create = backend.llm_skill.client.chat.completions.create
+    backend.llm_skill.client.chat.completions.create = mock_create
+
+    try:
+        source_path = tmp_path / "sample.txt"
+        source_path.write_text("恐龙生活在很久以前。\n\n3 加 2 等于 5。", encoding="utf-8")
+        record = backend.create_resource_record(
+            topic_id="demo_01", resource_name="测试批量", category="learn",
+            media_type="txt", mime_type="text/plain", original_filename="sample.txt",
+            stored_path=str(source_path), size_bytes=source_path.stat().st_size,
+        )
+        topics = backend.load_app_state(include_history=False).curriculum.topics
+
+        import src.services.document_ingestion as di
+        di.CLASSIFY_BATCH_SIZE = 2
+        segments = di.ingest_document_resource(backend=backend, record=record, topics=topics, default_topic_id="demo_01")
+
+        assert len(segments) == 2, f"got {len(segments)}"
+        assert segments[0].decision == "link"
+        assert segments[1].decision == "unclassified"
+    finally:
+        backend.llm_skill.client.chat.completions.create = orig_create
+
+
+def _llm_resp(data):
+    """Build a mock OpenAI chat completion response with JSON content."""
+    import json
+    from unittest.mock import MagicMock
+    from types import SimpleNamespace
+
+    msg = MagicMock()
+    msg.content = json.dumps(data)
+    return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+
+
+def test_structured_ingestion_basic(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    backend.llm_skill.client.api_key = "test_key"
+
+    state = backend.load_app_state(include_history=False)
+    state.curriculum.topics.append(
+        TopicNode(topic_id="eng_root", title="英语", difficulty=1, prerequisite_ids=[],
+                  tags=["subject:language", "facet:root", "language:english"]),
+    )
+    backend.save_app_state(state)
+
+    call_count = [0]
+
+    def mock_create(**kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return _llm_resp({
+                "sections": [
+                    {"label": "Lesson 1", "type": "lesson",
+                     "topic_candidates": ["Present Continuous"],
+                     "is_fuzzy": False, "exercises": ["Fill: He ___ running."]},
+                    {"label": "Words", "type": "word_list",
+                     "topic_candidates": [], "is_fuzzy": False, "exercises": []},
+                ]
+            })
+        if call_count[0] == 2:
+            return _llm_resp({
+                "decision": "propose", "matched_topic_id": None, "matched_title": None,
+                "parent_node_ids": [], "confidence": 0.7, "reason": "new",
+                "proposed_title": "Present Continuous",
+            })
+        return _llm_resp({"action": "insert_after", "reason": "child"})
+
+    backend.llm_skill._orig = backend.llm_skill.client.chat.completions.create
+    backend.llm_skill.client.chat.completions.create = mock_create
+
+    try:
+        source_path = tmp_path / "sample.txt"
+        source_path.write_text("Lesson 1\nPresent Continuous: He is running.", encoding="utf-8")
+        record = backend.create_resource_record(
+            topic_id="eng_root", resource_name="English", category="learn",
+            media_type="txt", mime_type="text/plain", original_filename="sample.txt",
+            stored_path=str(source_path), size_bytes=source_path.stat().st_size,
+        )
+        topics = backend.load_app_state(include_history=False).curriculum.topics
+        segments = ingest_document_resource(
+            backend=backend, record=record, topics=topics,
+            subject="language", language_id="english",
+            enable_new_pipeline=True,
+        )
+
+        lesson_segments = [s for s in segments if s.label == "chunk" and s.decision == "propose"]
+        assert len(lesson_segments) >= 1
+        assert lesson_segments[0].proposal_id is not None
+        assert lesson_segments[0].proposed_topic_title == "Present Continuous"
+    finally:
+        backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
+
+
+def test_structured_ingestion_skips_wordlist(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    backend.llm_skill.client.api_key = "test_key"
+
+    def mock_create(**kwargs):
+        return _llm_resp({
+            "sections": [
+                {"label": "Words", "type": "word_list",
+                 "topic_candidates": ["apple"], "is_fuzzy": False, "exercises": []},
+            ]
+        })
+
+    backend.llm_skill._orig = backend.llm_skill.client.chat.completions.create
+    backend.llm_skill.client.chat.completions.create = mock_create
+
+    try:
+        source_path = tmp_path / "sample.txt"
+        source_path.write_text("Word List: apple, banana", encoding="utf-8")
+        record = backend.create_resource_record(
+            topic_id="demo_01", resource_name="Words", category="learn",
+            media_type="txt", mime_type="text/plain", original_filename="sample.txt",
+            stored_path=str(source_path), size_bytes=source_path.stat().st_size,
+        )
+        topics = backend.load_app_state(include_history=False).curriculum.topics
+        segments = ingest_document_resource(
+            backend=backend, record=record, topics=topics,
+            subject="language", language_id="english",
+            enable_new_pipeline=True,
+        )
+
+        assert len(segments) >= 1
+        assert segments[0].status == "unclassified"
+        assert segments[0].proposal_id is None
+    finally:
+        backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
+
+
+def test_structured_ingestion_dedup_existing(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    backend.llm_skill.client.api_key = "test_key"
+
+    state = backend.load_app_state(include_history=False)
+    state.curriculum.topics.append(
+        TopicNode(topic_id="eng_present_continuous", title="Present Continuous",
+                  difficulty=1, prerequisite_ids=[],
+                  tags=["subject:language", "facet:grammar", "language:english"]),
+    )
+    backend.save_app_state(state)
+
+    call_count = [0]
+
+    def mock_create(**kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return _llm_resp({
+                "sections": [
+                    {"label": "Grammar", "type": "lesson",
+                     "topic_candidates": ["Present Continuous"],
+                     "is_fuzzy": False, "exercises": []},
+                ]
+            })
+        return _llm_resp({
+            "decision": "link", "matched_topic_id": "eng_present_continuous",
+            "matched_title": "Present Continuous", "parent_node_ids": [],
+            "confidence": 0.95, "reason": "match", "proposed_title": None,
+        })
+
+    backend.llm_skill._orig = backend.llm_skill.client.chat.completions.create
+    backend.llm_skill.client.chat.completions.create = mock_create
+
+    try:
+        source_path = tmp_path / "sample.txt"
+        source_path.write_text("Present Continuous grammar.", encoding="utf-8")
+        record = backend.create_resource_record(
+            topic_id="demo_01", resource_name="Grammar", category="learn",
+            media_type="txt", mime_type="text/plain", original_filename="sample.txt",
+            stored_path=str(source_path), size_bytes=source_path.stat().st_size,
+        )
+        topics = backend.load_app_state(include_history=False).curriculum.topics
+        segments = ingest_document_resource(
+            backend=backend, record=record, topics=topics,
+            subject="language", language_id="english",
+            enable_new_pipeline=True,
+        )
+
+        lesson_segments = [s for s in segments if s.label == "chunk"]
+        assert len(lesson_segments) >= 1
+        # Graph search may find match; if not, walker may link_existing
+        assert lesson_segments[0].proposal_id is not None or lesson_segments[0].topic_id is not None
+    finally:
+        backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
+
+
+def test_structured_ingestion_exercises_bound(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    backend.llm_skill.client.api_key = "test_key"
+
+    def mock_create(**kwargs):
+        return _llm_resp({
+            "sections": [
+                {"label": "Exercise", "type": "exercise", "topic_candidates": [],
+                 "is_fuzzy": False, "exercises": ["1. He ___ running.", "2. She ___ reading."]},
+            ]
+        })
+
+    backend.llm_skill._orig = backend.llm_skill.client.chat.completions.create
+    backend.llm_skill.client.chat.completions.create = mock_create
+
+    try:
+        source_path = tmp_path / "sample.txt"
+        source_path.write_text("Exercises:\n1. He ___ running.\n2. She ___ reading.", encoding="utf-8")
+        record = backend.create_resource_record(
+            topic_id="demo_01", resource_name="Exercises", category="learn",
+            media_type="txt", mime_type="text/plain", original_filename="sample.txt",
+            stored_path=str(source_path), size_bytes=source_path.stat().st_size,
+        )
+        topics = backend.load_app_state(include_history=False).curriculum.topics
+        segments = ingest_document_resource(
+            backend=backend, record=record, topics=topics,
+            subject="language", language_id="english",
+            enable_new_pipeline=True,
+        )
+
+        exercise_segments = [s for s in segments if s.label == "exercise"]
+        assert len(exercise_segments) >= 1
+        assert "He ___ running" in exercise_segments[0].text
+    finally:
+        backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
