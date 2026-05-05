@@ -610,7 +610,16 @@
 
     async function refreshAll({ keepSelection = true } = {}) {
       const previous = state.selectedTopicId;
-      state.graph = await api('/knowledge/graph');
+      const newGraph = await api('/knowledge/graph');
+      
+      const newGraphStr = JSON.stringify(newGraph);
+      if (state.lastGraphStr === newGraphStr && state.source === 'api') {
+        // No structural changes, skip destructive DOM updates
+        return;
+      }
+      state.lastGraphStr = newGraphStr;
+      
+      state.graph = newGraph;
       state.source = 'api';
       state.report = null;
       const topics = state.graph.topics || [];
@@ -632,6 +641,13 @@
       if (topics.length <= 1) {
         log('提示：API 当前只有少量 topic；如需查看模拟大图，请加载 data/simulated_graph/graph_report.json，或用 DATA_ROOT=data/simulated_graph 启动后端');
       }
+    }
+
+    async function refreshProposalsOnly() {
+      state.graph = await api('/knowledge/graph');
+      state.lastGraphStr = JSON.stringify(state.graph);
+      renderProposals();
+      renderStats();
     }
 
     async function loadReportFile(file) {
@@ -977,6 +993,9 @@
               log('解析失败', { error: statusRes.error });
             } else {
               log(`处理中... 已分类: ${statusRes.classified_count}/${statusRes.segment_count}，新提案: ${statusRes.proposed_count}`);
+              if (statusRes.proposed_count > 0) {
+                await refreshProposalsOnly();
+              }
             }
           } catch (err) {
             log('轮询状态失败', { error: err.message });
