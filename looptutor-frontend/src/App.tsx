@@ -1,7 +1,9 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import Home from './pages/Home';
 import KidsLearning from './pages/KidsLearning';
-import AdminDashboard from './pages/AdminDashboard'; // 🌟 引入刚写的真实页面
+import AdminDashboard from './pages/AdminDashboard';
+import ModeSelect from './pages/ModeSelect'; // 🌟 新增：模式选择页
+import StudyRoom from './pages/StudyRoom';   // 🌟 新增：沉浸式学习主界面
 
 function App() {
   return (
@@ -9,7 +11,11 @@ function App() {
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/kids" element={<KidsLearning />} />
-        <Route path="/admin" element={<AdminDashboard />} /> {/* 🌟 替换掉占位符 */}
+        <Route path="/admin" element={<AdminDashboard />} />
+        
+        {/* V2 升级新增路由 */}
+        <Route path="/select" element={<ModeSelect />} />
+        <Route path="/study" element={<StudyRoom />} />
       </Routes>
     </BrowserRouter>
   );

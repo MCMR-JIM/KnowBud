@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { ChevronLeft, Star, Mic, Send, HelpCircle, Loader2, Volume2 } from 'lucide-react';
 import { SessionAPI } from '../api/client';
 import { API_BASE, API_BASE_NO_VERSION } from '../api/config';
-import PdfViewer from './PdfViewer';
+import PdfViewer from "../components/PdfViewer";
 
 const COMPANIONS: Record<string, string> = {
   "星空兔": "🐰",
