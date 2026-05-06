@@ -1108,7 +1108,8 @@
 
       // Draw nodes
       for (const node of simData.nodes) {
-        const r = 12 + Math.min(node.parentCount + node.prereqCount, 8);
+        const connected = Math.max(node.parentCount + node.prereqCount, node.childCount || 0);
+        const r = node.is_root ? 22 : Math.max(6, 8 + Math.min(connected, 12));
         const isSelected = node.topic_id === state.selectedTopicId;
 
         ctx.beginPath();
@@ -1116,10 +1117,14 @@
         if (node.is_root) {
           ctx.fillStyle = '#fef3c7';
           ctx.strokeStyle = '#f59e0b';
-          ctx.lineWidth = 2;
+          ctx.lineWidth = 2.5;
+        } else if (isSelected) {
+          ctx.fillStyle = '#dbeafe';
+          ctx.strokeStyle = '#3b82f6';
+          ctx.lineWidth = 2.5;
         } else {
-          ctx.fillStyle = '#ffffff';
-          ctx.strokeStyle = '#d6d3d0';
+          ctx.fillStyle = connected > 0 ? '#ffffff' : '#f8fafc';
+          ctx.strokeStyle = connected > 0 ? '#94a3b8' : '#e2e8f0';
           ctx.lineWidth = 1.5;
         }
         ctx.fill();
