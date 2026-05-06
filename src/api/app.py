@@ -544,6 +544,8 @@ async def upload_resource(
     topic_id: str = Form(...),
     resource_name: str = Form(...),
     category: str = Form("learn"),
+    subject: str = Form(""),
+    language_id: str = Form(""),
 ) -> ResourceUploadResponse:
     normalized_topic_id = topic_id.strip()
     if not normalized_topic_id:
@@ -620,7 +622,12 @@ async def upload_resource(
             "media_type": media_type,
         },
     )
-    _start_ingestion_task(lambda: _run_resource_ingestion(resource_id=record.resource_id, default_topic_id=normalized_topic_id))
+    _subj = subject.strip() or None
+    _lang = language_id.strip() or None
+    _start_ingestion_task(lambda: _run_resource_ingestion(
+        resource_id=record.resource_id, default_topic_id=normalized_topic_id,
+        subject=_subj, language_id=_lang,
+    ))
 
     return ResourceUploadResponse(
         session_id=SINGLE_SESSION_ID,
@@ -630,7 +637,10 @@ async def upload_resource(
     )
 
 
-def _run_resource_ingestion(*, resource_id: str, default_topic_id: str) -> None:
+def _run_resource_ingestion(
+    *, resource_id: str, default_topic_id: str,
+    subject: str | None = None, language_id: str | None = None,
+) -> None:
     backend = get_backend()
     record = backend.get_resource(resource_id)
     if record is None:
@@ -653,6 +663,7 @@ def _run_resource_ingestion(*, resource_id: str, default_topic_id: str) -> None:
             topics=topics,
             default_topic_id=default_topic_id,
             progress_callback=progress,
+            subject=subject, language_id=language_id,
             enable_graph_search=False,
             enable_new_pipeline=False,
         )
