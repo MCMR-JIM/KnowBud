@@ -800,46 +800,11 @@ def _run_structured_ingestion(
             # Deterministic exact-title dedup: skip LLM call for obvious duplicates
             for topic in topics:
                 if topic.title.strip() == topic_title.strip():
-                    section_topic_id = topic.topic_id
-                    last_topic_id = section_topic_id
-                    break
-            if section_topic_id:
-                continue
-
-            search_result = search_agent.search(topic_title, section.text[:1000])
-            if search_result.decision == "link" and search_result.confidence >= 0.55:
-                section_topic_id = search_result.matched_topic_id
-                last_topic_id = section_topic_id
-                continue
-
-            walk_result = walker.walk_and_insert(topic_title, section.text[:500])
-            if walk_result.action == "link_existing":
-                section_topic_id = walk_result.anchor_topic_id
-                last_topic_id = section_topic_id
-                continue
-
-            try:
-                proposal = backend.create_graph_proposal_from_resource(
-                    title=topic_title,
-                    summary=section.text[:200],
-                    tags=_proposal_tags(
-                        subject=subject, facet=profile.default_facet,
-                        language_id=language_id,
-                    ),
-                    parent_node_ids=walk_result.parent_node_ids,
-                    prerequisite_node_ids=walk_result.prerequisite_node_ids,
-                    edge_type=walk_result.relation,
-                    reason=walk_result.reason[:80],
-                )
-                # Auto-approve so subsequent topics in same batch can dedup against it
-                _st, _pr, topic, _, _ = backend.approve_graph_proposal(
-                    proposal_id=proposal.proposal_id,
-                    difficulty=1,
-                )
                 section_topic_id = topic.topic_id
                 last_topic_id = section_topic_id
-                # Add to local topics list for deterministic dedup in this batch
                 topics.append(topic)
+                walker = GraphWalker(backend, subject, language_id)
+                search_agent = GraphSearchAgent(backend, subject, language_id)
             except Exception:
                 pass
 
