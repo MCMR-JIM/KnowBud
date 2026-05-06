@@ -885,10 +885,12 @@
       const container = el('graphContainer');
       container.innerHTML = '';
 
-      const W = container.clientWidth;
-      const H = 680;
+      const wrap = el('graphWrap');
+      const W = wrap.clientWidth - 2;  // minus border
+      const H = wrap.clientHeight || 680;
       const canvas = d3.select(container).append('canvas')
-        .attr('width', W).attr('height', H);
+        .attr('width', W).attr('height', H)
+        .style('width', W + 'px').style('height', H + 'px');
       const ctx = canvas.node().getContext('2d');
 
       const sim = d3.forceSimulation(nodes)
