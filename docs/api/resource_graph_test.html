@@ -241,6 +241,8 @@
     .subject-card .sub-stats { font-size: 12px; color: var(--fg-soft); margin-bottom: 6px; }
     .subject-card .btn-soft { font-size: 11px; padding: 4px 10px; }
     .subject-card .btn-soft:hover { opacity: 0.85; }
+    #newSubjectTag { padding: 4px 8px; font-size: 13px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg-card); color: var(--fg); }
+    #newSubjectLang { padding: 4px 6px; font-size: 13px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg-card); color: var(--fg); }
 
     /* --- Upload Modal --- */
     .modal-overlay {
@@ -326,6 +328,21 @@
 
       <section class="panel section">
         <h2>学科资源管理</h2>
+        <div class="stack" style="margin-bottom:8px">
+          <input id="newSubjectName" placeholder="输入学科名（如高等数学）" style="flex:1" />
+          <select id="newSubjectTag">
+            <option value="math">数学</option>
+            <option value="language">语言</option>
+            <option value="physics">物理</option>
+            <option value="chemistry">化学</option>
+            <option value="biology">生物</option>
+            <option value="history">历史</option>
+            <option value="geography">地理</option>
+            <option value="science">科学</option>
+          </select>
+          <input id="newSubjectLang" placeholder="语言ID（可选）" style="width:80px" />
+          <button id="createSubjectBtn" class="btn-green">创建学科</button>
+        </div>
         <div id="subjectCards" class="subject-grid"></div>
         <div class="modal-overlay hidden" id="uploadModal">
           <div class="modal-box">
@@ -1079,50 +1096,95 @@
     }
 
     // ===== Subject Cards =====
-    const SUBJECT_PRESETS = [
-      { key: 'math', label: '数学', subject: 'math', language_id: null },
-      { key: 'language_en', label: '英语', subject: 'language', language_id: 'english' },
-      { key: 'language_cn', label: '语文', subject: 'language', language_id: 'chinese' },
-      { key: 'physics', label: '物理', subject: 'physics', language_id: null },
-      { key: 'chemistry', label: '化学', subject: 'chemistry', language_id: null },
-      { key: 'biology', label: '生物', subject: 'biology', language_id: null },
-      { key: 'history', label: '历史', subject: 'history', language_id: null },
-      { key: 'geography', label: '地理', subject: 'geography', language_id: null },
-      { key: 'science', label: '科学', subject: 'science', language_id: null },
-    ];
+    let _uploadingCard = null;
 
-    let _uploadingSubject = null;
-
-    function countBySubject(prefix) {
+    function getSubjectRoots() {
       const topics = state.graph.topics || [];
-      return topics.filter(t => (t.tags || []).some(tag => tag.startsWith(prefix))).length;
+      return topics.filter(t => (t.tags || []).some(tag => tag === 'facet:root'));
+    }
+
+    function countNodesUnderRoot(rootTopic) {
+      const topics = state.graph.topics || [];
+      const childIds = new Set();
+      function walk(pid) {
+        for (const t of topics) {
+          if ((t.parent_ids || []).includes(pid) || (t.prerequisite_ids || []).includes(pid)) {
+            if (!childIds.has(t.topic_id)) {
+              childIds.add(t.topic_id);
+              walk(t.topic_id);
+            }
+          }
+        }
+      }
+      walk(rootTopic.topic_id);
+      return childIds.size;
+    }
+
+    function subjectTag(tags) {
+      const t = tags.find(t => t.startsWith('subject:'));
+      return t ? t.split(':')[1] : 'general';
+    }
+
+    function subjectLangId(tags) {
+      const t = tags.find(t => t.startsWith('language:'));
+      return t ? t.split(':')[1] : null;
     }
 
     function renderSubjectCards() {
-      const container = el('subjectCards');
+      const containers = el('subjectCards');
+      const roots = getSubjectRoots();
       let html = '';
-      for (const sc of SUBJECT_PRESETS) {
-        const topicCount = countBySubject('subject:' + sc.subject);
+      for (const root of roots) {
+        const nodeCount = countNodesUnderRoot(root);
         html += `<div class="subject-card">
-          <h4>${sc.label}</h4>
-          <div class="sub-stats">${topicCount} 节点</div>
-          <button class="btn-soft" data-subject-key="${sc.key}">上传</button>
+          <h4>${root.title}</h4>
+          <div class="sub-stats">${nodeCount} 节点</div>
+          <button class="btn-soft" data-root-id="${root.topic_id}">上传</button>
         </div>`;
       }
-      container.innerHTML = html || '<p class="subtle">暂无学科数据</p>';
+      html += `<div class="subject-card" style="border-style:dashed">
+        <div class="sub-stats" style="font-size:20px;margin-bottom:0">+ 新建</div>
+      </div>`;
+      container.innerHTML = html || '<p class="subtle">暂无学科，请先创建</p>';
 
       container.querySelectorAll('.btn-soft').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-          const key = e.target.dataset.subjectKey;
-          const sc = SUBJECT_PRESETS.find(s => s.key === key);
-          if (sc) openUploadModal(sc);
-        });
+        const rootId = btn.dataset.rootId;
+        if (!rootId) return;
+        const root = roots.find(r => r.topic_id === rootId);
+        if (root) {
+          btn.addEventListener('click', () => openUploadModal({
+            id: root.topic_id,
+            label: root.title,
+            subject: subjectTag(root.tags),
+            language_id: subjectLangId(root.tags),
+          }));
+        }
       });
     }
 
-    function openUploadModal(subjectConfig) {
-      _uploadingSubject = subjectConfig;
-      el('uploadModalTitle').textContent = `上传到 ${subjectConfig.label}`;
+    async function createSubject() {
+      const name = el('newSubjectName').value.trim();
+      if (!name) return alert('请输入学科名');
+      const subject = el('newSubjectTag').value;
+      const lang = el('newSubjectLang').value.trim();
+      const form = new FormData();
+      form.append('title', name);
+      form.append('subject', subject);
+      if (lang) form.append('language_id', lang);
+      try {
+        const res = await api('/knowledge/subject', { method: 'POST', body: form });
+        log('学科已创建', res);
+        el('newSubjectName').value = '';
+        await refreshAll({ keepSelection: false });
+        renderSubjectCards();
+      } catch (err) {
+        log('创建学科失败', { error: err.message });
+      }
+    }
+
+    function openUploadModal(cardInfo) {
+      _uploadingCard = cardInfo;
+      el('uploadModalTitle').textContent = `上传到 ${cardInfo.label}`;
       el('uploadModalFile').value = '';
       el('uploadModalName').value = '';
       el('uploadModal').classList.remove('hidden');
@@ -1130,12 +1192,12 @@
 
     function closeUploadModal() {
       el('uploadModal').classList.add('hidden');
-      _uploadingSubject = null;
+      _uploadingCard = null;
     }
 
     async function doSubjectUpload() {
-      const sc = _uploadingSubject;
-      if (!sc) return;
+      const ci = _uploadingCard;
+      if (!ci) return;
       const file = el('uploadModalFile').files[0];
       if (!file) return alert('请选择文件');
       const name = el('uploadModalName').value.trim() || file.name;
@@ -1143,13 +1205,13 @@
 
       const form = new FormData();
       form.append('file', file, file.name);
-      form.append('topic_id', state.selectedTopicId || 'demo_01');
+      form.append('topic_id', ci.id);
       form.append('resource_name', name);
       form.append('category', 'learn');
-      form.append('subject', sc.subject);
-      if (sc.language_id) form.append('language_id', sc.language_id);
+      form.append('subject', ci.subject);
+      if (ci.language_id) form.append('language_id', ci.language_id);
 
-      log(`开始上传到 ${sc.label} (${sc.subject})`);
+      log(`开始上传到 ${ci.label}`);
       const result = await api('/resource/upload', { method: 'POST', body: form });
       const resourceId = result?.resource?.resource_id;
       if (resourceId) {
@@ -1158,14 +1220,14 @@
             const statusRes = await api(`/resource/${resourceId}/ingestion-status`);
             if (statusRes.status === 'completed') {
               clearInterval(pollInterval);
-              log(`上传完成 ${sc.label}`, { segments: statusRes.segment_count, proposed: statusRes.proposed_count });
+              log(`上传完成 ${ci.label}`, { segments: statusRes.segment_count, proposed: statusRes.proposed_count });
               await refreshAll({ keepSelection: false });
               renderSubjectCards();
             } else if (statusRes.status === 'failed') {
               clearInterval(pollInterval);
               log('上传失败', { error: statusRes.error });
             } else {
-              log(`处理中 ${sc.label}... ${statusRes.classified_count}/${statusRes.segment_count}`);
+              log(`处理中 ${ci.label}... ${statusRes.classified_count}/${statusRes.segment_count}`);
             }
           } catch (err) { clearInterval(pollInterval); }
         }, 3000);
@@ -1194,6 +1256,7 @@
     el('uploadMixedBtn').addEventListener('click', () => uploadMixedText().catch(err => log('上传失败', { error: err.message })));
     el('uploadModalCancel').addEventListener('click', () => closeUploadModal());
     el('uploadModalSubmit').addEventListener('click', () => doSubjectUpload().catch(err => log('上传失败', { error: err.message })));
+    el('createSubjectBtn').addEventListener('click', () => createSubject().catch(err => log('创建学科失败', { error: err.message })));
     el('pollBtn').addEventListener('click', () => {
       if (state.pollTimer) {
         clearInterval(state.pollTimer);

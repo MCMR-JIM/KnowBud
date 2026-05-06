@@ -808,6 +808,35 @@ def get_knowledge_graph() -> KnowledgeGraphResponse:
     return _build_graph_response(state)
 
 
+@app.post("/v1/knowledge/subject", tags=["knowledge"])
+def create_subject_root(
+    title: str = Form(...),
+    subject: str = Form(...),
+    language_id: str = Form(""),
+) -> dict[str, Any]:
+    backend = get_backend()
+    _title = title.strip()
+    _subject = subject.strip()
+    _lang = language_id.strip() or None
+    tags = [f"subject:{_subject}", "facet:root"]
+    if _lang:
+        tags.append(f"language:{_lang}")
+
+    proposal = backend.create_graph_proposal_from_resource(
+        title=_title,
+        summary=f"学科：{_title}",
+        tags=tags,
+        parent_node_ids=[],
+        edge_type="part_of",
+        reason="parent-created subject root",
+    )
+    _state, _proposal, topic, _, _ = backend.approve_graph_proposal(
+        proposal_id=proposal.proposal_id,
+        difficulty=1,
+    )
+    return {"topic_id": topic.topic_id, "title": topic.title, "tags": topic.tags}
+
+
 @app.get("/v1/knowledge/graph/report", tags=["knowledge"])
 def get_knowledge_graph_report() -> dict[str, Any]:
     backend = get_backend()
