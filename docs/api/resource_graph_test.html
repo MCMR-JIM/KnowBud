@@ -133,6 +133,9 @@
     #graphContainer {
       width: 100%;
       height: 100%;
+      pointer-events: auto;
+      z-index: 1;
+      position: relative;
     }
 
     aside { display: flex; flex-direction: column; gap: 14px; }
@@ -892,20 +895,23 @@
 
       const container = el('graphContainer');
       const fg = ForceGraph()(container)
-        .graphData(graphData)
+        .width(container.clientWidth)
+        .height(680)
+        .backgroundColor('#faf9f7')
+        .enableNodeDrag(true)
+        .enableZoomInteraction(true)
+        .enablePanInteraction(true)
+        .enablePointerInteraction(true)
         .nodeId('id')
         .nodeLabel('name')
         .nodeColor('color')
         .nodeVal('val')
-        .backgroundColor('#faf9f7')
         .linkDirectionalArrowLength(5)
         .linkDirectionalArrowRelPos(1)
         .linkWidth(l => l.type === 'parent' ? 1.2 : 2)
         .linkColor(l => l.type === 'parent' ? 'rgba(160,140,200,0.6)' : 'rgba(100,116,139,0.7)')
         .linkLineDash(l => l.type === 'parent' ? [6, 3] : null)
-        .enableNodeDrag(true)
-        .enableZoomInteraction(true)
-        .enablePanInteraction(true)
+        .graphData(graphData)
         .onNodeClick(node => {
           state.selectedTopicId = node.id;
           renderNodeDetail();
