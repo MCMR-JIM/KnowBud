@@ -942,29 +942,38 @@
 
       for (const topic of visibleTopics) {
         const childCount = computeChildCount(topic.topic_id, topics);
+        const isRoot = (topic.tags || []).includes('facet:root') || childCount >= 3;
         nodeMap.set(topic.topic_id, {
           topic_id: topic.topic_id,
           title: topic.title,
           parentCount: (topic.parent_ids || []).length,
           prereqCount: (topic.prerequisite_ids || []).length,
           segmentCount: resourceByTopic.get(topic.topic_id) || 0,
-          x: (Math.random() - 0.5) * 600 + 600,
-          y: (Math.random() - 0.5) * 400 + 350,
+          x: (Math.random() - 0.5) * 900 + 600,
+          y: (Math.random() - 0.5) * 600 + 350,
           vx: 0,
           vy: 0,
-          is_root: (topic.tags || []).includes('facet:root'),
-          fixed: (topic.tags || []).includes('facet:root'),
+          is_root: isRoot,
+          fixed: isRoot,
           childCount: childCount,
         });
       }
 
-      // Position fixed root nodes in center-left upper area
-      const rootNodes = [...nodeMap.values()].filter(n => n.fixed);
-      if (rootNodes.length > 0) {
-        const cols = Math.ceil(Math.sqrt(rootNodes.length));
-        for (let i = 0; i < rootNodes.length; i++) {
-          rootNodes[i].x = 150 + (i % cols) * 200;
-          rootNodes[i].y = 80 + Math.floor(i / cols) * 130;
+      // Position fixed nodes spread across top, non-root nodes clustered below
+      const fixedNodes = [...nodeMap.values()].filter(n => n.fixed);
+      const freeNodes = [...nodeMap.values()].filter(n => !n.fixed);
+      if (fixedNodes.length > 0) {
+        const cols = Math.ceil(Math.sqrt(fixedNodes.length));
+        for (let i = 0; i < fixedNodes.length; i++) {
+          fixedNodes[i].x = 150 + (i % cols) * 220;
+          fixedNodes[i].y = 60 + Math.floor(i / cols) * 100;
+        }
+      }
+      // Cluster remaining nodes around center if no fixed nodes
+      if (fixedNodes.length === 0 && freeNodes.length > 0) {
+        for (const n of freeNodes) {
+          n.x = 400 + Math.random() * 500;
+          n.y = 100 + Math.random() * 500;
         }
       }
 
@@ -1051,6 +1060,27 @@
       const h = c.height;
 
       ctx.clearRect(0, 0, w, h);
+
+      // Background grid
+      ctx.save();
+      ctx.strokeStyle = '#f0ede8';
+      ctx.lineWidth = 0.5;
+      const gridSize = 60;
+      const startX = -cam.x * cam.zoom;
+      const startY = -cam.y * cam.zoom;
+      for (let x = startX - (startX % gridSize); x < startX + w / cam.zoom; x += gridSize) {
+        ctx.beginPath();
+        ctx.moveTo(x, startY);
+        ctx.lineTo(x, startY + h / cam.zoom);
+        ctx.stroke();
+      }
+      for (let y = startY - (startY % gridSize); y < startY + h / cam.zoom; y += gridSize) {
+        ctx.beginPath();
+        ctx.moveTo(startX, y);
+        ctx.lineTo(startX + w / cam.zoom, y);
+        ctx.stroke();
+      }
+      ctx.restore();
 
       ctx.save();
       ctx.translate(-cam.x * cam.zoom, -cam.y * cam.zoom);
