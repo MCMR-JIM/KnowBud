@@ -67,7 +67,7 @@ class GraphSearchAgent:
                     tools=tools,
                     tool_choice="auto",
                     temperature=0.3,
-                    timeout=60.0,
+                    timeout=30.0,
                 )
                 choice = response.choices[0]
                 if choice.finish_reason == "tool_calls" and choice.message.tool_calls:

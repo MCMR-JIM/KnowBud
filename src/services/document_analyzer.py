@@ -108,7 +108,7 @@ def _call_structure_llm(
                 {"role": "user", "content": user},
             ],
             temperature=0.3,
-            timeout=120.0,
+            timeout=60.0,
         )
         content = (response.choices[0].message.content or "").strip()
         content = re.sub(r"^```(?:json)?\s*", "", content)

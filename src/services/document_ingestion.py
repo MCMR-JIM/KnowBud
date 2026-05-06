@@ -831,8 +831,15 @@ def _run_structured_ingestion(
                     edge_type=walk_result.relation,
                     reason=walk_result.reason[:80],
                 )
-                section_proposal_id = proposal.proposal_id
-                last_proposal_id = section_proposal_id
+                # Auto-approve so subsequent topics in same batch can dedup against it
+                _st, _pr, topic, _, _ = backend.approve_graph_proposal(
+                    proposal_id=proposal.proposal_id,
+                    difficulty=1,
+                )
+                section_topic_id = topic.topic_id
+                last_topic_id = section_topic_id
+                # Add to local topics list for deterministic dedup in this batch
+                topics.append(topic)
             except Exception:
                 pass
 
