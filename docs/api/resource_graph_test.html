@@ -128,28 +128,11 @@
       border: 1px solid var(--line);
       position: relative;
       overflow: hidden;
-      cursor: grab;
     }
-    .graph-wrap:active { cursor: grabbing; }
-    .graph-wrap.panning { cursor: grabbing; }
 
-    #graphCanvas {
-      display: block;
+    #graphContainer {
       width: 100%;
       height: 100%;
-    }
-
-    #graphTooltip {
-      position: absolute;
-      pointer-events: none;
-      background: rgba(30, 41, 59, 0.92);
-      color: #f8fafc;
-      padding: 6px 12px;
-      border-radius: 10px;
-      font-size: 12px;
-      white-space: nowrap;
-      z-index: 10;
-      display: none;
     }
 
     aside { display: flex; flex-direction: column; gap: 14px; }
@@ -312,8 +295,7 @@
         <div class="stat"><b id="cueCount">0</b><span>teaching cues</span></div>
       </div>
       <div class="graph-wrap" id="graphWrap">
-        <canvas id="graphCanvas" width="1200" height="700" role="img" aria-label="knowledge graph"></canvas>
-        <div id="graphTooltip"></div>
+        <div id="graphContainer" style="height:680px"></div>
       </div>
     </section>
 
@@ -401,6 +383,7 @@
     </aside>
   </main>
 
+  <script src="//cdn.jsdelivr.net/npm/force-graph@1.43.0/dist/force-graph.min.js"></script>
   <script>
     const state = {
       graph: { topics: [], proposals: [], mastery: [] },
@@ -846,30 +829,6 @@
       el('cueCount').textContent = state.cues.length;
     }
 
-    // ── Canvas Force-Directed Graph ──
-
-    let simData = { nodes: [], edges: [], allTopics: [], allProposals: [] };
-    let simRAF = null;
-    let cam = { x: 0, y: 0, zoom: 1 };
-    let simMouse = { x: 0, y: 0, worldX: 0, worldY: 0 };
-    let simDrag = null;
-    let simHover = null;
-
-    function getCanvas() {
-      return el('graphCanvas');
-    }
-
-    function screenToWorld(sx, sy) {
-      const c = getCanvas();
-      const rect = c.getBoundingClientRect();
-      const px = (sx - rect.left) * (c.width / rect.width);
-      const py = (sy - rect.top) * (c.height / rect.height);
-      return {
-        x: px / cam.zoom + cam.x,
-        y: py / cam.zoom + cam.y,
-      };
-    }
-
     /**
      * Recursively collect all descendant topic IDs under the given root,
      * following parent_ids and prerequisite_ids chains.
@@ -894,492 +853,68 @@
       return result;
     }
 
-    function computeChildCount(topicId, topics) {
-      let count = 0;
-      for (const t of topics) {
-        if ((t.parent_ids || []).includes(topicId) || (t.prerequisite_ids || []).includes(topicId)) {
-          count += 1;
-        }
+    function renderGraph() {
+      if (state._fgInstance) {
+        state._fgInstance._destructor();
+        state._fgInstance = null;
       }
-      return count;
-    }
 
-    function warmColor(hex, amount) {
-      const r = Math.min(255, parseInt(hex.slice(1, 3), 16) + amount);
-      const g = Math.min(255, parseInt(hex.slice(3, 5), 16) + amount);
-      const b = Math.min(255, parseInt(hex.slice(5, 7), 16) + amount);
-      return `rgb(${r},${g},${b})`;
-    }
-
-    function buildSimData() {
       const topics = state.graph.topics || [];
       const proposals = state.graph.proposals || [];
-      const rootSelect = el('rootSelect');
-      const filterRootId = rootSelect.value;
+      const filterRootId = el('rootSelect').value;
 
-      let visibleIds = null;
+      let visibleTopics = topics;
       if (filterRootId) {
-        visibleIds = collectSubgraphIds(filterRootId, topics);
+        const ids = collectSubgraphIds(filterRootId, topics);
+        visibleTopics = topics.filter(t => ids.has(t.topic_id));
       }
 
-      const visibleTopics = filterRootId
-        ? topics.filter(t => visibleIds.has(t.topic_id))
-        : topics;
+      const nodes = visibleTopics.map(t => ({
+        id: t.topic_id,
+        name: t.title,
+        val: Math.max(1, (t.prerequisite_ids?.length || 0) + (t.parent_ids?.length || 0) + 1),
+        color: (t.tags || []).includes('facet:root') ? '#f59e0b' : '#4a90d9',
+        topicData: t,
+      }));
 
-      const topicById = new Map(topics.map(t => [t.topic_id, t]));
-      const resourceByTopic = new Map();
-      for (const topic of topics) {
-        if (topic.classified_segment_count != null) resourceByTopic.set(topic.topic_id, topic.classified_segment_count);
-      }
-      for (const resource of state.resources) {
-        for (const segment of resource.segments || []) {
-          if (segment.topic_id) resourceByTopic.set(segment.topic_id, (resourceByTopic.get(segment.topic_id) || 0) + 1);
+      const validIds = new Set(nodes.map(n => n.id));
+      const links = [];
+      for (const t of visibleTopics) {
+        for (const pid of t.prerequisite_ids || []) {
+          if (validIds.has(pid)) links.push({ source: t.topic_id, target: pid, type: 'prereq' });
+        }
+        for (const pid of t.parent_ids || []) {
+          if (validIds.has(pid)) links.push({ source: t.topic_id, target: pid, type: 'parent' });
         }
       }
 
-      const nodeMap = new Map();
-      const edges = [];
+      const graphData = { nodes, links };
 
-      for (const topic of visibleTopics) {
-        const childCount = computeChildCount(topic.topic_id, topics);
-        const isRoot = (topic.tags || []).includes('facet:root') || childCount >= 3;
-        nodeMap.set(topic.topic_id, {
-          topic_id: topic.topic_id,
-          title: topic.title,
-          parentCount: (topic.parent_ids || []).length,
-          prereqCount: (topic.prerequisite_ids || []).length,
-          segmentCount: resourceByTopic.get(topic.topic_id) || 0,
-          x: (Math.random() - 0.5) * 900 + 600,
-          y: (Math.random() - 0.5) * 600 + 350,
-          vx: 0,
-          vy: 0,
-          is_root: isRoot,
-          fixed: isRoot,
-          childCount: childCount,
-        });
-      }
-
-      // Position fixed nodes spread across top, non-root nodes clustered below
-      const fixedNodes = [...nodeMap.values()].filter(n => n.fixed);
-      const freeNodes = [...nodeMap.values()].filter(n => !n.fixed);
-      if (fixedNodes.length > 0) {
-        const cols = Math.ceil(Math.sqrt(fixedNodes.length));
-        for (let i = 0; i < fixedNodes.length; i++) {
-          fixedNodes[i].x = 150 + (i % cols) * 220;
-          fixedNodes[i].y = 60 + Math.floor(i / cols) * 100;
-        }
-      }
-      // Cluster remaining nodes around center if no fixed nodes
-      if (fixedNodes.length === 0 && freeNodes.length > 0) {
-        for (const n of freeNodes) {
-          n.x = 400 + Math.random() * 500;
-          n.y = 100 + Math.random() * 500;
-        }
-      }
-
-      for (const topic of visibleTopics) {
-        const from = nodeMap.get(topic.topic_id);
-        if (!from) continue;
-        for (const pid of topic.prerequisite_ids || []) {
-          const to = nodeMap.get(pid);
-          if (to) edges.push({ from, to, type: 'prereq' });
-        }
-        for (const pid of topic.parent_ids || []) {
-          const to = nodeMap.get(pid);
-          if (to) edges.push({ from, to, type: 'parent' });
-        }
-      }
-
-      // Deduplicate edges
-      const edgeSet = new Set();
-      const uniqueEdges = [];
-      for (const e of edges) {
-        const key = `${e.from.topic_id}->${e.to.topic_id}:${e.type}`;
-        if (!edgeSet.has(key)) {
-          edgeSet.add(key);
-          uniqueEdges.push(e);
-        }
-      }
-
-      simData = {
-        nodes: [...nodeMap.values()],
-        edges: uniqueEdges,
-        allTopics: topics,
-        allProposals: proposals.filter(p => p.status === 'proposed'),
-      };
-    }
-
-    function simStep() {
-      const nodes = simData.nodes;
-      const edges = simData.edges;
-      const kSq = 50000;
-      const attractCoeff = 0.00008;
-
-      // Repulsion: k²/d
-      for (let i = 0; i < nodes.length; i++) {
-        for (let j = i + 1; j < nodes.length; j++) {
-          const dx = nodes[j].x - nodes[i].x;
-          const dy = nodes[j].y - nodes[i].y;
-          let d = Math.sqrt(dx * dx + dy * dy);
-          if (d < 1) d = 1;
-          const f = kSq / d;
-          const fx = (dx / d) * f;
-          const fy = (dy / d) * f;
-          if (!nodes[i].fixed) { nodes[i].vx -= fx; nodes[i].vy -= fy; }
-          if (!nodes[j].fixed) { nodes[j].vx += fx; nodes[j].vy += fy; }
-        }
-      }
-
-      // Attraction: distance²
-      for (const edge of edges) {
-        const dx = edge.to.x - edge.from.x;
-        const dy = edge.to.y - edge.from.y;
-        const d = Math.sqrt(dx * dx + dy * dy);
-        if (d < 1) continue;
-        const f = attractCoeff * d * d;
-        const fx = (dx / d) * f;
-        const fy = (dy / d) * f;
-        if (!edge.from.fixed) { edge.from.vx += fx; edge.from.vy += fy; }
-        if (!edge.to.fixed) { edge.to.vx -= fx; edge.to.vy -= fy; }
-      }
-
-      // Apply velocity + damping
-      for (const node of nodes) {
-        if (node.fixed) continue;
-        node.vx *= 0.92;
-        node.vy *= 0.92;
-        node.x += node.vx;
-        node.y += node.vy;
-      }
-    }
-
-    function drawGraph() {
-      const c = getCanvas();
-      const ctx = c.getContext('2d');
-      const w = c.width;
-      const h = c.height;
-
-      ctx.clearRect(0, 0, w, h);
-
-      // Background grid
-      ctx.save();
-      ctx.strokeStyle = '#f0ede8';
-      ctx.lineWidth = 0.5;
-      const gridSize = 60;
-      const startX = -cam.x * cam.zoom;
-      const startY = -cam.y * cam.zoom;
-      for (let x = startX - (startX % gridSize); x < startX + w / cam.zoom; x += gridSize) {
-        ctx.beginPath();
-        ctx.moveTo(x, startY);
-        ctx.lineTo(x, startY + h / cam.zoom);
-        ctx.stroke();
-      }
-      for (let y = startY - (startY % gridSize); y < startY + h / cam.zoom; y += gridSize) {
-        ctx.beginPath();
-        ctx.moveTo(startX, y);
-        ctx.lineTo(startX + w / cam.zoom, y);
-        ctx.stroke();
-      }
-      ctx.restore();
-
-      ctx.save();
-      ctx.translate(-cam.x * cam.zoom, -cam.y * cam.zoom);
-      ctx.scale(cam.zoom, cam.zoom);
-
-      // Draw edges
-      for (const edge of simData.edges) {
-        const fx = edge.from.x;
-        const fy = edge.from.y;
-        const tx = edge.to.x;
-        const ty = edge.to.y;
-
-        ctx.beginPath();
-        ctx.moveTo(fx, fy);
-        ctx.lineTo(tx, ty);
-        if (edge.type === 'parent') {
-          ctx.strokeStyle = 'rgba(180,160,220,0.3)';
-          ctx.lineWidth = 0.8;
-          ctx.setLineDash([4, 4]);
-        } else {
-          ctx.strokeStyle = 'rgba(148,163,184,0.4)';
-          ctx.lineWidth = 1.2;
-          ctx.setLineDash([]);
-        }
-        ctx.stroke();
-      }
-      ctx.setLineDash([]);
-
-      // Draw proposal edges: dashed orange from parent to proposal anchor
-      const W2 = w / cam.zoom + cam.x;
-      const H2 = h / cam.zoom + cam.y;
-      const pAreaX = W2 - 220;
-
-      const proposedProposals = simData.allProposals;
-      const worldPos = proposedProposals.map((pp, idx) => {
-        const parentIds = pp.parent_node_ids || [];
-        // Find a node among parents that is in visible nodes
-        const anchorNode = simData.nodes.find(n => parentIds.includes(n.topic_id));
-        const ax = anchorNode ? anchorNode.x : pAreaX;
-        const ay = anchorNode ? anchorNode.y : 60 + idx * 70;
-        return { proposal: pp, ax, ay, px: pAreaX, py: 60 + idx * 70 };
-      });
-
-      for (const wp of worldPos) {
-        const midX = (wp.ax + wp.px) / 2;
-        ctx.beginPath();
-        ctx.moveTo(wp.ax, wp.ay);
-        ctx.quadraticCurveTo(midX, wp.ay - 30, wp.px, wp.py);
-        ctx.strokeStyle = 'rgba(245,158,11,0.5)';
-        ctx.lineWidth = 1.2;
-        ctx.setLineDash([5, 5]);
-        ctx.stroke();
-      }
-      ctx.setLineDash([]);
-
-      // Draw nodes
-      for (const node of simData.nodes) {
-        const connected = Math.max(node.parentCount + node.prereqCount, node.childCount || 0);
-        const r = node.is_root ? 22 : Math.max(6, 8 + Math.min(connected, 12));
-        const isSelected = node.topic_id === state.selectedTopicId;
-
-        ctx.beginPath();
-        ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
-        if (node.is_root) {
-          ctx.fillStyle = '#fef3c7';
-          ctx.strokeStyle = '#f59e0b';
-          ctx.lineWidth = 2.5;
-        } else if (isSelected) {
-          ctx.fillStyle = '#dbeafe';
-          ctx.strokeStyle = '#3b82f6';
-          ctx.lineWidth = 2.5;
-        } else {
-          ctx.fillStyle = connected > 0 ? '#ffffff' : '#f8fafc';
-          ctx.strokeStyle = connected > 0 ? '#94a3b8' : '#e2e8f0';
-          ctx.lineWidth = 1.5;
-        }
-        ctx.fill();
-        ctx.stroke();
-
-        if (isSelected) {
-          ctx.beginPath();
-          ctx.arc(node.x, node.y, r + 4, 0, Math.PI * 2);
-          ctx.strokeStyle = '#3b82f6';
-          ctx.lineWidth = 3;
-          ctx.stroke();
-        }
-
-        // Title label
-        ctx.fillStyle = '#1e293b';
-        ctx.font = '600 10px Inter, system-ui, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(short(node.title, 12), node.x, node.y - r - 8);
-
-        // ID label (smaller, muted)
-        ctx.fillStyle = '#94a3b8';
-        ctx.font = '9px Inter, system-ui, sans-serif';
-        ctx.fillText(node.topic_id, node.x, node.y + r + 12);
-      }
-
-      // Draw proposal nodes (floating right)
-      for (const wp of worldPos) {
-        const pp = wp.proposal;
-        const cx = wp.px;
-        const cy = wp.py;
-        const r = 14;
-
-        ctx.beginPath();
-        const sides = 6;
-        for (let i = 0; i < sides; i++) {
-          const angle = (Math.PI * 2 * i) / sides - Math.PI / 2;
-          const px = cx + r * Math.cos(angle);
-          const py = cy + r * Math.sin(angle);
-          if (i === 0) ctx.moveTo(px, py);
-          else ctx.lineTo(px, py);
-        }
-        ctx.closePath();
-        ctx.fillStyle = '#fff7ed';
-        ctx.strokeStyle = '#f59e0b';
-        ctx.lineWidth = 1.5;
-        ctx.fill();
-        ctx.stroke();
-
-        ctx.fillStyle = '#1e293b';
-        ctx.font = '600 9px Inter, system-ui, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(short(pp.title, 10), cx, cy);
-      }
-
-      ctx.restore();
-
-      // After drawing, check tooltip
-      if (simHover && simHover.topic_id) {
-        const tooltip = el('graphTooltip');
-        const c2 = getCanvas();
-        const rect = c2.getBoundingClientRect();
-        const sx = (simHover.x - cam.x) * cam.zoom * (rect.width / c2.width) + rect.left;
-        const sy = (simHover.y - cam.y) * cam.zoom * (rect.height / c2.height) + rect.top;
-        tooltip.style.display = 'block';
-        tooltip.style.left = (sx + 16) + 'px';
-        tooltip.style.top = (sy - 30) + 'px';
-        tooltip.textContent = simHover.title;
-      } else {
-        const tooltip = el('graphTooltip');
-        tooltip.style.display = 'none';
-      }
-    }
-
-    function simLoop() {
-      for (let i = 0; i < 100; i++) {
-        simStep();
-      }
-      drawGraph();
-      simRAF = requestAnimationFrame(simLoop);
-    }
-
-    function startSimulation() {
-      stopSimulation();
-      buildSimData();
-      simLoop();
-    }
-
-    function stopSimulation() {
-      if (simRAF) {
-        cancelAnimationFrame(simRAF);
-        simRAF = null;
-      }
-    }
-
-    function renderGraph() {
-      startSimulation();
-    }
-
-    // ── Canvas Interaction ──
-
-    function setupCanvasInteraction() {
-      const wrap = el('graphWrap');
-      const c = getCanvas();
-      const tooltip = el('graphTooltip');
-
-      function findNodeAt(wx, wy) {
-        for (const node of simData.nodes || []) {
-          const r = 12 + Math.min(node.parentCount + node.prereqCount, 8);
-          const dx = wx - node.x;
-          const dy = wy - node.y;
-          if (dx * dx + dy * dy <= (r + 6) * (r + 6)) {
-            return node;
-          }
-        }
-        // Check proposals (hexagons)
-        const pNodes = findProposalAt(wx, wy);
-        if (pNodes) return pNodes;
-        return null;
-      }
-
-      function findProposalAt(wx, wy) {
-        const w = c.width;
-        const h = c.height;
-        const W2 = w / cam.zoom + cam.x;
-        const pAreaX = W2 - 220;
-        const proposedProposals = simData.allProposals;
-        for (let idx = 0; idx < proposedProposals.length; idx++) {
-          const cx = pAreaX;
-          const cy = 60 + idx * 70;
-          const r = 14;
-          const dx = wx - cx;
-          const dy = wy - cy;
-          if (dx * dx + dy * dy <= (r + 6) * (r + 6)) {
-            return { proposal_id: proposedProposals[idx].proposal_id, x: cx, y: cy, title: proposedProposals[idx].title };
-          }
-        }
-        return null;
-      }
-
-      wrap.addEventListener('wheel', (e) => {
-        e.preventDefault();
-        const rect = c.getBoundingClientRect();
-        const sx = e.clientX - rect.left;
-        const sy = e.clientY - rect.top;
-        const px = sx * (c.width / rect.width);
-        const py = sy * (c.height / rect.height);
-
-        const worldBefore = { x: px / cam.zoom + cam.x, y: py / cam.zoom + cam.y };
-        const factor = e.deltaY < 0 ? 1.08 : 1 / 1.08;
-        cam.zoom = Math.max(0.1, Math.min(5, cam.zoom * factor));
-        const worldAfter = { x: px / cam.zoom + cam.x, y: py / cam.zoom + cam.y };
-        cam.x += worldBefore.x - worldAfter.x;
-        cam.y += worldBefore.y - worldAfter.y;
-      }, { passive: false });
-
-      wrap.addEventListener('mousedown', (e) => {
-        const world = screenToWorld(e.clientX, e.clientY);
-        const hit = findNodeAt(world.x, world.y);
-
-        if (hit && hit.topic_id) {
-          // Click on a topic node
-          state.selectedTopicId = hit.topic_id;
-          renderRootSelect();
+      const container = el('graphContainer');
+      const fg = ForceGraph()(container)
+        .graphData(graphData)
+        .nodeId('id')
+        .nodeLabel('name')
+        .nodeColor('color')
+        .nodeVal('val')
+        .linkDirectionalArrowLength(4)
+        .linkDirectionalArrowRelPos(1)
+        .linkWidth(l => l.type === 'parent' ? 0.8 : 1.5)
+        .linkColor(l => l.type === 'parent' ? 'rgba(180,160,220,0.4)' : 'rgba(148,163,184,0.6)')
+        .linkLineDash(l => l.type === 'parent' ? [4, 4] : null)
+        .onNodeClick(node => {
+          state.selectedTopicId = node.id;
+          renderNodeDetail();
           refreshTopicData().then(() => {
-            renderNodeDetail();
             renderResources();
             renderStats();
           });
-          return;
-        }
+        })
+        .width(container.clientWidth)
+        .height(680);
 
-        if (hit && hit.proposal_id) {
-          renderProposalDetail(hit.proposal_id);
-          return;
-        }
-
-        // Start panning
-        simDrag = {
-          startX: e.clientX,
-          startY: e.clientY,
-          camStartX: cam.x,
-          camStartY: cam.y,
-        };
-        wrap.classList.add('panning');
-        e.preventDefault();
-      });
-
-      window.addEventListener('mousemove', (e) => {
-        const world = screenToWorld(e.clientX, e.clientY);
-        simMouse.x = e.clientX;
-        simMouse.y = e.clientY;
-        simMouse.worldX = world.x;
-        simMouse.worldY = world.y;
-
-        if (simDrag) {
-          const c2 = getCanvas();
-          const dx = (e.clientX - simDrag.startX) / cam.zoom * (c2.width / c2.getBoundingClientRect().width);
-          const dy = (e.clientY - simDrag.startY) / cam.zoom * (c2.height / c2.getBoundingClientRect().height);
-          cam.x = simDrag.camStartX - dx;
-          cam.y = simDrag.camStartY - dy;
-          return;
-        }
-
-        const hit = findNodeAt(world.x, world.y);
-        if (hit && hit.topic_id) {
-          simHover = hit;
-          wrap.style.cursor = 'pointer';
-        } else if (hit && hit.proposal_id) {
-          simHover = { proposal_id: hit.proposal_id, x: hit.x, y: hit.y, title: hit.title };
-          wrap.style.cursor = 'pointer';
-        } else {
-          simHover = null;
-          wrap.style.cursor = '';
-        }
-      });
-
-      window.addEventListener('mouseup', () => {
-        if (simDrag) {
-          simDrag = null;
-          const w2 = el('graphWrap');
-          w2.classList.remove('panning');
-        }
-      });
+      fg.zoomToFit(400, 50);
+      state._fgInstance = fg;
     }
 
     function renderNodeDetail() {
@@ -1702,7 +1237,6 @@
       }
     });
 
-    setupCanvasInteraction();
     refreshAll({ keepSelection: false }).catch(err => log('初始化失败', { error: err.message }));
   </script>
 </body>
