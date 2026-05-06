@@ -101,6 +101,12 @@ class GraphWalker:
                 next_id = decision.get("next_node_id", "")
                 if next_id:
                     next_node = self._topic_map().get(next_id)
+                    if next_node is None:
+                        # Fallback: match by title
+                        for s in successors:
+                            if s.get("topic_id") == next_id or s.get("title") == next_id:
+                                next_node = self._topic_map().get(s["topic_id"])
+                                break
                     if next_node is not None:
                         current = next_node
                         continue
@@ -113,11 +119,17 @@ class GraphWalker:
 
             if decision.get("action") == "insert_before":
                 before_id = decision.get("before_node_id", "")
+                if before_id and not self._topic_map().get(before_id):
+                    for s in successors:
+                        if s.get("topic_id") == before_id or s.get("title") == before_id:
+                            before_id = s["topic_id"]
+                            break
                 return WalkResult(
                     action="insert_before",
                     anchor_topic_id=before_id or current.topic_id,
                     parent_node_ids=[current.topic_id],
                     prerequisite_node_ids=[before_id] if before_id else [],
+                    relation="requires",
                     reason=decision.get("reason", "new topic is a prerequisite"),
                 )
 
@@ -257,7 +269,7 @@ class GraphWalker:
             )
 
         successor_text = "\n".join(
-            f"  - {s['title']} (tags: {s.get('tags', [])})"
+            f"  - id={s['topic_id']} title={s['title']} (tags: {s.get('tags', [])})"
             for s in successors[:20]
         )
         system = (
@@ -295,7 +307,7 @@ class GraphWalker:
         topic_description: str,
     ) -> dict:
         successor_text = "\n".join(
-            f"  - {s['title']} (tags: {s.get('tags', [])})"
+            f"  - id={s['topic_id']} title={s['title']} (tags: {s.get('tags', [])})"
             for s in successors[:20]
         )
         system = (
