@@ -897,11 +897,15 @@
         .nodeLabel('name')
         .nodeColor('color')
         .nodeVal('val')
-        .linkDirectionalArrowLength(4)
+        .backgroundColor('#faf9f7')
+        .linkDirectionalArrowLength(5)
         .linkDirectionalArrowRelPos(1)
-        .linkWidth(l => l.type === 'parent' ? 0.8 : 1.5)
-        .linkColor(l => l.type === 'parent' ? 'rgba(180,160,220,0.4)' : 'rgba(148,163,184,0.6)')
-        .linkLineDash(l => l.type === 'parent' ? [4, 4] : null)
+        .linkWidth(l => l.type === 'parent' ? 1.2 : 2)
+        .linkColor(l => l.type === 'parent' ? 'rgba(160,140,200,0.6)' : 'rgba(100,116,139,0.7)')
+        .linkLineDash(l => l.type === 'parent' ? [6, 3] : null)
+        .enableNodeDrag(true)
+        .enableZoomInteraction(true)
+        .enablePanInteraction(true)
         .onNodeClick(node => {
           state.selectedTopicId = node.id;
           renderNodeDetail();
