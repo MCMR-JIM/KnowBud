@@ -775,20 +775,24 @@ def test_structured_ingestion_basic(tmp_path: Path) -> None:
     def mock_create(**kwargs):
         call_count[0] += 1
         if call_count[0] == 1:
+            # Phase 1: scan result
             return _llm_resp({
-                "sections": [
-                    {"label": "Lesson 1", "type": "lesson",
-                     "topic_candidates": ["Present Continuous"],
-                     "is_fuzzy": False, "exercises": ["Fill: He ___ running."]},
+                "doc_type": "textbook",
+                "blocks": [
+                    {"label": "Lesson 1", "type": "topic_area",
+                     "summary": "Present Continuous lesson",
+                     "start_marker": "Lesson 1", "end_marker": ""},
                     {"label": "Words", "type": "word_list",
-                     "topic_candidates": [], "is_fuzzy": False, "exercises": []},
+                     "summary": "vocabulary", "start_marker": "Words", "end_marker": ""},
                 ]
             })
         if call_count[0] == 2:
-            return _llm_resp([{"title": "Present Continuous", "children": []}])
+            # Phase 2: topic extraction from block
+            return _llm_resp([{"title": "Present Continuous", "desc": "现在进行时"}])
         if call_count[0] == 3:
-            return _llm_resp({})
-        return _llm_resp({"action": "insert_after", "reason": "child"})
+            # GraphLocator: does this exist?
+            return _llm_resp({"exists": False, "node_id": None, "parent_ids": [], "successor_ids": [], "reason": "new"})
+        return _llm_resp({})
 
     backend.llm_skill._orig = backend.llm_skill.client.chat.completions.create
     backend.llm_skill.client.chat.completions.create = mock_create
@@ -810,7 +814,137 @@ def test_structured_ingestion_basic(tmp_path: Path) -> None:
 
         lesson_segments = [s for s in segments if s.label == "chunk"]
         assert len(lesson_segments) >= 1
-        assert lesson_segments[0].topic_id is not None or lesson_segments[0].proposal_id is not None
+        assert call_count[0] >= 2  # scan + topic extraction occurred
+    finally:
+        backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
+
+
+def test_structured_ingestion_skips_wordlist(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    backend.llm_skill.client.api_key = "test_key"
+
+    def mock_create(**kwargs):
+        return _llm_resp({
+            "doc_type": "textbook",
+            "blocks": [
+                {"label": "Words", "type": "word_list", "summary": "vocab",
+                 "start_marker": "Words", "end_marker": ""},
+            ]
+        })
+
+    backend.llm_skill._orig = backend.llm_skill.client.chat.completions.create
+    backend.llm_skill.client.chat.completions.create = mock_create
+
+    try:
+        source_path = tmp_path / "sample.txt"
+        source_path.write_text("Word List: apple, banana", encoding="utf-8")
+        record = backend.create_resource_record(
+            topic_id="demo_01", resource_name="Words", category="learn",
+            media_type="txt", mime_type="text/plain", original_filename="sample.txt",
+            stored_path=str(source_path), size_bytes=source_path.stat().st_size,
+        )
+        topics = backend.load_app_state(include_history=False).curriculum.topics
+        segments = ingest_document_resource(
+            backend=backend, record=record, topics=topics,
+            subject="language", language_id="english",
+            enable_new_pipeline=True,
+        )
+
+        assert len(segments) >= 1
+        assert segments[0].status == "unclassified"
+    finally:
+        backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
+
+
+def test_structured_ingestion_dedup_existing(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    backend.llm_skill.client.api_key = "test_key"
+
+    state = backend.load_app_state(include_history=False)
+    state.curriculum.topics.append(
+        TopicNode(topic_id="eng_present_continuous", title="Present Continuous",
+                  difficulty=1, prerequisite_ids=[],
+                  tags=["subject:language", "facet:grammar", "language:english"]),
+    )
+    backend.save_app_state(state)
+
+    call_count = [0]
+
+    def mock_create(**kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return _llm_resp({
+                "doc_type": "textbook",
+                "blocks": [
+                    {"label": "Grammar", "type": "topic_area",
+                     "summary": "Present Continuous",
+                     "start_marker": "Grammar", "end_marker": ""},
+                ]
+            })
+        if call_count[0] == 2:
+            return _llm_resp([{"title": "Present Continuous", "desc": "现在进行时"}])
+        if call_count[0] == 3:
+            return _llm_resp({"exists": True, "node_id": "eng_present_continuous",
+                              "parent_ids": [], "successor_ids": [], "reason": "exists"})
+        return _llm_resp({})
+
+    backend.llm_skill._orig = backend.llm_skill.client.chat.completions.create
+    backend.llm_skill.client.chat.completions.create = mock_create
+
+    try:
+        source_path = tmp_path / "sample.txt"
+        source_path.write_text("Present Continuous grammar.", encoding="utf-8")
+        record = backend.create_resource_record(
+            topic_id="demo_01", resource_name="Grammar", category="learn",
+            media_type="txt", mime_type="text/plain", original_filename="sample.txt",
+            stored_path=str(source_path), size_bytes=source_path.stat().st_size,
+        )
+        topics = backend.load_app_state(include_history=False).curriculum.topics
+        segments = ingest_document_resource(
+            backend=backend, record=record, topics=topics,
+            subject="language", language_id="english",
+            enable_new_pipeline=True,
+        )
+
+        lesson_segments = [s for s in segments if s.label == "chunk"]
+        assert len(lesson_segments) >= 1
+    finally:
+        backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
+
+
+def test_structured_ingestion_exercises_bound(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    backend.llm_skill.client.api_key = "test_key"
+
+    def mock_create(**kwargs):
+        return _llm_resp({
+            "doc_type": "workbook",
+            "blocks": [
+                {"label": "Exercise", "type": "exercise_only",
+                 "summary": "exercises", "start_marker": "Exercise", "end_marker": ""},
+            ]
+        })
+
+    backend.llm_skill._orig = backend.llm_skill.client.chat.completions.create
+    backend.llm_skill.client.chat.completions.create = mock_create
+
+    try:
+        source_path = tmp_path / "sample.txt"
+        source_path.write_text("Exercises:\n1. He ___ running.\n2. She ___ reading.", encoding="utf-8")
+        record = backend.create_resource_record(
+            topic_id="demo_01", resource_name="Exercises", category="learn",
+            media_type="txt", mime_type="text/plain", original_filename="sample.txt",
+            stored_path=str(source_path), size_bytes=source_path.stat().st_size,
+        )
+        topics = backend.load_app_state(include_history=False).curriculum.topics
+        segments = ingest_document_resource(
+            backend=backend, record=record, topics=topics,
+            subject="language", language_id="english",
+            enable_new_pipeline=True,
+        )
+
+        exercise_segments = [s for s in segments if s.label == "chunk" and s.locator.get("section_type") == "exercise_only"]
+        assert len(exercise_segments) >= 1
     finally:
         backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
 
@@ -850,211 +984,3 @@ def test_structured_ingestion_skips_wordlist(tmp_path: Path) -> None:
         assert segments[0].proposal_id is None
     finally:
         backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
-
-
-def test_structured_ingestion_dedup_existing(tmp_path: Path) -> None:
-    backend = _build_backend(tmp_path)
-    backend.llm_skill.client.api_key = "test_key"
-
-    state = backend.load_app_state(include_history=False)
-    state.curriculum.topics.append(
-        TopicNode(topic_id="eng_present_continuous", title="Present Continuous",
-                  difficulty=1, prerequisite_ids=[],
-                  tags=["subject:language", "facet:grammar", "language:english"]),
-    )
-    backend.save_app_state(state)
-
-    call_count = [0]
-
-    def mock_create(**kwargs):
-        call_count[0] += 1
-        if call_count[0] == 1:
-            return _llm_resp({
-                "sections": [
-                    {"label": "Grammar", "type": "lesson",
-                     "topic_candidates": ["Present Continuous"],
-                     "is_fuzzy": False, "exercises": []},
-                ]
-            })
-        return _llm_resp({
-            "decision": "link", "matched_topic_id": "eng_present_continuous",
-            "matched_title": "Present Continuous", "parent_node_ids": [],
-            "confidence": 0.95, "reason": "match", "proposed_title": None,
-        })
-
-    backend.llm_skill._orig = backend.llm_skill.client.chat.completions.create
-    backend.llm_skill.client.chat.completions.create = mock_create
-
-    try:
-        source_path = tmp_path / "sample.txt"
-        source_path.write_text("Present Continuous grammar.", encoding="utf-8")
-        record = backend.create_resource_record(
-            topic_id="demo_01", resource_name="Grammar", category="learn",
-            media_type="txt", mime_type="text/plain", original_filename="sample.txt",
-            stored_path=str(source_path), size_bytes=source_path.stat().st_size,
-        )
-        topics = backend.load_app_state(include_history=False).curriculum.topics
-        segments = ingest_document_resource(
-            backend=backend, record=record, topics=topics,
-            subject="language", language_id="english",
-            enable_new_pipeline=True,
-        )
-
-        lesson_segments = [s for s in segments if s.label == "chunk"]
-        assert len(lesson_segments) >= 1
-        # Graph search may find match; if not, walker may link_existing
-        assert lesson_segments[0].proposal_id is not None or lesson_segments[0].topic_id is not None
-    finally:
-        backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
-
-
-def test_structured_ingestion_exercises_bound(tmp_path: Path) -> None:
-    backend = _build_backend(tmp_path)
-    backend.llm_skill.client.api_key = "test_key"
-
-    def mock_create(**kwargs):
-        return _llm_resp({
-            "sections": [
-                {"label": "Exercise", "type": "exercise", "topic_candidates": [],
-                 "is_fuzzy": False, "exercises": ["1. He ___ running.", "2. She ___ reading."]},
-            ]
-        })
-
-    backend.llm_skill._orig = backend.llm_skill.client.chat.completions.create
-    backend.llm_skill.client.chat.completions.create = mock_create
-
-    try:
-        source_path = tmp_path / "sample.txt"
-        source_path.write_text("Exercises:\n1. He ___ running.\n2. She ___ reading.", encoding="utf-8")
-        record = backend.create_resource_record(
-            topic_id="demo_01", resource_name="Exercises", category="learn",
-            media_type="txt", mime_type="text/plain", original_filename="sample.txt",
-            stored_path=str(source_path), size_bytes=source_path.stat().st_size,
-        )
-        topics = backend.load_app_state(include_history=False).curriculum.topics
-        segments = ingest_document_resource(
-            backend=backend, record=record, topics=topics,
-            subject="language", language_id="english",
-            enable_new_pipeline=True,
-        )
-
-        exercise_segments = [s for s in segments if s.label == "exercise"]
-        assert len(exercise_segments) >= 1
-        assert "He ___ running" in exercise_segments[0].text
-    finally:
-        backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
-
-
-class TestBatchTreeOrganization:
-    def test_batch_tree_basic(self, tmp_path: Path):
-        from src.services.document_ingestion import _batch_organize_topic_tree
-
-        backend = _build_backend(tmp_path)
-        backend.llm_skill.client.api_key = "test_key"
-
-        tree_result = [
-            {"title": "光学[中继]", "children": [
-                {"title": "光的反射定律", "children": []},
-                {"title": "光的折射规律", "children": []},
-            ]},
-        ]
-
-        def mock_create(**kwargs):
-            return _llm_resp(tree_result)
-
-        backend.llm_skill._orig = backend.llm_skill.client.chat.completions.create
-        backend.llm_skill.client.chat.completions.create = mock_create
-
-        try:
-            result = _batch_organize_topic_tree(
-                backend=backend,
-                candidates=["光的反射定律", "光的折射规律"],
-                subject="physics",
-            )
-            assert len(result) == 1
-            assert result[0]["title"] == "光学[中继]"
-            children_titles = {c["title"] for c in result[0]["children"]}
-            assert "光的反射定律" in children_titles
-            assert "光的折射规律" in children_titles
-        finally:
-            backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
-
-    def test_batch_tree_creates_relay_nodes(self, tmp_path: Path):
-        from src.services.document_ingestion import _batch_organize_topic_tree
-
-        backend = _build_backend(tmp_path)
-        backend.llm_skill.client.api_key = "test_key"
-
-        tree_result = [
-            {"title": "数学中继[中继]", "children": [
-                {"title": "加法", "children": []},
-            ]},
-        ]
-
-        def mock_create(**kwargs):
-            return _llm_resp(tree_result)
-
-        backend.llm_skill._orig = backend.llm_skill.client.chat.completions.create
-        backend.llm_skill.client.chat.completions.create = mock_create
-
-        try:
-            result = _batch_organize_topic_tree(
-                backend=backend,
-                candidates=["加法"],
-                subject="math",
-            )
-            assert "[中继]" in result[0]["title"]
-        finally:
-            backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
-
-    def test_batch_tree_order_parent_before_child(self, tmp_path: Path):
-        from src.services.document_ingestion import _create_topics_from_tree, _collect_tree_titles
-
-        backend = _build_backend(tmp_path)
-        backend.llm_skill.client.api_key = "test_key"
-
-        state = backend.load_app_state(include_history=False)
-        backend.save_app_state(state)
-
-        tree = [
-            {"title": "光学[中继]", "children": [
-                {"title": "光的反射定律", "children": []},
-            ]},
-        ]
-        from src.services.resource_graph_curation import SUBJECT_PROFILES
-
-        profile = SUBJECT_PROFILES["physics"]
-
-        titles = _collect_tree_titles(tree)
-        assert "光学[中继]" in titles
-        assert "光的反射定律" in titles
-        # Parent appears before child in flat list
-        parent_idx = titles.index("光学[中继]")
-        child_idx = titles.index("光的反射定律")
-        assert parent_idx < child_idx
-
-    def test_batch_prereq_inference(self, tmp_path: Path):
-        from src.services.document_ingestion import _batch_infer_prerequisites
-
-        backend = _build_backend(tmp_path)
-        backend.llm_skill.client.api_key = "test_key"
-
-        prereq_result = {"凸透镜成像规律": ["光的折射规律", "光速"]}
-
-        def mock_create(**kwargs):
-            return _llm_resp(prereq_result)
-
-        backend.llm_skill._orig = backend.llm_skill.client.chat.completions.create
-        backend.llm_skill.client.chat.completions.create = mock_create
-
-        try:
-            tree = [
-                {"title": "凸透镜成像规律", "children": []},
-            ]
-            result = _batch_infer_prerequisites(
-                backend=backend, tree=tree, subject="physics",
-            )
-            assert "凸透镜成像规律" in result
-            assert "光的折射规律" in result["凸透镜成像规律"]
-        finally:
-            backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig

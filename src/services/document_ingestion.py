@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
@@ -738,195 +739,6 @@ def _detect_lang_from_chunks(chunks: list[TextUnit], topics: list[TopicNode]) ->
     return None
 
 
-def _batch_organize_topic_tree(
-    *,
-    backend: "SessionBackend",
-    candidates: list[str],
-    subject: str,
-    language_id: str | None = None,
-) -> list[dict]:
-    candidate_list = json.dumps(candidates, ensure_ascii=False)
-    lang_hint = f", 语言: {language_id}" if language_id else ""
-    system = (
-        "你是知识结构组织助手。把一组概念关键词组织成树形层级。\n"
-        "规则：\n"
-        "1. 识别可以归类的上级概念（如'光学'包含反射/折射），创建中继节点，标题加 [中继] 后缀\n"
-        "2. 子概念挂在父概念下\n"
-        "3. 同级概念平铺\n"
-        "4. 不要凭空创建不在输入列表中的概念作为叶子节点\n"
-        "5. 每个输入的关键词必须在树中出现一次\n"
-        f"学科: {subject}{lang_hint}\n"
-        "返回 JSON 树形数组。"
-    )
-    user = (
-        f"概念关键词列表:\n{candidate_list}\n\n"
-        "请组织为树形结构，返回 JSON 数组。中继节点标题加 [中继] 后缀。"
-    )
-    try:
-        response = backend.llm_skill.client.chat.completions.create(
-            model=backend.llm_skill.model_name,
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-            temperature=0.3, timeout=60.0,
-        )
-        raw = (response.choices[0].message.content or "").strip()
-        raw = re.sub(r"^```(?:json)?\s*", "", raw)
-        raw = re.sub(r"\s*```$", "", raw)
-        data = json.loads(raw)
-        return data if isinstance(data, list) else []
-    except Exception:
-        return []
-
-
-def _batch_infer_prerequisites(
-    *,
-    backend: "SessionBackend",
-    tree: list[dict],
-    subject: str,
-) -> dict[str, list[str]]:
-    titles = _collect_tree_titles(tree)
-    titles_list = json.dumps(titles, ensure_ascii=False)
-    system = (
-        "你是知识前置关系分析助手。对每个概念，列出学习它之前需要掌握的前置知识。\n"
-        "只从给定的标题列表中挑选前置（可以在当前树中，也可以提及不在树中但已知的通用前置）。\n"
-        f"学科: {subject}\n"
-        "返回 JSON 对象，键为概念标题，值为前置标题数组。"
-    )
-    user = f"概念标题列表:\n{titles_list}\n\n请推断每个概念的前置依赖，返回 JSON 对象。"
-    try:
-        response = backend.llm_skill.client.chat.completions.create(
-            model=backend.llm_skill.model_name,
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-            temperature=0.3, timeout=60.0,
-        )
-        raw = (response.choices[0].message.content or "").strip()
-        raw = re.sub(r"^```(?:json)?\s*", "", raw)
-        raw = re.sub(r"\s*```$", "", raw)
-        data = json.loads(raw)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
-
-
-def _collect_tree_titles(tree: list[dict], depth: int = 0) -> list[str]:
-    titles: list[str] = []
-    for node in tree:
-        title = (node.get("title") or "").strip()
-        if title and title not in titles:
-            titles.append(title)
-        children = node.get("children") or []
-        for ct in _collect_tree_titles(children, depth + 1):
-            if ct not in titles:
-                titles.append(ct)
-    return titles
-
-
-def _create_topics_from_tree(
-    *,
-    backend: "SessionBackend",
-    tree: list[dict],
-    prereq_map: dict[str, list[str]],
-    subject: str,
-    language_id: str | None,
-    topics: list[TopicNode],
-    profile: object,
-) -> dict[str, str]:
-    from src.services.resource_graph_curation import _proposal_tags
-
-    title_to_id: dict[str, str] = {}
-    _create_tree_nodes(
-        nodes=tree, parent_id=None,
-        backend=backend, subject=subject, language_id=language_id,
-        topics=topics, profile=profile, prereq_map=prereq_map,
-        title_to_id=title_to_id, _proposal_tags=_proposal_tags,
-    )
-    return title_to_id
-
-
-def _create_tree_nodes(
-    *,
-    nodes: list[dict],
-    parent_id: str | None,
-    backend: "SessionBackend",
-    subject: str,
-    language_id: str | None,
-    topics: list[TopicNode],
-    profile: object,
-    prereq_map: dict[str, list[str]],
-    title_to_id: dict[str, str],
-    _proposal_tags: object,
-) -> None:
-    for node in nodes:
-        raw_title = (node.get("title") or "").strip()
-        if not raw_title:
-            continue
-        is_relay = "[中继]" in raw_title
-        clean_title = raw_title.replace("[中继]", "").strip()
-
-        existing_id = _find_topic_id(clean_title, topics, title_to_id)
-        if existing_id:
-            title_to_id[clean_title] = existing_id
-            children = node.get("children") or []
-            if children:
-                _create_tree_nodes(
-                    nodes=children, parent_id=existing_id,
-                    backend=backend, subject=subject, language_id=language_id,
-                    topics=topics, profile=profile, prereq_map=prereq_map,
-                    title_to_id=title_to_id, _proposal_tags=_proposal_tags,
-                )
-            continue
-
-        prereqs_raw = prereq_map.get(raw_title) or prereq_map.get(clean_title) or []
-        prereq_ids: list[str] = []
-        for pt in prereqs_raw:
-            pt_clean = str(pt).replace("[中继]", "").strip()
-            pid = title_to_id.get(pt_clean) or _find_topic_id(pt_clean, topics, {})
-            if pid:
-                prereq_ids.append(pid)
-
-        try:
-            proposal = backend.create_graph_proposal_from_resource(
-                title=clean_title,
-                summary=f"{'中继节点: ' if is_relay else ''}{subject}学科知识点",
-                tags=_proposal_tags(
-                    subject=subject,
-                    facet=profile.default_facet,
-                    language_id=language_id,
-                ),
-                parent_node_ids=[parent_id] if parent_id else [],
-                prerequisite_node_ids=list(dict.fromkeys(prereq_ids)),
-                edge_type="part_of" if parent_id else "requires",
-                reason="batch tree creation",
-            )
-            _st, _pr, topic, _, _ = backend.approve_graph_proposal(
-                proposal_id=proposal.proposal_id,
-                difficulty=1,
-            )
-            tid = topic.topic_id
-            title_to_id[clean_title] = tid
-            topics.append(topic)
-        except Exception:
-            tid = ""
-            title_to_id[clean_title] = ""
-
-        children = node.get("children") or []
-        if children and tid:
-            _create_tree_nodes(
-                nodes=children, parent_id=tid,
-                backend=backend, subject=subject, language_id=language_id,
-                topics=topics, profile=profile, prereq_map=prereq_map,
-                title_to_id=title_to_id, _proposal_tags=_proposal_tags,
-            )
-
-
-def _find_topic_id(title: str, topics: list[TopicNode], title_map: dict[str, str]) -> str | None:
-    if title_map.get(title):
-        return title_map[title]
-    for t in topics:
-        if t.title.strip() == title:
-            return t.topic_id
-    return None
-
-
 def _run_structured_ingestion(
     *,
     backend: "SessionBackend",
@@ -936,185 +748,283 @@ def _run_structured_ingestion(
     subject: str,
     language_id: str | None = None,
 ) -> list[ResourceSegment]:
-    from src.services.document_analyzer import analyze_document_structure, SKIP_SECTION_TYPES
-    from src.services.graph_search import GraphSearchAgent
-    from src.services.graph_walker import GraphWalker
-    from src.services.resource_graph_curation import (
-        SUBJECT_PROFILES, _proposal_tags,
-    )
+    from src.services.resource_graph_curation import SUBJECT_PROFILES, _proposal_tags
+    from src.services.graph_locator import GraphLocator
 
     profile = SUBJECT_PROFILES.get(subject, SUBJECT_PROFILES["general"])
-    sections = analyze_document_structure(
-        backend=backend, chunks=chunks, subject=subject, language_id=language_id,
-    )
-    if not sections:
+
+    # ── Phase 1: one LLM call to scan full document ──
+    scan = _fast_document_scan(backend, chunks, subject, language_id)
+    blocks = scan.get("blocks") or []
+    topic_blocks = [b for b in blocks if b.get("type") == "topic_area"]
+    exercise_blocks = [b for b in blocks if b.get("type") == "exercise_only"]
+
+    if not topic_blocks and not exercise_blocks:
         return [
             _status_segment(
                 resource_id=record.resource_id, sequence_index=0,
-                status="unclassified", reason="structured analysis returned no sections",
-                locator={"kind": record.media_type or "unknown"},
+                status="unclassified", reason="no topic or exercise blocks found",
+                locator={"kind": "structured"},
             )
         ]
 
-    walker = GraphWalker(backend, subject, language_id)
-    search_agent = GraphSearchAgent(backend, subject, language_id)
+    topic_map = {t.title.strip(): t.topic_id for t in topics}
 
-    # Batch tree organization: collect all candidates, organize, infer prereqs, create
-    if sections and backend.llm_skill.client.api_key:
-        try:
-            all_candidates: list[str] = []
-            for section in sections:
-                for t in section.topic_candidates:
-                    clean = t.strip()
-                    if clean and clean not in all_candidates:
-                        all_candidates.append(clean)
-            if all_candidates:
-                tree = _batch_organize_topic_tree(
-                    backend=backend, candidates=all_candidates,
-                    subject=subject, language_id=language_id,
-                )
-                if tree:
-                    prereq_map = _batch_infer_prerequisites(
-                        backend=backend, tree=tree, subject=subject,
-                    )
-                    _create_topics_from_tree(
-                        backend=backend, tree=tree, prereq_map=prereq_map,
-                        subject=subject, language_id=language_id,
-                        topics=topics, profile=profile,
-                    )
-                    walker = GraphWalker(backend, subject, language_id)
-                    search_agent = GraphSearchAgent(backend, subject, language_id)
-        except Exception:
-            pass
+    # ── Phase 2: parallel topic extraction + GraphLocator (one thread per block) ──
+    all_results: dict[str, list] = {}
+    if topic_blocks and backend.llm_skill.client.api_key:
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {
+                executor.submit(
+                    _process_topic_block, backend, block, chunks,
+                    subject, language_id, topic_map,
+                ): block
+                for block in topic_blocks
+            }
+            for future in as_completed(futures):
+                block = futures[future]
+                try:
+                    all_results[block.get("label", block.get("summary", ""))] = future.result()
+                except Exception:
+                    pass
 
-    segments: list[ResourceSegment] = []
-    last_topic_id: str | None = None
-    last_proposal_id: str | None = None
-    seg_index = 0
-
-    for section in sections:
-        if section.section_type in SKIP_SECTION_TYPES:
-            seg_index += 1
-            segments.append(
-                ResourceSegment(
-                    segment_id=_segment_id(record.resource_id, seg_index),
-                    start_ms=0, end_ms=None, label=section.section_type,
-                    status="unclassified", sequence_index=seg_index,
-                    text=section.text[:2000], locator={"kind": "structured", "section_type": section.section_type},
-                    topic_id=None, proposal_id=None,
-                    decision="unclassified", confidence=0.0,
-                    reason=f"{section.section_type} section skipped",
-                )
-            )
-            continue
-
-        section_topic_id: str | None = None
-        section_proposal_id: str | None = None
-
-        for topic_title in section.topic_candidates:
-            if not topic_title.strip():
+    # ── Create topics from results ──
+    for _label, results in all_results.items():
+        for topic_title, topic_desc, pos in results:
+            if pos.exists and pos.node_id:
+                _link_to_topic(topic_title, topics, topic_map)
                 continue
 
-            # Deterministic exact-title dedup: skip LLM call for obvious duplicates
-            for topic in topics:
-                if topic.title.strip() == topic_title.strip():
-                    section_topic_id = topic.topic_id
-                    last_topic_id = section_topic_id
-                    break
-            if section_topic_id:
-                continue
-
-            search_result = search_agent.search(topic_title, section.text[:1000])
-            if search_result.decision == "link" and search_result.confidence >= 0.55:
-                section_topic_id = search_result.matched_topic_id
-                last_topic_id = section_topic_id
-                continue
-
-            walk_result = walker.walk_and_insert(topic_title, section.text[:500])
-            if walk_result.action == "link_existing":
-                section_topic_id = walk_result.anchor_topic_id
-                last_topic_id = section_topic_id
-                continue
-
+            parents = [pid for pid in pos.parent_ids if pid in topic_map.values()]
+            prereqs = [pid for pid in pos.successor_ids if pid in topic_map.values()]
             try:
                 proposal = backend.create_graph_proposal_from_resource(
                     title=topic_title,
-                    summary=section.text[:200],
+                    summary=topic_desc[:200],
                     tags=_proposal_tags(
                         subject=subject, facet=profile.default_facet,
                         language_id=language_id,
                     ),
-                    parent_node_ids=walk_result.parent_node_ids,
-                    prerequisite_node_ids=walk_result.prerequisite_node_ids,
-                    edge_type=walk_result.relation,
-                    reason=walk_result.reason[:80],
+                    parent_node_ids=parents,
+                    prerequisite_node_ids=prereqs,
+                    edge_type="part_of" if parents else "requires",
+                    reason=pos.reason[:80],
                 )
-                # Auto-approve so subsequent topics in same batch can dedup against it
-                _st, _pr, topic, _, _ = backend.approve_graph_proposal(
-                    proposal_id=proposal.proposal_id,
-                    difficulty=1,
+                _st, _pr, tpc, _, _ = backend.approve_graph_proposal(
+                    proposal_id=proposal.proposal_id, difficulty=1,
                 )
-                section_topic_id = topic.topic_id
-                last_topic_id = section_topic_id
-                # Add to local topics list for deterministic dedup in this batch
-                topics.append(topic)
-                walker = GraphWalker(backend, subject, language_id)
-                search_agent = GraphSearchAgent(backend, subject, language_id)
+                topic_map[topic_title.strip()] = tpc.topic_id
             except Exception:
                 pass
 
-        if section.bound_exercises:
-            exercise_text = "\n".join(section.bound_exercises)
-            seg_index += 1
+    # ── Process exercises ──
+    if exercise_blocks:
+        _process_exercise_blocks(
+            backend=backend, blocks=exercise_blocks, chunks=chunks,
+            topics=topics, topic_map=topic_map,
+            record=record, subject=subject, language_id=language_id,
+            profile=profile, _proposal_tags=_proposal_tags,
+        )
+
+    # ── Build segments ──
+    return _build_segments_from_scan(
+        scan=scan, record=record, topics=topics, topic_map=topic_map,
+    )
+
+
+# ── Phase 1 helpers ──
+
+def _fast_document_scan(
+    backend: "SessionBackend",
+    chunks: list[TextUnit],
+    subject: str,
+    language_id: str | None = None,
+) -> dict:
+    full_text = "\n\n".join(c.text for c in chunks if c.text)
+    if len(full_text) > 24000:
+        full_text = full_text[:12000] + "\n\n[...省略...]\n\n" + full_text[-12000:]
+
+    lang_hint = f", 语言: {language_id}" if language_id else ""
+    system = (
+        "你是教学文档分析助手。通读以下文档全文，返回结构化分析。\n"
+        f"学科: {subject}{lang_hint}\n"
+        "输出 JSON：{\"doc_type\":\"...\",\"blocks\":[{\"label\":\"...\",\"summary\":\"...\",\"type\":\"topic_area|exercise_only|fuzzy|word_list|appendix\",\"start_marker\":\"...\",\"end_marker\":\"...\"}]}"
+    )
+    user = f"文档全文:\n```text\n{full_text}\n```\n请分析并返回 JSON。"
+
+    fallback = {"doc_type": "unknown", "blocks": []}
+    try:
+        response = backend.llm_skill.client.chat.completions.create(
+            model=backend.llm_skill.model_name,
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=0.3, timeout=120.0,
+        )
+        raw = (response.choices[0].message.content or "").strip()
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else fallback
+    except Exception:
+        return fallback
+
+
+# ── Phase 2 helpers ──
+
+def _process_topic_block(
+    backend: "SessionBackend",
+    block: dict,
+    chunks: list[TextUnit],
+    subject: str,
+    language_id: str | None,
+    topic_map: dict[str, str],
+) -> list:
+    block_text = _extract_block_text(block, chunks)
+    topics_data = _extract_topics_from_block_text(backend, block_text, subject, language_id)
+
+    from src.services.graph_locator import GraphLocator
+
+    locator = GraphLocator(backend, subject, language_id)
+    results: list = []
+    for td in topics_data:
+        title = (td.get("title") or "").strip()
+        desc = (td.get("desc") or "").strip()
+        if not title:
+            continue
+        pos = locator.locate(title, desc)
+        results.append((title, desc, pos))
+    return results
+
+
+def _extract_block_text(block: dict, chunks: list[TextUnit]) -> str:
+    start = (block.get("start_marker") or "").lower()
+    end = (block.get("end_marker") or "").lower()
+    if not start:
+        return " ".join(c.text for c in chunks[:3])
+
+    capturing = False
+    parts: list[str] = []
+    for chunk in chunks:
+        text = chunk.text or ""
+        lower = text.lower()
+        if start in lower:
+            capturing = True
+        if capturing:
+            parts.append(text)
+        if end and end in lower:
+            break
+    return "\n".join(parts) if parts else " ".join(c.text for c in chunks[:3])
+
+
+def _extract_topics_from_block_text(
+    backend: "SessionBackend",
+    block_text: str,
+    subject: str,
+    language_id: str | None = None,
+) -> list[dict]:
+    lang_hint = f", 语言: {language_id}" if language_id else ""
+    system = (
+        "你是教学知识点提取助手。从段落提取可作知识图谱节点的知识点。\n"
+        "只提取可教学的知识点（定理、定律、公式、概念、语法点）。\n"
+        "不要提取实验过程、课堂活动、练习指令、方法论标题。\n"
+        f"学科: {subject}{lang_hint}\n"
+        '返回 JSON 数组: [{"title":"知识点名","desc":"一句话说明"}]'
+    )
+    user = f"段落:\n```text\n{block_text[:3000]}\n```\n请提取知识点。"
+    try:
+        response = backend.llm_skill.client.chat.completions.create(
+            model=backend.llm_skill.model_name,
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=0.3, timeout=60.0,
+        )
+        raw = (response.choices[0].message.content or "").strip()
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+        data = json.loads(raw)
+        return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _link_to_topic(title: str, topics: list[TopicNode], topic_map: dict[str, str]) -> str | None:
+    clean = title.strip()
+    if clean in topic_map:
+        return topic_map[clean]
+    for t in topics:
+        if t.title.strip() == clean:
+            topic_map[clean] = t.topic_id
+            return t.topic_id
+    return None
+
+
+def _process_exercise_blocks(
+    *,
+    backend: "SessionBackend",
+    blocks: list[dict],
+    chunks: list[TextUnit],
+    topics: list[TopicNode],
+    topic_map: dict[str, str],
+    record: ResourceRecord,
+    subject: str,
+    language_id: str | None,
+    profile: object,
+    _proposal_tags: object,
+) -> None:
+    pass  # Exercises processed in segment builder
+
+
+def _build_segments_from_scan(
+    *,
+    scan: dict,
+    record: ResourceRecord,
+    topics: list[TopicNode],
+    topic_map: dict[str, str],
+) -> list[ResourceSegment]:
+    blocks = scan.get("blocks") or []
+    segments: list[ResourceSegment] = []
+    seg_index = 0
+
+    for block in blocks:
+        block_text = _extract_block_text(block, [])
+        if not block_text and hasattr(block, "text"):
+            block_text = block.get("summary", "")
+        btype = block.get("type", "unknown")
+        label = block.get("label", btype)
+
+        seg_index += 1
+        if btype in {"word_list", "appendix"}:
             segments.append(
                 ResourceSegment(
                     segment_id=_segment_id(record.resource_id, seg_index),
-                    start_ms=0, end_ms=None, label="exercise",
-                    status="classified" if section_topic_id else "unclassified",
-                    sequence_index=seg_index,
-                    text=exercise_text[:2000],
-                    locator={"kind": "structured", "section_type": "exercise"},
-                    topic_id=section_topic_id or last_topic_id,
-                    proposal_id=None,
-                    decision="link" if (section_topic_id or last_topic_id) else "unclassified",
-                    confidence=0.85,
-                    reason="bound exercise" if (section_topic_id or last_topic_id) else "no topic to bind",
+                    start_ms=0, end_ms=None, label=btype,
+                    status="unclassified", sequence_index=seg_index,
+                    text=block.get("summary", block_text)[:500],
+                    locator={"kind": "structured", "section_type": btype},
+                    topic_id=None, proposal_id=None,
+                    decision="unclassified", confidence=0.0,
+                    reason=f"{btype} section skipped",
                 )
             )
-
-        seg_index += 1
-        segments.append(
-            ResourceSegment(
-                segment_id=_segment_id(record.resource_id, seg_index),
-                start_ms=0, end_ms=None, label="chunk",
-                status=(
-                    "classified" if section_topic_id
-                    else "proposed" if section_proposal_id
-                    else "unclassified"
-                ),
-                sequence_index=seg_index,
-                text=section.text[:2000],
-                locator={"kind": "structured", "section_type": section.section_type},
-                topic_id=section_topic_id or last_topic_id,
-                proposal_id=section_proposal_id,
-                proposed_topic_title=section.topic_candidates[0] if section.topic_candidates else None,
-                decision=(
-                    "link" if section_topic_id or last_topic_id
-                    else "propose" if section_proposal_id
-                    else "unclassified"
-                ),
-                confidence=0.85,
-                reason=(
-                    "matched existing topic" if section_topic_id
-                    else "new topic proposed" if section_proposal_id
-                    else "no topic extracted"
-                ),
+        else:
+            matched_tid = None
+            for title, tid in topic_map.items():
+                if title.lower() in (label or "").lower() or title.lower() in (block.get("summary", "") or "").lower():
+                    matched_tid = tid
+                    break
+            segments.append(
+                ResourceSegment(
+                    segment_id=_segment_id(record.resource_id, seg_index),
+                    start_ms=0, end_ms=None, label="chunk",
+                    status="classified" if matched_tid else "unclassified",
+                    sequence_index=seg_index,
+                    text=block.get("summary", label)[:500],
+                    locator={"kind": "structured", "section_type": btype},
+                    topic_id=matched_tid,
+                    proposal_id=None,
+                    decision="link" if matched_tid else "unclassified",
+                    confidence=0.85,
+                    reason="via structured scan" if matched_tid else "no topic extracted",
+                )
             )
-        )
-
-        if section_topic_id:
-            last_topic_id = section_topic_id
-
     return segments
 
 
