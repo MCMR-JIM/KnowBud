@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from dataclasses import dataclass
@@ -737,6 +738,195 @@ def _detect_lang_from_chunks(chunks: list[TextUnit], topics: list[TopicNode]) ->
     return None
 
 
+def _batch_organize_topic_tree(
+    *,
+    backend: "SessionBackend",
+    candidates: list[str],
+    subject: str,
+    language_id: str | None = None,
+) -> list[dict]:
+    candidate_list = json.dumps(candidates, ensure_ascii=False)
+    lang_hint = f", 语言: {language_id}" if language_id else ""
+    system = (
+        "你是知识结构组织助手。把一组概念关键词组织成树形层级。\n"
+        "规则：\n"
+        "1. 识别可以归类的上级概念（如'光学'包含反射/折射），创建中继节点，标题加 [中继] 后缀\n"
+        "2. 子概念挂在父概念下\n"
+        "3. 同级概念平铺\n"
+        "4. 不要凭空创建不在输入列表中的概念作为叶子节点\n"
+        "5. 每个输入的关键词必须在树中出现一次\n"
+        f"学科: {subject}{lang_hint}\n"
+        "返回 JSON 树形数组。"
+    )
+    user = (
+        f"概念关键词列表:\n{candidate_list}\n\n"
+        "请组织为树形结构，返回 JSON 数组。中继节点标题加 [中继] 后缀。"
+    )
+    try:
+        response = backend.llm_skill.client.chat.completions.create(
+            model=backend.llm_skill.model_name,
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=0.3, timeout=60.0,
+        )
+        raw = (response.choices[0].message.content or "").strip()
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+        data = json.loads(raw)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _batch_infer_prerequisites(
+    *,
+    backend: "SessionBackend",
+    tree: list[dict],
+    subject: str,
+) -> dict[str, list[str]]:
+    titles = _collect_tree_titles(tree)
+    titles_list = json.dumps(titles, ensure_ascii=False)
+    system = (
+        "你是知识前置关系分析助手。对每个概念，列出学习它之前需要掌握的前置知识。\n"
+        "只从给定的标题列表中挑选前置（可以在当前树中，也可以提及不在树中但已知的通用前置）。\n"
+        f"学科: {subject}\n"
+        "返回 JSON 对象，键为概念标题，值为前置标题数组。"
+    )
+    user = f"概念标题列表:\n{titles_list}\n\n请推断每个概念的前置依赖，返回 JSON 对象。"
+    try:
+        response = backend.llm_skill.client.chat.completions.create(
+            model=backend.llm_skill.model_name,
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=0.3, timeout=60.0,
+        )
+        raw = (response.choices[0].message.content or "").strip()
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _collect_tree_titles(tree: list[dict], depth: int = 0) -> list[str]:
+    titles: list[str] = []
+    for node in tree:
+        title = (node.get("title") or "").strip()
+        if title and title not in titles:
+            titles.append(title)
+        children = node.get("children") or []
+        for ct in _collect_tree_titles(children, depth + 1):
+            if ct not in titles:
+                titles.append(ct)
+    return titles
+
+
+def _create_topics_from_tree(
+    *,
+    backend: "SessionBackend",
+    tree: list[dict],
+    prereq_map: dict[str, list[str]],
+    subject: str,
+    language_id: str | None,
+    topics: list[TopicNode],
+    profile: object,
+) -> dict[str, str]:
+    from src.services.resource_graph_curation import _proposal_tags
+
+    title_to_id: dict[str, str] = {}
+    _create_tree_nodes(
+        nodes=tree, parent_id=None,
+        backend=backend, subject=subject, language_id=language_id,
+        topics=topics, profile=profile, prereq_map=prereq_map,
+        title_to_id=title_to_id, _proposal_tags=_proposal_tags,
+    )
+    return title_to_id
+
+
+def _create_tree_nodes(
+    *,
+    nodes: list[dict],
+    parent_id: str | None,
+    backend: "SessionBackend",
+    subject: str,
+    language_id: str | None,
+    topics: list[TopicNode],
+    profile: object,
+    prereq_map: dict[str, list[str]],
+    title_to_id: dict[str, str],
+    _proposal_tags: object,
+) -> None:
+    for node in nodes:
+        raw_title = (node.get("title") or "").strip()
+        if not raw_title:
+            continue
+        is_relay = "[中继]" in raw_title
+        clean_title = raw_title.replace("[中继]", "").strip()
+
+        existing_id = _find_topic_id(clean_title, topics, title_to_id)
+        if existing_id:
+            title_to_id[clean_title] = existing_id
+            children = node.get("children") or []
+            if children:
+                _create_tree_nodes(
+                    nodes=children, parent_id=existing_id,
+                    backend=backend, subject=subject, language_id=language_id,
+                    topics=topics, profile=profile, prereq_map=prereq_map,
+                    title_to_id=title_to_id, _proposal_tags=_proposal_tags,
+                )
+            continue
+
+        prereqs_raw = prereq_map.get(raw_title) or prereq_map.get(clean_title) or []
+        prereq_ids: list[str] = []
+        for pt in prereqs_raw:
+            pt_clean = str(pt).replace("[中继]", "").strip()
+            pid = title_to_id.get(pt_clean) or _find_topic_id(pt_clean, topics, {})
+            if pid:
+                prereq_ids.append(pid)
+
+        try:
+            proposal = backend.create_graph_proposal_from_resource(
+                title=clean_title,
+                summary=f"{'中继节点: ' if is_relay else ''}{subject}学科知识点",
+                tags=_proposal_tags(
+                    subject=subject,
+                    facet=profile.default_facet,
+                    language_id=language_id,
+                ),
+                parent_node_ids=[parent_id] if parent_id else [],
+                prerequisite_node_ids=list(dict.fromkeys(prereq_ids)),
+                edge_type="part_of" if parent_id else "requires",
+                reason="batch tree creation",
+            )
+            _st, _pr, topic, _, _ = backend.approve_graph_proposal(
+                proposal_id=proposal.proposal_id,
+                difficulty=1,
+            )
+            tid = topic.topic_id
+            title_to_id[clean_title] = tid
+            topics.append(topic)
+        except Exception:
+            tid = ""
+            title_to_id[clean_title] = ""
+
+        children = node.get("children") or []
+        if children and tid:
+            _create_tree_nodes(
+                nodes=children, parent_id=tid,
+                backend=backend, subject=subject, language_id=language_id,
+                topics=topics, profile=profile, prereq_map=prereq_map,
+                title_to_id=title_to_id, _proposal_tags=_proposal_tags,
+            )
+
+
+def _find_topic_id(title: str, topics: list[TopicNode], title_map: dict[str, str]) -> str | None:
+    if title_map.get(title):
+        return title_map[title]
+    for t in topics:
+        if t.title.strip() == title:
+            return t.topic_id
+    return None
+
+
 def _run_structured_ingestion(
     *,
     backend: "SessionBackend",
@@ -768,6 +958,34 @@ def _run_structured_ingestion(
 
     walker = GraphWalker(backend, subject, language_id)
     search_agent = GraphSearchAgent(backend, subject, language_id)
+
+    # Batch tree organization: collect all candidates, organize, infer prereqs, create
+    if sections and backend.llm_skill.client.api_key:
+        try:
+            all_candidates: list[str] = []
+            for section in sections:
+                for t in section.topic_candidates:
+                    clean = t.strip()
+                    if clean and clean not in all_candidates:
+                        all_candidates.append(clean)
+            if all_candidates:
+                tree = _batch_organize_topic_tree(
+                    backend=backend, candidates=all_candidates,
+                    subject=subject, language_id=language_id,
+                )
+                if tree:
+                    prereq_map = _batch_infer_prerequisites(
+                        backend=backend, tree=tree, subject=subject,
+                    )
+                    _create_topics_from_tree(
+                        backend=backend, tree=tree, prereq_map=prereq_map,
+                        subject=subject, language_id=language_id,
+                        topics=topics, profile=profile,
+                    )
+                    walker = GraphWalker(backend, subject, language_id)
+                    search_agent = GraphSearchAgent(backend, subject, language_id)
+        except Exception:
+            pass
 
     segments: list[ResourceSegment] = []
     last_topic_id: str | None = None

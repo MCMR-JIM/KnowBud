@@ -785,11 +785,9 @@ def test_structured_ingestion_basic(tmp_path: Path) -> None:
                 ]
             })
         if call_count[0] == 2:
-            return _llm_resp({
-                "decision": "propose", "matched_topic_id": None, "matched_title": None,
-                "parent_node_ids": [], "confidence": 0.7, "reason": "new",
-                "proposed_title": "Present Continuous",
-            })
+            return _llm_resp([{"title": "Present Continuous", "children": []}])
+        if call_count[0] == 3:
+            return _llm_resp({})
         return _llm_resp({"action": "insert_after", "reason": "child"})
 
     backend.llm_skill._orig = backend.llm_skill.client.chat.completions.create
@@ -810,10 +808,9 @@ def test_structured_ingestion_basic(tmp_path: Path) -> None:
             enable_new_pipeline=True,
         )
 
-        lesson_segments = [s for s in segments if s.label == "chunk" and s.decision == "propose"]
+        lesson_segments = [s for s in segments if s.label == "chunk"]
         assert len(lesson_segments) >= 1
-        assert lesson_segments[0].proposal_id is not None
-        assert lesson_segments[0].proposed_topic_title == "Present Continuous"
+        assert lesson_segments[0].topic_id is not None or lesson_segments[0].proposal_id is not None
     finally:
         backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
 
@@ -946,3 +943,118 @@ def test_structured_ingestion_exercises_bound(tmp_path: Path) -> None:
         assert "He ___ running" in exercise_segments[0].text
     finally:
         backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
+
+
+class TestBatchTreeOrganization:
+    def test_batch_tree_basic(self, tmp_path: Path):
+        from src.services.document_ingestion import _batch_organize_topic_tree
+
+        backend = _build_backend(tmp_path)
+        backend.llm_skill.client.api_key = "test_key"
+
+        tree_result = [
+            {"title": "光学[中继]", "children": [
+                {"title": "光的反射定律", "children": []},
+                {"title": "光的折射规律", "children": []},
+            ]},
+        ]
+
+        def mock_create(**kwargs):
+            return _llm_resp(tree_result)
+
+        backend.llm_skill._orig = backend.llm_skill.client.chat.completions.create
+        backend.llm_skill.client.chat.completions.create = mock_create
+
+        try:
+            result = _batch_organize_topic_tree(
+                backend=backend,
+                candidates=["光的反射定律", "光的折射规律"],
+                subject="physics",
+            )
+            assert len(result) == 1
+            assert result[0]["title"] == "光学[中继]"
+            children_titles = {c["title"] for c in result[0]["children"]}
+            assert "光的反射定律" in children_titles
+            assert "光的折射规律" in children_titles
+        finally:
+            backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
+
+    def test_batch_tree_creates_relay_nodes(self, tmp_path: Path):
+        from src.services.document_ingestion import _batch_organize_topic_tree
+
+        backend = _build_backend(tmp_path)
+        backend.llm_skill.client.api_key = "test_key"
+
+        tree_result = [
+            {"title": "数学中继[中继]", "children": [
+                {"title": "加法", "children": []},
+            ]},
+        ]
+
+        def mock_create(**kwargs):
+            return _llm_resp(tree_result)
+
+        backend.llm_skill._orig = backend.llm_skill.client.chat.completions.create
+        backend.llm_skill.client.chat.completions.create = mock_create
+
+        try:
+            result = _batch_organize_topic_tree(
+                backend=backend,
+                candidates=["加法"],
+                subject="math",
+            )
+            assert "[中继]" in result[0]["title"]
+        finally:
+            backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
+
+    def test_batch_tree_order_parent_before_child(self, tmp_path: Path):
+        from src.services.document_ingestion import _create_topics_from_tree, _collect_tree_titles
+
+        backend = _build_backend(tmp_path)
+        backend.llm_skill.client.api_key = "test_key"
+
+        state = backend.load_app_state(include_history=False)
+        backend.save_app_state(state)
+
+        tree = [
+            {"title": "光学[中继]", "children": [
+                {"title": "光的反射定律", "children": []},
+            ]},
+        ]
+        from src.services.resource_graph_curation import SUBJECT_PROFILES
+
+        profile = SUBJECT_PROFILES["physics"]
+
+        titles = _collect_tree_titles(tree)
+        assert "光学[中继]" in titles
+        assert "光的反射定律" in titles
+        # Parent appears before child in flat list
+        parent_idx = titles.index("光学[中继]")
+        child_idx = titles.index("光的反射定律")
+        assert parent_idx < child_idx
+
+    def test_batch_prereq_inference(self, tmp_path: Path):
+        from src.services.document_ingestion import _batch_infer_prerequisites
+
+        backend = _build_backend(tmp_path)
+        backend.llm_skill.client.api_key = "test_key"
+
+        prereq_result = {"凸透镜成像规律": ["光的折射规律", "光速"]}
+
+        def mock_create(**kwargs):
+            return _llm_resp(prereq_result)
+
+        backend.llm_skill._orig = backend.llm_skill.client.chat.completions.create
+        backend.llm_skill.client.chat.completions.create = mock_create
+
+        try:
+            tree = [
+                {"title": "凸透镜成像规律", "children": []},
+            ]
+            result = _batch_infer_prerequisites(
+                backend=backend, tree=tree, subject="physics",
+            )
+            assert "凸透镜成像规律" in result
+            assert "光的折射规律" in result["凸透镜成像规律"]
+        finally:
+            backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
