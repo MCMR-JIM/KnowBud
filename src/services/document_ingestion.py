@@ -840,6 +840,8 @@ def _run_structured_ingestion(
                 last_topic_id = section_topic_id
                 # Add to local topics list for deterministic dedup in this batch
                 topics.append(topic)
+                walker = GraphWalker(backend, subject, language_id)
+                search_agent = GraphSearchAgent(backend, subject, language_id)
             except Exception:
                 pass
 
