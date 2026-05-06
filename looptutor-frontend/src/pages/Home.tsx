@@ -24,7 +24,7 @@ export default function Home() {
           <h2 className="text-2xl font-bold text-dark mb-2">我是小朋友</h2>
           <p className="text-gray-500 mb-8">进入魔法学习舱，看动画闯关</p>
           <button 
-            onClick={() => navigate('/kids')}
+            onClick={() => navigate('/select')}
             className="w-full py-3 px-6 bg-white/90 border-2 border-primary text-primary font-bold rounded-2xl shadow-sm hover:bg-primary hover:text-white transition-all"
           >
             启动学习舱
