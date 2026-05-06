@@ -388,7 +388,7 @@
     </aside>
   </main>
 
-  <script src="//unpkg.com/force-graph@1.46.3/dist/force-graph.min.js"></script>
+  <script src="//d3js.org/d3.v7.min.js"></script>
   <script>
     const state = {
       graph: { topics: [], proposals: [], mastery: [] },
@@ -859,11 +859,6 @@
     }
 
     function renderGraph() {
-      if (state._fgInstance) {
-        state._fgInstance._destructor();
-        state._fgInstance = null;
-      }
-
       const topics = state.graph.topics || [];
       const proposals = state.graph.proposals || [];
       const filterRootId = el('rootSelect').value;
@@ -874,59 +869,114 @@
         visibleTopics = topics.filter(t => ids.has(t.topic_id));
       }
 
+      const validIds = new Set(visibleTopics.map(t => t.topic_id));
       const nodes = visibleTopics.map(t => ({
         id: t.topic_id,
-        name: t.title,
-        val: Math.max(1, (t.prerequisite_ids?.length || 0) + (t.parent_ids?.length || 0) + 1),
-        color: (t.tags || []).includes('facet:root') ? '#f59e0b' : '#4a90d9',
-        topicData: t,
+        title: t.title,
+        r: (t.tags || []).includes('facet:root') ? 14 : 6 + Math.min((t.parent_ids?.length || 0) + (t.prerequisite_ids?.length || 0), 10),
       }));
 
-      const validIds = new Set(nodes.map(n => n.id));
       const links = [];
       for (const t of visibleTopics) {
-        for (const pid of t.prerequisite_ids || []) {
-          if (validIds.has(pid)) links.push({ source: t.topic_id, target: pid, type: 'prereq' });
+        for (const pid of t.parent_ids || []) if (validIds.has(pid)) links.push({ source: t.topic_id, target: pid, type: 'parent' });
+        for (const pid of t.prerequisite_ids || []) if (validIds.has(pid)) links.push({ source: t.topic_id, target: pid, type: 'prereq' });
+      }
+
+      const container = el('graphContainer');
+      container.innerHTML = '';
+
+      const W = container.clientWidth;
+      const H = 680;
+      const canvas = d3.select(container).append('canvas')
+        .attr('width', W).attr('height', H);
+      const ctx = canvas.node().getContext('2d');
+
+      const sim = d3.forceSimulation(nodes)
+        .force('link', d3.forceLink(links).id(d => d.id).distance(80))
+        .force('charge', d3.forceManyBody().strength(-250))
+        .force('center', d3.forceCenter(W / 2, H / 2))
+        .force('collide', d3.forceCollide(d => d.r + 4));
+
+      const zoom = d3.zoom()
+        .scaleExtent([0.1, 8])
+        .on('zoom', (event) => {
+          ctx.save();
+          ctx.clearRect(0, 0, W, H);
+          ctx.translate(event.transform.x, event.transform.y);
+          ctx.scale(event.transform.k, event.transform.k);
+          drawAll();
+          ctx.restore();
+          state._transform = event.transform;
+        });
+      canvas.call(zoom);
+
+      const drag = d3.drag()
+        .on('start', (event, d) => { if (!event.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+        .on('drag', (event, d) => { d.fx = event.x; d.fy = event.y; })
+        .on('end', (event, d) => { if (!event.active) sim.alphaTarget(0); d.fx = null; d.fy = null; });
+
+      function drawAll() {
+        ctx.strokeStyle = 'rgba(100,116,139,0.5)';
+        ctx.lineWidth = 1;
+        for (const l of links) {
+          ctx.beginPath();
+          ctx.moveTo(l.source.x, l.source.y);
+          ctx.lineTo(l.target.x, l.target.y);
+          if (l.type === 'parent') { ctx.setLineDash([4, 3]); ctx.strokeStyle = 'rgba(160,140,210,0.4)'; }
+          else { ctx.setLineDash([]); ctx.strokeStyle = 'rgba(100,116,139,0.5)'; }
+          ctx.stroke();
         }
-        for (const pid of t.parent_ids || []) {
-          if (validIds.has(pid)) links.push({ source: t.topic_id, target: pid, type: 'parent' });
+        ctx.setLineDash([]);
+
+        for (const n of nodes) {
+          ctx.beginPath();
+          ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+          ctx.fillStyle = n.id === state.selectedTopicId ? '#dbeafe' : '#fff';
+          ctx.fill();
+          ctx.strokeStyle = n.id === state.selectedTopicId ? '#3b82f6' : '#94a3b8';
+          ctx.lineWidth = n.id === state.selectedTopicId ? 2 : 1;
+          ctx.stroke();
+          ctx.fillStyle = '#334155';
+          ctx.font = '10px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText(n.title.slice(0, 12), n.x, n.y - n.r - 4);
         }
       }
 
-      const graphData = { nodes, links };
+      sim.on('tick', () => {
+        if (state._transform) {
+          ctx.save();
+          ctx.clearRect(0, 0, W, H);
+          ctx.translate(state._transform.x, state._transform.y);
+          ctx.scale(state._transform.k, state._transform.k);
+          drawAll();
+          ctx.restore();
+        } else {
+          ctx.clearRect(0, 0, W, H);
+          drawAll();
+        }
+      });
 
-      const container = el('graphContainer');
-      const fg = ForceGraph()(container)
-        .width(container.clientWidth)
-        .height(680)
-        .backgroundColor('#faf9f7')
-        .enableNodeDrag(true)
-        .enableZoomInteraction(true)
-        .enablePanInteraction(true)
-        .enablePointerInteraction(true)
-        .nodeId('id')
-        .nodeLabel('name')
-        .nodeColor('color')
-        .nodeVal('val')
-        .linkDirectionalArrowLength(5)
-        .linkDirectionalArrowRelPos(1)
-        .linkWidth(l => l.type === 'parent' ? 1.2 : 2)
-        .linkColor(l => l.type === 'parent' ? 'rgba(160,140,200,0.6)' : 'rgba(100,116,139,0.7)')
-        .linkLineDash(l => l.type === 'parent' ? [6, 3] : null)
-        .graphData(graphData)
-        .onNodeClick(node => {
-          state.selectedTopicId = node.id;
+      canvas.on('click', (event) => {
+        const [mx, my] = d3.pointer(event, canvas.node());
+        let hit = null;
+        for (const n of nodes) {
+          const dx = mx - n.x, dy = my - n.y;
+          if (dx * dx + dy * dy <= (n.r + 8) * (n.r + 8)) { hit = n; break; }
+        }
+        if (hit) {
+          state.selectedTopicId = hit.id;
           renderNodeDetail();
-          refreshTopicData().then(() => {
-            renderResources();
-            renderStats();
-          });
-        })
-        .width(container.clientWidth)
-        .height(680);
+          refreshTopicData().then(() => { renderResources(); renderStats(); });
+        }
+      });
 
-      fg.zoomToFit(400, 50);
-      state._fgInstance = fg;
+      canvas.call(drag);
+
+      state._sim = sim;
+      state._nodes = nodes;
+      state._zoom = zoom;
+      state._transform = null;
     }
 
     function renderNodeDetail() {
