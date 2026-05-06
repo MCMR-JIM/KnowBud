@@ -664,8 +664,8 @@ def _run_resource_ingestion(
             default_topic_id=default_topic_id,
             progress_callback=progress,
             subject=subject, language_id=language_id,
-            enable_graph_search=False,
-            enable_new_pipeline=False,
+            enable_graph_search=not bool(subject),
+            enable_new_pipeline=bool(subject),
         )
         backend.update_resource_ingestion(resource_id, status="completed", error=None)
         updated = backend.get_resource(resource_id)
