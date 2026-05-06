@@ -771,7 +771,7 @@ def _run_structured_ingestion(
     topic_map = {t.title.strip(): t.topic_id for t in topics}
     root_topic_id = _find_subject_root_id(topics, subject, language_id)
 
-    # ── Phase 2: parallel topic extraction + GraphLocator (one thread per block) ──
+    # ── Phase 2: parallel topic extraction (no locator) ──
     all_results: dict[str, list] = {}
     if topic_blocks and backend.llm_skill.client.api_key:
         with ThreadPoolExecutor(max_workers=4) as executor:
@@ -789,34 +789,47 @@ def _run_structured_ingestion(
                 except Exception:
                     pass
 
-    # ── Create topics from results ──
-    for _label, results in all_results.items():
-        for topic_title, topic_desc, pos in results:
+    # ── Collect, dedup, then locate + insert sequentially ──
+    all_topics: list[tuple[str, str]] = []
+    for results in all_results.values():
+        for t, d in results:
+            all_topics.append((t, d))
+
+    seen: set[str] = set()
+    deduped = [(t, d) for t, d in all_topics if not (t in seen or seen.add(t))]
+
+    if deduped:
+        from src.services.graph_locator import GraphLocator
+
+        locator = GraphLocator(backend, subject, language_id)
+        for title, desc in deduped:
+            if title in topic_map:
+                continue
+            pos = locator.locate(title, desc)
             if pos.exists and pos.node_id:
-                _link_to_topic(topic_title, topics, topic_map)
+                topic_map[title] = pos.node_id
                 continue
 
             parents = [pid for pid in pos.parent_ids if pid in topic_map.values()]
             if not parents and root_topic_id:
                 parents = [root_topic_id]
-            prereqs = [pid for pid in pos.successor_ids if pid in topic_map.values()]
             try:
                 proposal = backend.create_graph_proposal_from_resource(
-                    title=topic_title,
-                    summary=topic_desc[:200],
+                    title=title, summary=desc[:200],
                     tags=_proposal_tags(
                         subject=subject, facet=profile.default_facet,
                         language_id=language_id,
                     ),
                     parent_node_ids=parents,
-                    prerequisite_node_ids=prereqs,
+                    prerequisite_node_ids=pos.successor_ids,
                     edge_type="part_of" if parents else "requires",
                     reason=pos.reason[:80],
                 )
                 _st, _pr, tpc, _, _ = backend.approve_graph_proposal(
                     proposal_id=proposal.proposal_id, difficulty=1,
                 )
-                topic_map[topic_title.strip()] = tpc.topic_id
+                topic_map[title] = tpc.topic_id
+                locator.refresh()
             except Exception:
                 pass
 
@@ -883,27 +896,12 @@ def _process_topic_block(
 ) -> list:
     block_text = _extract_block_text(block, chunks)
     topics_data = _extract_topics_from_block_text(backend, block_text, subject, language_id)
-
-    from src.services.graph_locator import GraphLocator
-
-    locator = GraphLocator(backend, subject, language_id)
     results: list = []
-    seen: set[str] = set()
     for td in topics_data:
         title = (td.get("title") or "").strip()
         desc = (td.get("desc") or "").strip()
-        if not title or title in seen:
-            continue
-        seen.add(title)
-        # Deterministic dedup: check shared topic_map first
-        if title in topic_map:
-            results.append((title, desc, GraphPosition(
-                exists=True, node_id=topic_map[title],
-                reason="dedup via shared topic map",
-            )))
-            continue
-        pos = locator.locate(title, desc)
-        results.append((title, desc, pos))
+        if title:
+            results.append((title, desc))
     return results
 
 

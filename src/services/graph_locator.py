@@ -90,6 +90,9 @@ class GraphLocator:
     def _compute_successors(self, tid: str) -> list[str]:
         return [t.topic_id for t in self._topics if tid in t.prerequisite_ids]
 
+    def refresh(self) -> None:
+        self._topics_cache = None
+
     def _build_graph_snapshot(self) -> str:
         topic_ids = {t.topic_id for t in self._topics}
         nodes = []
