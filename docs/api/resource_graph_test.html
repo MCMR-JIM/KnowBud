@@ -119,7 +119,6 @@
       margin: 0 16px 16px;
       height: calc(100vh - 220px);
       min-height: 540px;
-      overflow: auto;
       border-radius: 20px;
       background:
         linear-gradient(rgba(120, 113, 108, 0.08) 1px, transparent 1px),
@@ -128,15 +127,30 @@
       background-size: 28px 28px;
       border: 1px solid var(--line);
       position: relative;
+      overflow: hidden;
+      cursor: grab;
+    }
+    .graph-wrap:active { cursor: grabbing; }
+    .graph-wrap.panning { cursor: grabbing; }
+
+    #graphCanvas {
+      display: block;
+      width: 100%;
+      height: 100%;
     }
 
-    svg { min-width: 100%; display: block; }
-    .node { cursor: pointer; }
-    .node rect, .proposal polygon { filter: drop-shadow(0 8px 14px rgba(30, 41, 59, 0.12)); }
-    .node-title { font-weight: 800; font-size: 12px; fill: var(--ink); }
-    .node-meta { font-size: 10px; fill: #756b62; }
-    .edge { stroke: #94a3b8; stroke-width: 1.6; fill: none; marker-end: url(#arrow); }
-    .proposal-edge { stroke: var(--orange); stroke-width: 1.5; fill: none; stroke-dasharray: 5 5; marker-end: url(#arrowProposal); }
+    #graphTooltip {
+      position: absolute;
+      pointer-events: none;
+      background: rgba(30, 41, 59, 0.92);
+      color: #f8fafc;
+      padding: 6px 12px;
+      border-radius: 10px;
+      font-size: 12px;
+      white-space: nowrap;
+      z-index: 10;
+      display: none;
+    }
 
     aside { display: flex; flex-direction: column; gap: 14px; }
     .section { padding: 16px; }
@@ -280,7 +294,9 @@
   <main class="shell">
     <section class="panel">
       <div class="toolbar">
-        <select id="topicSelect"></select>
+        <select id="rootSelect">
+          <option value="">全部图</option>
+        </select>
         <button id="refreshBtn" class="btn-blue">刷新图结构</button>
         <button id="pollBtn" class="btn-soft">自动刷新：关</button>
       </div>
@@ -295,8 +311,9 @@
         <div class="stat"><b id="resourceCount">0</b><span>selected resources</span></div>
         <div class="stat"><b id="cueCount">0</b><span>teaching cues</span></div>
       </div>
-      <div class="graph-wrap">
-        <svg id="graphSvg" width="1200" height="700" role="img" aria-label="knowledge graph"></svg>
+      <div class="graph-wrap" id="graphWrap">
+        <canvas id="graphCanvas" width="1200" height="700" role="img" aria-label="knowledge graph"></canvas>
+        <div id="graphTooltip"></div>
       </div>
     </section>
 
@@ -627,6 +644,7 @@
         title: topic.title,
         difficulty: topic.difficulty || 1,
         prerequisite_ids: topic.prerequisite_ids || [],
+        parent_ids: topic.parent_ids || [],
         tags: [
           topic.mastery_state ? `mastery:${topic.mastery_state}` : '',
           topic.resource_count != null ? `resources:${topic.resource_count}` : '',
@@ -670,14 +688,13 @@
     async function refreshAll({ keepSelection = true } = {}) {
       const previous = state.selectedTopicId;
       const newGraph = await api('/knowledge/graph');
-      
+
       const newGraphStr = JSON.stringify(newGraph);
       if (state.lastGraphStr === newGraphStr && state.source === 'api') {
-        // No structural changes, skip destructive DOM updates
         return;
       }
       state.lastGraphStr = newGraphStr;
-      
+
       state.graph = newGraph;
       state.source = 'api';
       state.report = null;
@@ -687,7 +704,7 @@
       } else {
         state.selectedTopicId = previous;
       }
-      renderTopicSelect();
+      renderRootSelect();
       await refreshTopicData();
       renderGraph();
       renderProposals();
@@ -730,7 +747,7 @@
       state.cues = [];
       const topics = graph.topics || [];
       state.selectedTopicId = topics.some(t => t.topic_id === previous) ? previous : (topics[0]?.topic_id || '');
-      renderTopicSelect();
+      renderRootSelect();
       refreshTopicDataFromReport();
       renderGraph();
       renderProposals();
@@ -797,22 +814,27 @@
       renderStats();
     }
 
-    function renderTopicSelect() {
-      const select = el('topicSelect');
-      select.innerHTML = '';
-      for (const topic of state.graph.topics || []) {
+    function renderRootSelect() {
+      const select = el('rootSelect');
+      const currentValue = select.value;
+      const topics = state.graph.topics || [];
+      const roots = topics.filter(t => (t.tags || []).some(tag => tag === 'facet:root'));
+      select.innerHTML = '<option value="">全部图</option>';
+      for (const root of roots) {
         const option = document.createElement('option');
-        option.value = topic.topic_id;
-        option.textContent = `${topic.title} (${topic.topic_id})`;
+        option.value = root.topic_id;
+        option.textContent = `${root.title} (${root.topic_id})`;
         select.appendChild(option);
       }
-      select.value = state.selectedTopicId;
+      if (roots.some(r => r.topic_id === currentValue)) {
+        select.value = currentValue;
+      }
     }
 
     function renderStats() {
       const topics = state.graph.topics || [];
       const proposals = state.graph.proposals || [];
-      const edges = topics.reduce((sum, t) => sum + (t.prerequisite_ids || []).length, 0);
+      const edges = topics.reduce((sum, t) => sum + (t.prerequisite_ids || []).length + (t.parent_ids || []).length, 0);
       el('topicCount').textContent = topics.length;
       el('edgeCount').textContent = edges;
       el('proposalCount').textContent = state.source === 'report'
@@ -824,69 +846,87 @@
       el('cueCount').textContent = state.cues.length;
     }
 
-    function layoutTopics(topics) {
-      const byId = new Map(topics.map(t => [t.topic_id, t]));
-      const depthMemo = new Map();
-      function depth(topic) {
-        if (depthMemo.has(topic.topic_id)) return depthMemo.get(topic.topic_id);
-        const allParents = [...(topic.prerequisite_ids || []), ...(topic.parent_ids || [])];
-        const parents = allParents.filter(id => byId.has(id));
-        const value = parents.length ? 1 + Math.max(...parents.map(id => depth(byId.get(id)))) : 0;
-        depthMemo.set(topic.topic_id, value);
-        return value;
-      }
-      const buckets = new Map();
-      for (const topic of topics) {
-        const d = depth(topic);
-        if (!buckets.has(d)) buckets.set(d, []);
-        buckets.get(d).push(topic);
-      }
-      const positions = new Map();
-      const columnGap = 240;
-      const rowGap = 118;
-      const marginX = 70;
-      const marginY = 70;
-      for (const [d, bucket] of [...buckets.entries()].sort((a, b) => a[0] - b[0])) {
-        bucket.sort((a, b) => a.title.localeCompare(b.title, 'zh-CN'));
-        bucket.forEach((topic, idx) => {
-          positions.set(topic.topic_id, { x: marginX + d * columnGap, y: marginY + idx * rowGap, depth: d });
-        });
-      }
-      return positions;
+    // ── Canvas Force-Directed Graph ──
+
+    let simData = { nodes: [], edges: [], allTopics: [], allProposals: [] };
+    let simRAF = null;
+    let cam = { x: 0, y: 0, zoom: 1 };
+    let simMouse = { x: 0, y: 0, worldX: 0, worldY: 0 };
+    let simDrag = null;
+    let simHover = null;
+
+    function getCanvas() {
+      return el('graphCanvas');
     }
 
-    function renderGraph() {
-      const svg = el('graphSvg');
-      const topics = state.graph.topics || [];
-      const proposals = state.graph.proposals || [];
-      const positions = layoutTopics(topics);
-      const topicMaxX = Math.max(1100, ...[...positions.values()].map(p => p.x + 220));
-      const proposalX = topicMaxX + 80;
-      const maxX = Math.max(topicMaxX, proposalX + 220);
-      const maxY = Math.max(680, ...[...positions.values()].map(p => p.y + 130), 220 + proposals.length * 96);
-      svg.setAttribute('width', maxX);
-      svg.setAttribute('height', maxY);
-      svg.innerHTML = `
-        <defs>
-          <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#94a3b8"></path></marker>
-          <marker id="arrowProposal" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#f59e0b"></path></marker>
-        </defs>`;
+    function screenToWorld(sx, sy) {
+      const c = getCanvas();
+      const rect = c.getBoundingClientRect();
+      const px = (sx - rect.left) * (c.width / rect.width);
+      const py = (sy - rect.top) * (c.height / rect.height);
+      return {
+        x: px / cam.zoom + cam.x,
+        y: py / cam.zoom + cam.y,
+      };
+    }
 
-      for (const topic of topics) {
-        const child = positions.get(topic.topic_id);
-        const allParents = [...(topic.prerequisite_ids || []), ...(topic.parent_ids || [])];
-        for (const parentId of allParents) {
-          const parent = positions.get(parentId);
-          if (!parent || !child) continue;
-          const isParentEdge = (topic.parent_ids || []).includes(parentId);
-          const strokeColor = isParentEdge ? '#c084fc' : '#94a3b8';
-          const strokeWidth = isParentEdge ? '1.2' : '1.6';
-          const dash = isParentEdge ? 'stroke-dasharray="4 2"' : '';
-          const marker = isParentEdge ? '' : 'marker-end="url(#arrow)"';
-          svg.insertAdjacentHTML('beforeend', `<path class="edge" style="stroke:${strokeColor};stroke-width:${strokeWidth};" ${dash} ${marker} d="M${parent.x + 184},${parent.y + 38} C${parent.x + 228},${parent.y + 38} ${child.x - 44},${child.y + 38} ${child.x},${child.y + 38}" />`);
+    /**
+     * Recursively collect all descendant topic IDs under the given root,
+     * following parent_ids and prerequisite_ids chains.
+     */
+    function collectSubgraphIds(rootId, allTopics) {
+      const idSet = new Map();
+      for (const t of allTopics) idSet.set(t.topic_id, t);
+      const result = new Set();
+      result.add(rootId);
+      const queue = [rootId];
+      while (queue.length) {
+        const current = queue.shift();
+        for (const t of allTopics) {
+          if (result.has(t.topic_id)) continue;
+          const parents = [...(t.parent_ids || []), ...(t.prerequisite_ids || [])];
+          if (parents.includes(current)) {
+            result.add(t.topic_id);
+            queue.push(t.topic_id);
+          }
         }
       }
+      return result;
+    }
 
+    function computeChildCount(topicId, topics) {
+      let count = 0;
+      for (const t of topics) {
+        if ((t.parent_ids || []).includes(topicId) || (t.prerequisite_ids || []).includes(topicId)) {
+          count += 1;
+        }
+      }
+      return count;
+    }
+
+    function warmColor(hex, amount) {
+      const r = Math.min(255, parseInt(hex.slice(1, 3), 16) + amount);
+      const g = Math.min(255, parseInt(hex.slice(3, 5), 16) + amount);
+      const b = Math.min(255, parseInt(hex.slice(5, 7), 16) + amount);
+      return `rgb(${r},${g},${b})`;
+    }
+
+    function buildSimData() {
+      const topics = state.graph.topics || [];
+      const proposals = state.graph.proposals || [];
+      const rootSelect = el('rootSelect');
+      const filterRootId = rootSelect.value;
+
+      let visibleIds = null;
+      if (filterRootId) {
+        visibleIds = collectSubgraphIds(filterRootId, topics);
+      }
+
+      const visibleTopics = filterRootId
+        ? topics.filter(t => visibleIds.has(t.topic_id))
+        : topics;
+
+      const topicById = new Map(topics.map(t => [t.topic_id, t]));
       const resourceByTopic = new Map();
       for (const topic of topics) {
         if (topic.classified_segment_count != null) resourceByTopic.set(topic.topic_id, topic.classified_segment_count);
@@ -897,50 +937,413 @@
         }
       }
 
-      for (const topic of topics) {
-        const pos = positions.get(topic.topic_id);
-        if (!pos) continue;
-        const selected = topic.topic_id === state.selectedTopicId;
-        const fill = selected ? '#dbeafe' : '#ffffff';
-        const stroke = selected ? '#3b82f6' : '#e6ddd2';
-        const prereqCount = (topic.prerequisite_ids || []).length;
-        const parentCount = (topic.parent_ids || []).length;
-        svg.insertAdjacentHTML('beforeend', `
-          <g class="node" data-topic-id="${escapeHtml(topic.topic_id)}" transform="translate(${pos.x},${pos.y})">
-            <rect width="184" height="76" rx="18" fill="${fill}" stroke="${stroke}" stroke-width="2" />
-            <text x="14" y="25" class="node-title">${escapeHtml(short(topic.title, 16))}</text>
-            <text x="14" y="45" class="node-meta">${escapeHtml(topic.topic_id)}</text>
-            <text x="14" y="62" class="node-meta">层级 ${parentCount} · 前置 ${prereqCount} · 片段 ${resourceByTopic.get(topic.topic_id) || 0}</text>
-          </g>`);
+      const nodeMap = new Map();
+      const edges = [];
+
+      for (const topic of visibleTopics) {
+        const childCount = computeChildCount(topic.topic_id, topics);
+        nodeMap.set(topic.topic_id, {
+          topic_id: topic.topic_id,
+          title: topic.title,
+          parentCount: (topic.parent_ids || []).length,
+          prereqCount: (topic.prerequisite_ids || []).length,
+          segmentCount: resourceByTopic.get(topic.topic_id) || 0,
+          x: (Math.random() - 0.5) * 600 + 600,
+          y: (Math.random() - 0.5) * 400 + 350,
+          vx: 0,
+          vy: 0,
+          is_root: (topic.tags || []).includes('facet:root'),
+          fixed: (topic.tags || []).includes('facet:root'),
+          childCount: childCount,
+        });
       }
 
-      const proposed = proposals.filter(p => p.status === 'proposed');
-      proposed.forEach((proposal, idx) => {
-        const x = proposalX;
-        const y = 70 + idx * 96;
-        for (const parentId of proposal.parent_node_ids || []) {
-          const parent = positions.get(parentId);
-          if (parent) svg.insertAdjacentHTML('beforeend', `<path class="proposal-edge" d="M${parent.x + 184},${parent.y + 38} C${parent.x + 260},${parent.y + 38} ${x - 50},${y + 38} ${x},${y + 38}" />`);
+      // Position fixed root nodes in center-left upper area
+      const rootNodes = [...nodeMap.values()].filter(n => n.fixed);
+      if (rootNodes.length > 0) {
+        const cols = Math.ceil(Math.sqrt(rootNodes.length));
+        for (let i = 0; i < rootNodes.length; i++) {
+          rootNodes[i].x = 150 + (i % cols) * 200;
+          rootNodes[i].y = 80 + Math.floor(i / cols) * 130;
         }
-        svg.insertAdjacentHTML('beforeend', `
-          <g class="proposal" data-proposal-id="${escapeHtml(proposal.proposal_id)}" transform="translate(${x},${y})" style="cursor:pointer">
-            <polygon points="92,0 184,38 92,76 0,38" fill="#fff7ed" stroke="#f59e0b" stroke-width="2" />
-            <text x="92" y="31" text-anchor="middle" class="node-title">${escapeHtml(short(proposal.title, 14))}</text>
-            <text x="92" y="50" text-anchor="middle" class="node-meta">proposal · ${escapeHtml(proposal.edge_type || 'requires')}</text>
-          </g>`);
+      }
+
+      for (const topic of visibleTopics) {
+        const from = nodeMap.get(topic.topic_id);
+        if (!from) continue;
+        for (const pid of topic.prerequisite_ids || []) {
+          const to = nodeMap.get(pid);
+          if (to) edges.push({ from, to, type: 'prereq' });
+        }
+        for (const pid of topic.parent_ids || []) {
+          const to = nodeMap.get(pid);
+          if (to) edges.push({ from, to, type: 'parent' });
+        }
+      }
+
+      // Deduplicate edges
+      const edgeSet = new Set();
+      const uniqueEdges = [];
+      for (const e of edges) {
+        const key = `${e.from.topic_id}->${e.to.topic_id}:${e.type}`;
+        if (!edgeSet.has(key)) {
+          edgeSet.add(key);
+          uniqueEdges.push(e);
+        }
+      }
+
+      simData = {
+        nodes: [...nodeMap.values()],
+        edges: uniqueEdges,
+        allTopics: topics,
+        allProposals: proposals.filter(p => p.status === 'proposed'),
+      };
+    }
+
+    function simStep() {
+      const nodes = simData.nodes;
+      const edges = simData.edges;
+      const kSq = 50000;
+      const attractCoeff = 0.00008;
+
+      // Repulsion: k²/d
+      for (let i = 0; i < nodes.length; i++) {
+        for (let j = i + 1; j < nodes.length; j++) {
+          const dx = nodes[j].x - nodes[i].x;
+          const dy = nodes[j].y - nodes[i].y;
+          let d = Math.sqrt(dx * dx + dy * dy);
+          if (d < 1) d = 1;
+          const f = kSq / d;
+          const fx = (dx / d) * f;
+          const fy = (dy / d) * f;
+          if (!nodes[i].fixed) { nodes[i].vx -= fx; nodes[i].vy -= fy; }
+          if (!nodes[j].fixed) { nodes[j].vx += fx; nodes[j].vy += fy; }
+        }
+      }
+
+      // Attraction: distance²
+      for (const edge of edges) {
+        const dx = edge.to.x - edge.from.x;
+        const dy = edge.to.y - edge.from.y;
+        const d = Math.sqrt(dx * dx + dy * dy);
+        if (d < 1) continue;
+        const f = attractCoeff * d * d;
+        const fx = (dx / d) * f;
+        const fy = (dy / d) * f;
+        if (!edge.from.fixed) { edge.from.vx += fx; edge.from.vy += fy; }
+        if (!edge.to.fixed) { edge.to.vx -= fx; edge.to.vy -= fy; }
+      }
+
+      // Apply velocity + damping
+      for (const node of nodes) {
+        if (node.fixed) continue;
+        node.vx *= 0.92;
+        node.vy *= 0.92;
+        node.x += node.vx;
+        node.y += node.vy;
+      }
+    }
+
+    function drawGraph() {
+      const c = getCanvas();
+      const ctx = c.getContext('2d');
+      const w = c.width;
+      const h = c.height;
+
+      ctx.clearRect(0, 0, w, h);
+
+      ctx.save();
+      ctx.translate(-cam.x * cam.zoom, -cam.y * cam.zoom);
+      ctx.scale(cam.zoom, cam.zoom);
+
+      // Draw edges
+      for (const edge of simData.edges) {
+        const fx = edge.from.x;
+        const fy = edge.from.y;
+        const tx = edge.to.x;
+        const ty = edge.to.y;
+
+        ctx.beginPath();
+        ctx.moveTo(fx, fy);
+        ctx.lineTo(tx, ty);
+        if (edge.type === 'parent') {
+          ctx.strokeStyle = 'rgba(180,160,220,0.3)';
+          ctx.lineWidth = 0.8;
+          ctx.setLineDash([4, 4]);
+        } else {
+          ctx.strokeStyle = 'rgba(148,163,184,0.4)';
+          ctx.lineWidth = 1.2;
+          ctx.setLineDash([]);
+        }
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+
+      // Draw proposal edges: dashed orange from parent to proposal anchor
+      const W2 = w / cam.zoom + cam.x;
+      const H2 = h / cam.zoom + cam.y;
+      const pAreaX = W2 - 220;
+
+      const proposedProposals = simData.allProposals;
+      const worldPos = proposedProposals.map((pp, idx) => {
+        const parentIds = pp.parent_node_ids || [];
+        // Find a node among parents that is in visible nodes
+        const anchorNode = simData.nodes.find(n => parentIds.includes(n.topic_id));
+        const ax = anchorNode ? anchorNode.x : pAreaX;
+        const ay = anchorNode ? anchorNode.y : 60 + idx * 70;
+        return { proposal: pp, ax, ay, px: pAreaX, py: 60 + idx * 70 };
       });
 
-      svg.querySelectorAll('[data-topic-id]').forEach(node => {
-        node.addEventListener('click', async () => {
-          state.selectedTopicId = node.getAttribute('data-topic-id');
-          await refreshTopicData();
-          renderTopicSelect();
-          renderGraph();
-          renderNodeDetail();
-        });
+      for (const wp of worldPos) {
+        const midX = (wp.ax + wp.px) / 2;
+        ctx.beginPath();
+        ctx.moveTo(wp.ax, wp.ay);
+        ctx.quadraticCurveTo(midX, wp.ay - 30, wp.px, wp.py);
+        ctx.strokeStyle = 'rgba(245,158,11,0.5)';
+        ctx.lineWidth = 1.2;
+        ctx.setLineDash([5, 5]);
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+
+      // Draw nodes
+      for (const node of simData.nodes) {
+        const r = 12 + Math.min(node.parentCount + node.prereqCount, 8);
+        const isSelected = node.topic_id === state.selectedTopicId;
+
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
+        if (node.is_root) {
+          ctx.fillStyle = '#fef3c7';
+          ctx.strokeStyle = '#f59e0b';
+          ctx.lineWidth = 2;
+        } else {
+          ctx.fillStyle = '#ffffff';
+          ctx.strokeStyle = '#d6d3d0';
+          ctx.lineWidth = 1.5;
+        }
+        ctx.fill();
+        ctx.stroke();
+
+        if (isSelected) {
+          ctx.beginPath();
+          ctx.arc(node.x, node.y, r + 4, 0, Math.PI * 2);
+          ctx.strokeStyle = '#3b82f6';
+          ctx.lineWidth = 3;
+          ctx.stroke();
+        }
+
+        // Title label
+        ctx.fillStyle = '#1e293b';
+        ctx.font = '600 10px Inter, system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(short(node.title, 12), node.x, node.y - r - 8);
+
+        // ID label (smaller, muted)
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = '9px Inter, system-ui, sans-serif';
+        ctx.fillText(node.topic_id, node.x, node.y + r + 12);
+      }
+
+      // Draw proposal nodes (floating right)
+      for (const wp of worldPos) {
+        const pp = wp.proposal;
+        const cx = wp.px;
+        const cy = wp.py;
+        const r = 14;
+
+        ctx.beginPath();
+        const sides = 6;
+        for (let i = 0; i < sides; i++) {
+          const angle = (Math.PI * 2 * i) / sides - Math.PI / 2;
+          const px = cx + r * Math.cos(angle);
+          const py = cy + r * Math.sin(angle);
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+        ctx.closePath();
+        ctx.fillStyle = '#fff7ed';
+        ctx.strokeStyle = '#f59e0b';
+        ctx.lineWidth = 1.5;
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = '#1e293b';
+        ctx.font = '600 9px Inter, system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(short(pp.title, 10), cx, cy);
+      }
+
+      ctx.restore();
+
+      // After drawing, check tooltip
+      if (simHover && simHover.topic_id) {
+        const tooltip = el('graphTooltip');
+        const c2 = getCanvas();
+        const rect = c2.getBoundingClientRect();
+        const sx = (simHover.x - cam.x) * cam.zoom * (rect.width / c2.width) + rect.left;
+        const sy = (simHover.y - cam.y) * cam.zoom * (rect.height / c2.height) + rect.top;
+        tooltip.style.display = 'block';
+        tooltip.style.left = (sx + 16) + 'px';
+        tooltip.style.top = (sy - 30) + 'px';
+        tooltip.textContent = simHover.title;
+      } else {
+        const tooltip = el('graphTooltip');
+        tooltip.style.display = 'none';
+      }
+    }
+
+    function simLoop() {
+      for (let i = 0; i < 100; i++) {
+        simStep();
+      }
+      drawGraph();
+      simRAF = requestAnimationFrame(simLoop);
+    }
+
+    function startSimulation() {
+      stopSimulation();
+      buildSimData();
+      simLoop();
+    }
+
+    function stopSimulation() {
+      if (simRAF) {
+        cancelAnimationFrame(simRAF);
+        simRAF = null;
+      }
+    }
+
+    function renderGraph() {
+      startSimulation();
+    }
+
+    // ── Canvas Interaction ──
+
+    function setupCanvasInteraction() {
+      const wrap = el('graphWrap');
+      const c = getCanvas();
+      const tooltip = el('graphTooltip');
+
+      function findNodeAt(wx, wy) {
+        for (const node of simData.nodes || []) {
+          const r = 12 + Math.min(node.parentCount + node.prereqCount, 8);
+          const dx = wx - node.x;
+          const dy = wy - node.y;
+          if (dx * dx + dy * dy <= (r + 6) * (r + 6)) {
+            return node;
+          }
+        }
+        // Check proposals (hexagons)
+        const pNodes = findProposalAt(wx, wy);
+        if (pNodes) return pNodes;
+        return null;
+      }
+
+      function findProposalAt(wx, wy) {
+        const w = c.width;
+        const h = c.height;
+        const W2 = w / cam.zoom + cam.x;
+        const pAreaX = W2 - 220;
+        const proposedProposals = simData.allProposals;
+        for (let idx = 0; idx < proposedProposals.length; idx++) {
+          const cx = pAreaX;
+          const cy = 60 + idx * 70;
+          const r = 14;
+          const dx = wx - cx;
+          const dy = wy - cy;
+          if (dx * dx + dy * dy <= (r + 6) * (r + 6)) {
+            return { proposal_id: proposedProposals[idx].proposal_id, x: cx, y: cy, title: proposedProposals[idx].title };
+          }
+        }
+        return null;
+      }
+
+      wrap.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        const rect = c.getBoundingClientRect();
+        const sx = e.clientX - rect.left;
+        const sy = e.clientY - rect.top;
+        const px = sx * (c.width / rect.width);
+        const py = sy * (c.height / rect.height);
+
+        const worldBefore = { x: px / cam.zoom + cam.x, y: py / cam.zoom + cam.y };
+        const factor = e.deltaY < 0 ? 1.08 : 1 / 1.08;
+        cam.zoom = Math.max(0.1, Math.min(5, cam.zoom * factor));
+        const worldAfter = { x: px / cam.zoom + cam.x, y: py / cam.zoom + cam.y };
+        cam.x += worldBefore.x - worldAfter.x;
+        cam.y += worldBefore.y - worldAfter.y;
+      }, { passive: false });
+
+      wrap.addEventListener('mousedown', (e) => {
+        const world = screenToWorld(e.clientX, e.clientY);
+        const hit = findNodeAt(world.x, world.y);
+
+        if (hit && hit.topic_id) {
+          // Click on a topic node
+          state.selectedTopicId = hit.topic_id;
+          renderRootSelect();
+          refreshTopicData().then(() => {
+            renderNodeDetail();
+            renderResources();
+            renderStats();
+          });
+          return;
+        }
+
+        if (hit && hit.proposal_id) {
+          renderProposalDetail(hit.proposal_id);
+          return;
+        }
+
+        // Start panning
+        simDrag = {
+          startX: e.clientX,
+          startY: e.clientY,
+          camStartX: cam.x,
+          camStartY: cam.y,
+        };
+        wrap.classList.add('panning');
+        e.preventDefault();
       });
-      svg.querySelectorAll('[data-proposal-id]').forEach(node => {
-        node.addEventListener('click', () => renderProposalDetail(node.getAttribute('data-proposal-id')));
+
+      window.addEventListener('mousemove', (e) => {
+        const world = screenToWorld(e.clientX, e.clientY);
+        simMouse.x = e.clientX;
+        simMouse.y = e.clientY;
+        simMouse.worldX = world.x;
+        simMouse.worldY = world.y;
+
+        if (simDrag) {
+          const c2 = getCanvas();
+          const dx = (e.clientX - simDrag.startX) / cam.zoom * (c2.width / c2.getBoundingClientRect().width);
+          const dy = (e.clientY - simDrag.startY) / cam.zoom * (c2.height / c2.getBoundingClientRect().height);
+          cam.x = simDrag.camStartX - dx;
+          cam.y = simDrag.camStartY - dy;
+          return;
+        }
+
+        const hit = findNodeAt(world.x, world.y);
+        if (hit && hit.topic_id) {
+          simHover = hit;
+          wrap.style.cursor = 'pointer';
+        } else if (hit && hit.proposal_id) {
+          simHover = { proposal_id: hit.proposal_id, x: hit.x, y: hit.y, title: hit.title };
+          wrap.style.cursor = 'pointer';
+        } else {
+          simHover = null;
+          wrap.style.cursor = '';
+        }
+      });
+
+      window.addEventListener('mouseup', () => {
+        if (simDrag) {
+          simDrag = null;
+          const w2 = el('graphWrap');
+          w2.classList.remove('panning');
+        }
       });
     }
 
@@ -1036,16 +1439,15 @@
 
       if (resourceId) {
         log('正在后台提炼知识点，请稍候...');
-        // Start polling for ingestion status
         const pollInterval = setInterval(async () => {
           try {
             const statusRes = await api(`/resource/${resourceId}/ingestion-status`);
             if (statusRes.status === 'completed') {
               clearInterval(pollInterval);
-              log('解析完成！', { 
-                segments: statusRes.segment_count, 
+              log('解析完成！', {
+                segments: statusRes.segment_count,
                 proposed: statusRes.proposed_count,
-                classified: statusRes.classified_count 
+                classified: statusRes.classified_count
               });
               log('>>> 请手动点击顶部【刷新图结构】查看最新大图与侧边栏 <<<');
             } else if (statusRes.status === 'failed') {
@@ -1245,11 +1647,8 @@
       loadReportFile(file).catch(err => log('加载报告失败', { error: err.message }));
     });
     el('refreshBtn').addEventListener('click', () => refreshAll().catch(err => log('刷新失败', { error: err.message })));
-    el('topicSelect').addEventListener('change', async (event) => {
-      state.selectedTopicId = event.target.value;
-      await refreshTopicData();
+    el('rootSelect').addEventListener('change', () => {
       renderGraph();
-      renderNodeDetail();
     });
     el('uploadFileBtn').addEventListener('click', () => uploadSelectedFile().catch(err => log('上传失败', { error: err.message })));
     el('uploadQuickBtn').addEventListener('click', () => uploadQuickText().catch(err => log('上传失败', { error: err.message })));
@@ -1268,6 +1667,7 @@
       }
     });
 
+    setupCanvasInteraction();
     refreshAll({ keepSelection: false }).catch(err => log('初始化失败', { error: err.message }));
   </script>
 </body>
