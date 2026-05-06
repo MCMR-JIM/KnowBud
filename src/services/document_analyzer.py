@@ -80,12 +80,17 @@ def _call_structure_llm(
         "你是教材结构分析助手。给定一份教学文档全文，完成四项任务：\n"
         "1. 识别文档结构：标记单元/课节/附录/单词表等章节分界点\n"
         "2. 为每段标注类型（lesson / word_list / exercise / appendix / unknown）\n"
-        "3. 从每段提取 1-5 个核心概念关键词作为 topic 候选\n"
-        "4. 标记模糊段落（is_fuzzy: 无突出概念，需后续精读）\n"
+        "3. 从每段提取 1-5 个核心知识点的标题作为 topic 候选\n"
+        "4. 标记模糊段落（is_fuzzy: 无突出概念，需后续精读）\n\n"
+        "【topic 筛选规则——至关重要】\n"
+        "- 只提取可教学的知识点（定理、定律、公式、语法点、科学概念）\n"
+        "- 不要提取：实验过程描述、课堂活动、观察现象、讨论题、方法论标题\n"
+        "- 不要提取：仅作为章节标题但不含知识内容的标签\n"
+        "- 举例：可提取「牛顿第一定律」；不可提取「实验：探究摩擦力」\n"
         f"当前学科: {subject}\n{lang_hint}"
         "返回一个 JSON 对象，含一个 sections 数组。每个元素格式：\n"
         '{"label": "章节标签", "type": "lesson|word_list|exercise|appendix|unknown", '
-        '"topic_candidates": ["关键词1", "关键词2"], '
+        '"topic_candidates": ["知识点头衔1", "知识点头衔2"], '
         '"is_fuzzy": false, "exercises": ["练习题文本1"]}'
     )
 

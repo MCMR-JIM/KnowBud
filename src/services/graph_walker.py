@@ -263,11 +263,15 @@ class GraphWalker:
         system = (
             "你是知识图谱遍历助手。给定当前节点和新的 topic，决定新 topic 在图中的位置。\n"
             "可能的决定：\n"
-            "- go_deeper: 新 topic 与某个后继高度相关，应继续沿该后继向下遍历\n"
-            "- insert_before: 新 topic 是某个后继的前置知识\n"
-            "- insert_after: 新 topic 适合作为当前节点的子节点\n"
-            "- link_existing: 新 topic 与某个后继描述的是同一概念\n"
-            "- no_match: 无法匹配，插入为当前节点的新子节点\n\n"
+            "- go_deeper: 新 topic 是某个后继的子概念或细分知识点，应继续向下遍历\n"
+            "- insert_before: 新 topic 是某个后继的前置知识（需要先学会新 topic 才能学该后继）\n"
+            "- insert_after: 新 topic 与后继们平级，作为当前节点的新子节点\n"
+            "- link_existing: 新 topic 与某个后继是同一概念（仅标题表述不同），不要创建重复\n"
+            "- no_match: 无法判断，插入为当前节点的新子节点\n\n"
+            "【层级判断规则】\n"
+            "- 如果新 topic 是某个后继的更细粒度版本（如「凸透镜」是「透镜」的子类），选 go_deeper\n"
+            "- 如果新 topic 和后继是不同的同级知识点（如「加法」和「乘法」都是「算术」的子节点），选 insert_after\n"
+            "- 如果新 topic 是学习某个后继之前必须先掌握的（如「数数」是「加法」的前置），选 insert_before\n\n"
             f"学科: {self._subject}\n"
         )
         user = (

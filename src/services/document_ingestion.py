@@ -797,6 +797,15 @@ def _run_structured_ingestion(
             if not topic_title.strip():
                 continue
 
+            # Deterministic exact-title dedup: skip LLM call for obvious duplicates
+            for topic in topics:
+                if topic.title.strip() == topic_title.strip():
+                    section_topic_id = topic.topic_id
+                    last_topic_id = section_topic_id
+                    break
+            if section_topic_id:
+                continue
+
             search_result = search_agent.search(topic_title, section.text[:1000])
             if search_result.decision == "link" and search_result.confidence >= 0.55:
                 section_topic_id = search_result.matched_topic_id
