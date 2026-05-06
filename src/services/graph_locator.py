@@ -44,6 +44,19 @@ class GraphLocator:
     def locate(self, topic_title: str, topic_desc: str = "") -> GraphPosition:
         if not self._topics:
             return GraphPosition(exists=False, reason="empty graph")
+
+        # 1. Deterministic exact-title match (no LLM, fast)
+        title_lower = topic_title.strip().lower()
+        for topic in self._topics:
+            if topic.title.strip().lower() == title_lower:
+                return GraphPosition(
+                    exists=True, node_id=topic.topic_id,
+                    parent_ids=list(topic.parent_ids),
+                    successor_ids=self._compute_successors(topic.topic_id),
+                    reason="exact title match, no LLM needed",
+                )
+
+        # 2. LLM-based position search with full compact graph snapshot
         graph_snapshot = self._build_graph_snapshot()
 
         system = (
@@ -74,28 +87,19 @@ class GraphLocator:
         except Exception:
             return GraphPosition(exists=False, reason="LLM call failed")
 
+    def _compute_successors(self, tid: str) -> list[str]:
+        return [t.topic_id for t in self._topics if tid in t.prerequisite_ids]
+
     def _build_graph_snapshot(self) -> str:
         topic_ids = {t.topic_id for t in self._topics}
-
-        def _successors(tid: str) -> list[str]:
-            return [t.topic_id for t in self._topics if tid in t.prerequisite_ids]
-
-        def _parent_ids(tid: str) -> list[str]:
-            topic = next((t for t in self._topics if t.topic_id == tid), None)
-            if topic is None:
-                return []
-            return [p for p in topic.parent_ids if p in topic_ids]
-
         nodes = []
         for topic in self._topics:
-            nodes.append(
-                [
-                    topic.topic_id,
-                    topic.title,
-                    _parent_ids(topic.topic_id),
-                    _successors(topic.topic_id),
-                ]
-            )
+            nodes.append([
+                topic.topic_id,
+                topic.title,
+                [p for p in topic.parent_ids if p in topic_ids],
+                self._compute_successors(topic.topic_id),
+            ])
         return json.dumps(nodes, ensure_ascii=False)
 
     @staticmethod

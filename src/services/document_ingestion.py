@@ -885,10 +885,19 @@ def _process_topic_block(
 
     locator = GraphLocator(backend, subject, language_id)
     results: list = []
+    seen: set[str] = set()
     for td in topics_data:
         title = (td.get("title") or "").strip()
         desc = (td.get("desc") or "").strip()
-        if not title:
+        if not title or title in seen:
+            continue
+        seen.add(title)
+        # Deterministic dedup: check shared topic_map first
+        if title in topic_map:
+            results.append((title, desc, GraphPosition(
+                exists=True, node_id=topic_map[title],
+                reason="dedup via shared topic map",
+            )))
             continue
         pos = locator.locate(title, desc)
         results.append((title, desc, pos))
