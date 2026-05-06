@@ -769,6 +769,7 @@ def _run_structured_ingestion(
         ]
 
     topic_map = {t.title.strip(): t.topic_id for t in topics}
+    root_topic_id = _find_subject_root_id(topics, subject, language_id)
 
     # ── Phase 2: parallel topic extraction + GraphLocator (one thread per block) ──
     all_results: dict[str, list] = {}
@@ -796,6 +797,8 @@ def _run_structured_ingestion(
                 continue
 
             parents = [pid for pid in pos.parent_ids if pid in topic_map.values()]
+            if not parents and root_topic_id:
+                parents = [root_topic_id]
             prereqs = [pid for pid in pos.successor_ids if pid in topic_map.values()]
             try:
                 proposal = backend.create_graph_proposal_from_resource(
@@ -952,6 +955,18 @@ def _extract_topics_from_block_text(
         return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
     except Exception:
         return []
+
+
+def _find_subject_root_id(topics: list[TopicNode], subject: str, language_id: str | None) -> str | None:
+    from src.services.resource_graph_curation import _root_title_for_subject
+    root_title = _root_title_for_subject(subject=subject, language_id=language_id).lower()
+    for t in topics:
+        if t.title.strip().lower() == root_title:
+            return t.topic_id
+        for tag in t.tags:
+            if tag in {"facet:root", "subject_root", "graph:root"}:
+                return t.topic_id
+    return None
 
 
 def _link_to_topic(title: str, topics: list[TopicNode], topic_map: dict[str, str]) -> str | None:
