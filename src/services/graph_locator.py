@@ -98,23 +98,28 @@ class GraphLocator:
         )
         system = (
             "你是知识图谱批量排列助手。\n"
-            "现有图结构(每行格式: [id, title, [前置id], [后继id]]):\n"
-            f"{graph_snapshot}\n\n"
-            "待安排的新节点:\n"
-            f"{topics_json}\n\n"
+            "现有图结构和待安排节点如下。\n"
             "任务:\n"
             "1. 为每个新节点决定 parent_ids 和 successor_ids\n"
             "2. 如果多个新节点可被共同概念归纳，创建中继节点(标题加[中继])，挂其下\n"
             "3. 已有节点不要重复创建\n"
             "4. 每个新节点标题必须出现在 placements 中\n"
+            f"学科: {self._subject}\n"
             "返回 JSON: {\"relay_nodes\":[{\"title\":\"XX[中继]\",\"children\":[\"a\",\"b\"]}],"
             "\"placements\":{\"节点标题\":{\"parent_ids\":[],\"successor_ids\":[],\"reason\":\"...\"}}}"
+        )
+        user = (
+            f"现有图结构(每行格式: [id, title, [前置id], [后继id]]):\n{graph_snapshot}\n\n"
+            f"待安排的新节点:\n{topics_json}"
         )
 
         try:
             response = self._client.chat.completions.create(
                 model=self._model_name,
-                messages=[{"role": "system", "content": system}],
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
                 temperature=0.3, timeout=120.0,
             )
             raw = (response.choices[0].message.content or "").strip()
@@ -124,7 +129,10 @@ class GraphLocator:
             if not isinstance(data, dict):
                 return {"placements": {}, "relay_nodes": []}
             return {
-                "placements": data.get("placements") or {},
+                "placements": {
+                    k: v for k, v in (data.get("placements") or {}).items()
+                    if isinstance(v, dict)
+                },
                 "relay_nodes": data.get("relay_nodes") or [],
             }
         except Exception:
