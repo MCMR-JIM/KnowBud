@@ -46,6 +46,7 @@ def ingest_document_resource(
     try:
         units = parser(Path(record.stored_path))
     except Exception as exc:
+        print(f"\n❌ 抓到 OCR 崩溃的真凶了: {exc}\n")  # <--- 就是加这一行！！！
         segments = [
             _status_segment(
                 resource_id=record.resource_id,
@@ -139,21 +140,45 @@ def _parse_txt(path: Path) -> list[TextUnit]:
 
 def _parse_pdf(path: Path) -> list[TextUnit]:
     try:
-        from pypdf import PdfReader
+        import fitz  
+        from rapidocr_onnxruntime import RapidOCR
     except ModuleNotFoundError as exc:
-        raise RuntimeError("pypdf is required for PDF parsing") from exc
+        raise RuntimeError("需要高级PDF和OCR解析库，请先执行: pip install pymupdf rapidocr-onnxruntime") from exc
 
-    reader = PdfReader(str(path))
+    # 初始化轻量级、极其稳定的 ONNX 引擎 OCR
+    ocr = RapidOCR()
+
+    doc = fitz.open(str(path))
     units: list[TextUnit] = []
-    for page_index, page in enumerate(reader.pages, start=1):
-        text = (page.extract_text() or "").strip()
-        for block in _split_text_blocks(text):
-            units.append(
-                TextUnit(
-                    text=block,
-                    locator={"kind": "pdf", "page_start": page_index, "page_end": page_index},
+
+    for page_index, page in enumerate(doc, start=1):
+        # 1. 尝试提取原生文本
+        text = page.get_text().strip()
+
+        # 2. 如果没字（说明是扫描全能王的图片），启动 OCR
+        if not text:
+            # 渲染成两倍高清图片字节流
+            pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
+            img_bytes = pix.tobytes("png")
+            
+            # 直接把图片流喂给 RapidOCR，简单粗暴不出错
+            result, _ = ocr(img_bytes)
+            
+            if result:
+                # 提取识别出的文字
+                text = "\n".join([line[1] for line in result])
+
+        text = text.strip()
+        if text:
+            for block in _split_text_blocks(text):
+                units.append(
+                    TextUnit(
+                        text=block,
+                        locator={"kind": "pdf", "page_start": page_index, "page_end": page_index},
+                    )
                 )
-            )
+                
+    doc.close()
     return units
 
 

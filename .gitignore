@@ -15,10 +15,11 @@ __pycache__/
 dist/
 build/
 
-# SQLite
+# SQLite / Temp
 *.db
 *.db-shm
 *.db-wal
+*.tmp
 
 # Runtime / local data (generated)
 data/
