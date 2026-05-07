@@ -1068,3 +1068,73 @@ def test_chinese_scan_identifies_poetry(tmp_path: Path) -> None:
         assert blocks[0]["type"] == "poetry"
     finally:
         backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
+
+
+def test_batch_tree_creates_relay_for_english(tmp_path: Path) -> None:
+    from src.services.document_ingestion import _batch_organize_topic_tree
+
+    backend = _build_backend(tmp_path)
+    backend.llm_skill.client.api_key = "test_key"
+
+    def mock_create(**kwargs):
+        return _llm_resp([
+            {"title": "Grammar[中继]", "children": [
+                {"title": "imperative sentences", "children": []},
+                {"title": "modal verb can", "children": []},
+            ]},
+            {"title": "Pronunciation[中继]", "children": [
+                {"title": "Pronunciation: a /eɪ/, /æ/", "children": []},
+            ]},
+        ])
+
+    backend.llm_skill._orig = backend.llm_skill.client.chat.completions.create
+    backend.llm_skill.client.chat.completions.create = mock_create
+
+    try:
+        result = _batch_organize_topic_tree(
+            backend=backend,
+            candidates=["imperative sentences", "modal verb can", "Pronunciation: a /eɪ/, /æ/"],
+            subject="language", language_id="english",
+        )
+        assert len(result) == 2
+        titles = {node["title"] for node in result}
+        assert "Grammar[中继]" in titles
+        assert "Pronunciation[中继]" in titles
+    finally:
+        backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
+
+
+def test_batch_tree_relay_parents(tmp_path: Path) -> None:
+    from src.services.document_ingestion import _create_relay_and_attach
+
+    backend = _build_backend(tmp_path)
+    backend.llm_skill.client.api_key = "test_key"
+
+    state = backend.load_app_state(include_history=False)
+    state.curriculum.topics = [
+        TopicNode(topic_id="root", title="英语", difficulty=1, prerequisite_ids=[],
+                  tags=["subject:language", "facet:root", "language:english"]),
+    ]
+    backend.save_app_state(state)
+
+    tree = [
+        {"title": "Grammar[中继]", "children": [
+            {"title": "present continuous", "children": []},
+        ]},
+    ]
+    topic_map: dict[str, str] = {}
+    topics = list(state.curriculum.topics)
+
+    _create_relay_and_attach(
+        backend=backend, tree=tree, root_topic_id="root",
+        topic_map=topic_map, subject="language", language_id="english",
+        topics=topics,
+    )
+
+    assert "Grammar" in topic_map
+    grammar_tid = topic_map["Grammar"]
+    # Verify relay node was created
+    state2 = backend.load_app_state(include_history=False)
+    grammar_topic = next((t for t in state2.curriculum.topics if t.topic_id == grammar_tid), None)
+    assert grammar_topic is not None
+    assert "root" in grammar_topic.parent_ids

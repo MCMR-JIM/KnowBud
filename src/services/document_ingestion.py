@@ -739,6 +739,112 @@ def _detect_lang_from_chunks(chunks: list[TextUnit], topics: list[TopicNode]) ->
     return None
 
 
+def _batch_organize_topic_tree(
+    *,
+    backend: "SessionBackend",
+    candidates: list[str],
+    subject: str,
+    language_id: str | None = None,
+) -> list[dict]:
+    candidate_list = json.dumps(candidates, ensure_ascii=False)
+    lang_hint = ""
+    if subject == "language" and language_id:
+        lang_hint = (
+            f", 语言: {language_id}\n"
+            "对于英语，按语法/词汇/发音/阅读/写作/功能句型分组。\n"
+            "对于语文，按识字/古诗词/阅读理解/写作/语言知识点分组。\n"
+        )
+    system = (
+        "你是知识结构组织助手。把一组概念关键词组织成树形层级。\n"
+        f"学科: {subject}{lang_hint}"
+        "规则:\n"
+        "1. 中继节点标题必须以 [中继] 结尾\n"
+        "2. 每个输入的关键词必须在树中出现一次\n"
+        "3. 不要凭空创建不在列表中的叶子节点\n"
+        "4. 同级概念平铺在同一中继下\n"
+        "返回 JSON 树形数组。"
+    )
+    user = (
+        f"概念关键词列表:\n{candidate_list}\n\n"
+        "请组织为树形结构。中继节点标题加 [中继] 后缀。"
+    )
+    try:
+        response = backend.llm_skill.client.chat.completions.create(
+            model=backend.llm_skill.model_name,
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=0.3, timeout=60.0,
+        )
+        raw = (response.choices[0].message.content or "").strip()
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+        data = json.loads(raw)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _create_relay_and_attach(
+    *,
+    backend: "SessionBackend",
+    tree: list[dict],
+    root_topic_id: str | None,
+    topic_map: dict[str, str],
+    subject: str,
+    language_id: str | None,
+    topics: list[TopicNode],
+    parent_id: str | None = None,
+) -> None:
+    from src.services.resource_graph_curation import SUBJECT_PROFILES, _proposal_tags
+
+    profile = SUBJECT_PROFILES.get(subject, SUBJECT_PROFILES["general"])
+    for node in tree:
+        raw_title = (node.get("title") or "").strip()
+        if not raw_title:
+            continue
+        children = node.get("children") or []
+        is_relay = "[中继]" in raw_title
+        clean = raw_title.replace("[中继]", "").strip()
+
+        if not children:
+            # Leaf node: don't create here, GraphLocator will handle it
+            continue
+
+        # Relay node: create + approve
+        pid = parent_id or root_topic_id
+        if clean in topic_map:
+            tid = topic_map[clean]
+        else:
+            try:
+                proposal = backend.create_graph_proposal_from_resource(
+                    title=clean,
+                    summary=f"中继节点: {subject}学科",
+                    tags=_proposal_tags(
+                        subject=subject, facet=profile.default_facet,
+                        language_id=language_id,
+                    ),
+                    parent_node_ids=[pid] if pid else [],
+                    prerequisite_node_ids=[],
+                    edge_type="part_of",
+                    reason="batch tree relay node",
+                )
+                _st, _pr, tpc, _, _ = backend.approve_graph_proposal(
+                    proposal_id=proposal.proposal_id, difficulty=1,
+                )
+                tid = tpc.topic_id
+                topic_map[clean] = tid
+                topics.append(tpc)
+            except Exception:
+                continue
+
+        if children and tid:
+            _create_relay_and_attach(
+                backend=backend, tree=children,
+                root_topic_id=root_topic_id, topic_map=topic_map,
+                subject=subject, language_id=language_id,
+                topics=topics, parent_id=tid,
+            )
+
+
 def _run_structured_ingestion(
     *,
     backend: "SessionBackend",
@@ -802,6 +908,25 @@ def _run_structured_ingestion(
 
     seen: set[str] = set()
     deduped = [(t, d) for t, d in all_topics if not (t in seen or seen.add(t))]
+
+    # Batch tree organization: create relay nodes before per-topic insertion
+    if len(deduped) > 1 and backend.llm_skill.client.api_key:
+        try:
+            tree = _batch_organize_topic_tree(
+                backend=backend,
+                candidates=[t for t, d in deduped],
+                subject=subject,
+                language_id=language_id,
+            )
+            if tree:
+                _create_relay_and_attach(
+                    backend=backend, tree=tree,
+                    root_topic_id=root_topic_id, topic_map=topic_map,
+                    subject=subject, language_id=language_id,
+                    topics=topics,
+                )
+        except Exception:
+            pass
 
     if deduped:
         from src.services.graph_locator import GraphLocator
