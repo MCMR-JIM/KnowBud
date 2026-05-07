@@ -1150,14 +1150,20 @@ def _extract_topics_from_block_text(
 
 
 def _find_subject_root_id(topics: list[TopicNode], subject: str, language_id: str | None) -> str | None:
-    from src.services.resource_graph_curation import _root_title_for_subject
-    root_title = _root_title_for_subject(subject=subject, language_id=language_id).lower()
+    # Find root by subject tag + facet:root, not by generic title
     for t in topics:
-        if t.title.strip().lower() == root_title:
+        tags = set(t.tags)
+        if "facet:root" not in tags:
+            continue
+        if f"subject:{subject}" not in tags:
+            continue
+        if subject == "language" and language_id and f"language:{language_id}" not in tags:
+            continue
+        return t.topic_id
+    # Fallback: any facet:root with matching title
+    for t in topics:
+        if "facet:root" in set(t.tags) and t.title.strip().lower() == subject.lower():
             return t.topic_id
-        for tag in t.tags:
-            if tag in {"facet:root", "subject_root", "graph:root"}:
-                return t.topic_id
     return None
 
 
