@@ -128,13 +128,14 @@ class GraphLocator:
             data = json.loads(raw)
             if not isinstance(data, dict):
                 return {"placements": {}, "relay_nodes": []}
-            return {
+            result = {
                 "placements": {
                     k: v for k, v in (data.get("placements") or {}).items()
                     if isinstance(v, dict)
                 },
-                "relay_nodes": data.get("relay_nodes") or [],
+                "relay_nodes": _normalize_relay_nodes(data.get("relay_nodes") or []),
             }
+            return result
         except Exception:
             return {"placements": {}, "relay_nodes": []}
 
@@ -205,3 +206,26 @@ class GraphLocator:
             )
         except json.JSONDecodeError:
             return GraphPosition(exists=False, reason="LLM response parse failed")
+
+
+def _normalize_relay_nodes(relay_nodes: list) -> list[dict]:
+    """Convert relay nodes from LLM response to nested dict format expected by _create_relay_and_attach.
+    LLM returns [{"title":"XX[中继]","children":["a","b"]}] (string children).
+    We need [{"title":"XX[中继]","children":[{"title":"a","children":[]}]}]."""
+    normalized = []
+    for node in relay_nodes:
+        if isinstance(node, str):
+            normalized.append({"title": node, "children": []})
+        elif isinstance(node, dict):
+            children = node.get("children") or []
+            norm_children = []
+            for child in children:
+                if isinstance(child, str):
+                    norm_children.append({"title": child, "children": []})
+                elif isinstance(child, dict):
+                    norm_children.append(_normalize_relay_nodes([child])[0])
+            normalized.append({
+                "title": node.get("title", ""),
+                "children": norm_children,
+            })
+    return normalized
