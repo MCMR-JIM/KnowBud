@@ -352,8 +352,11 @@ class SessionBackend:
                 difficulty=max(1, min(5, difficulty)),
                 parent_ids=list(approved_parents) if approved_edge_type != "requires" else [],
                 prerequisite_ids=list(dict.fromkeys(
-                    [*(approved_parents if approved_edge_type == "requires" else []),
-                     *(pid for pid in getattr(proposal, "prerequisite_node_ids", []) if pid in valid_topic_ids)]
+                    pid for pid in (
+                        *(approved_parents if approved_edge_type == "requires" else []),
+                        *(p for p in getattr(proposal, "prerequisite_node_ids", []) if p in valid_topic_ids)
+                    )
+                    if pid != created_topic_id  # never self-reference
                 )),
                 tags=list(dict.fromkeys([*approved_tags, "resource-approved", "active"])),
             )
@@ -367,8 +370,11 @@ class SessionBackend:
             else:
                 topic.parent_ids = list(dict.fromkeys([*(getattr(topic, "parent_ids", [])), *approved_parents]))
             topic.prerequisite_ids = list(dict.fromkeys(
-                [*(getattr(topic, "prerequisite_ids", [])),
-                 *(pid for pid in getattr(proposal, "prerequisite_node_ids", []) if pid in valid_topic_ids)]
+                pid for pid in (
+                    *(getattr(topic, "prerequisite_ids", [])),
+                    *(p for p in getattr(proposal, "prerequisite_node_ids", []) if p in valid_topic_ids)
+                )
+                if pid != topic.topic_id  # never self-reference
             ))
             topic.tags = list(dict.fromkeys([*topic.tags, *approved_tags, "resource-approved", "active"]))
 

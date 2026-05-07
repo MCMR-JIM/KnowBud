@@ -818,8 +818,9 @@ def _run_structured_ingestion(
             parents = [pid for pid in pos.parent_ids if pid in topic_map.values()]
             if not parents and root_topic_id:
                 parents = [root_topic_id]
-            # Filter root from successors: subject root is not a knowledge prerequisite
-            successors = [pid for pid in pos.successor_ids if pid in topic_map.values() and pid != root_topic_id]
+            # Filter root and self from successors
+            successors = [pid for pid in pos.successor_ids
+                          if pid in topic_map.values() and pid != root_topic_id]
             try:
                 proposal = backend.create_graph_proposal_from_resource(
                     title=title, summary=desc[:200],
