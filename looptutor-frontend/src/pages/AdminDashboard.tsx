@@ -2,9 +2,15 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import * as d3 from 'd3';
 import type { SimulationLinkDatum, SimulationNodeDatum, ZoomTransform } from 'd3';
+import * as echarts from 'echarts/core';
+import { BarChart, LineChart, RadarChart } from 'echarts/charts';
+import { GridComponent, LegendComponent, RadarComponent, TooltipComponent } from 'echarts/components';
+import { CanvasRenderer } from 'echarts/renderers';
 import { AlertCircle, BookOpen, Clock, FileText, Info, Network, Pencil, Plus, Trash2, UploadCloud, Video, X } from 'lucide-react';
 import { API_BASE } from '../api/config';
 import { KnowledgeAPI, ResourceAPI } from '../api/client';
+
+echarts.use([BarChart, LineChart, RadarChart, GridComponent, LegendComponent, RadarComponent, TooltipComponent, CanvasRenderer]);
 
 type GraphTopic = {
   topic_id: string;
@@ -26,6 +32,21 @@ type TopicResource = {
 };
 
 type SubjectModalMode = 'create' | 'edit';
+
+type LearningDashboardData = {
+  todayStar: number;
+  todayStarIncrease: number;
+  focusTime: number;
+  questionActiveness: string;
+  progressData: { day: string; score: number }[];
+  radarData: {
+    questionActiveness: number;
+    focus: number;
+    thinking: number;
+    logic: number;
+    knowledge: number;
+  };
+};
 
 type GraphCanvasNode = SimulationNodeDatum & {
   id: string;
@@ -450,6 +471,182 @@ function KnowledgeGraphCanvas({
   );
 }
 
+function LearningReportCharts({ data }: { data: LearningDashboardData }) {
+  const trendRef = useRef<HTMLDivElement>(null);
+  const radarRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const trendEl = trendRef.current;
+    if (!trendEl) return;
+
+    const chart = echarts.init(trendEl, undefined, { renderer: 'canvas' });
+    const days = data.progressData.map((item) => item.day);
+    const scores = data.progressData.map((item) => item.score);
+    chart.setOption({
+      color: ['#f472b6', '#38bdf8'],
+      tooltip: {
+        trigger: 'axis',
+        backgroundColor: 'rgba(15,23,42,0.92)',
+        borderWidth: 0,
+        textStyle: { color: '#fff', fontWeight: 700 },
+        axisPointer: { type: 'shadow', shadowStyle: { color: 'rgba(244,114,182,0.08)' } },
+      },
+      legend: {
+        top: 8,
+        right: 10,
+        itemWidth: 10,
+        itemHeight: 10,
+        textStyle: { color: '#64748b', fontWeight: 700 },
+      },
+      grid: { left: 18, right: 18, top: 48, bottom: 22, containLabel: true },
+      xAxis: {
+        type: 'category',
+        data: days,
+        axisTick: { show: false },
+        axisLine: { lineStyle: { color: '#fbcfe8' } },
+        axisLabel: { color: '#64748b', fontWeight: 800 },
+      },
+      yAxis: {
+        type: 'value',
+        minInterval: 1,
+        splitLine: { lineStyle: { color: 'rgba(244,114,182,0.14)', type: 'dashed' } },
+        axisLabel: { color: '#94a3b8', fontWeight: 700 },
+      },
+      series: [
+        {
+          name: '每日能量',
+          type: 'bar',
+          data: scores,
+          barWidth: 18,
+          itemStyle: {
+            borderRadius: [10, 10, 4, 4],
+            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+              { offset: 0, color: '#fb7185' },
+              { offset: 0.55, color: '#f9a8d4' },
+              { offset: 1, color: '#fdf2f8' },
+            ]),
+          },
+        },
+        {
+          name: '趋势曲线',
+          type: 'line',
+          data: scores,
+          smooth: true,
+          symbol: 'circle',
+          symbolSize: 8,
+          lineStyle: { width: 4, color: '#0ea5e9' },
+          itemStyle: { color: '#0ea5e9', borderColor: '#fff', borderWidth: 3 },
+          areaStyle: {
+            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+              { offset: 0, color: 'rgba(14,165,233,0.22)' },
+              { offset: 1, color: 'rgba(14,165,233,0)' },
+            ]),
+          },
+        },
+      ],
+    });
+
+    const resizeObserver = new ResizeObserver(() => chart.resize());
+    resizeObserver.observe(trendEl);
+    return () => {
+      resizeObserver.disconnect();
+      chart.dispose();
+    };
+  }, [data.progressData]);
+
+  useEffect(() => {
+    const radarEl = radarRef.current;
+    if (!radarEl) return;
+
+    const chart = echarts.init(radarEl, undefined, { renderer: 'canvas' });
+    const radarValues = [
+      data.radarData.questionActiveness,
+      data.radarData.focus,
+      data.radarData.thinking,
+      data.radarData.logic,
+      data.radarData.knowledge,
+    ];
+    chart.setOption({
+      tooltip: {
+        trigger: 'item',
+        backgroundColor: 'rgba(15,23,42,0.92)',
+        borderWidth: 0,
+        textStyle: { color: '#fff', fontWeight: 700 },
+      },
+      radar: {
+        center: ['50%', '54%'],
+        radius: '70%',
+        splitNumber: 5,
+        axisName: { color: '#475569', fontWeight: 800, fontSize: 12 },
+        axisLine: { lineStyle: { color: 'rgba(99,102,241,0.22)' } },
+        splitLine: { lineStyle: { color: 'rgba(99,102,241,0.18)' } },
+        splitArea: {
+          areaStyle: {
+            color: ['rgba(238,242,255,0.68)', 'rgba(252,231,243,0.36)'],
+          },
+        },
+        indicator: [
+          { name: '提问积极性', max: 100 },
+          { name: '专注度', max: 100 },
+          { name: '思考响应性', max: 100 },
+          { name: '逻辑理解力', max: 100 },
+          { name: '知识掌握度', max: 100 },
+        ],
+      },
+      series: [{
+        name: 'AI 多维诊断',
+        type: 'radar',
+        data: [{
+          value: radarValues,
+          name: '当前画像',
+          symbol: 'circle',
+          symbolSize: 7,
+          lineStyle: { width: 4, color: '#ec4899' },
+          itemStyle: { color: '#ec4899', borderColor: '#fff', borderWidth: 2 },
+          areaStyle: {
+            color: new echarts.graphic.RadialGradient(0.5, 0.5, 0.9, [
+              { offset: 0, color: 'rgba(236,72,153,0.34)' },
+              { offset: 1, color: 'rgba(14,165,233,0.15)' },
+            ]),
+          },
+        }],
+      }],
+    });
+
+    const resizeObserver = new ResizeObserver(() => chart.resize());
+    resizeObserver.observe(radarEl);
+    return () => {
+      resizeObserver.disconnect();
+      chart.dispose();
+    };
+  }, [data.radarData]);
+
+  return (
+    <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
+      <div className="relative overflow-hidden rounded-[28px] border border-pink-100 bg-white/85 p-5 shadow-sm lg:col-span-3">
+        <div className="absolute -right-10 -top-12 h-36 w-36 rounded-full bg-pink-200/40 blur-3xl"></div>
+        <div className="relative mb-2 flex items-center justify-between">
+          <div>
+            <p className="text-xs font-black uppercase tracking-[0.18em] text-pink-400">Energy Trend</p>
+            <h3 className="mt-1 text-lg font-black text-gray-800">近期积分获取趋势</h3>
+          </div>
+          <span className="rounded-full bg-pink-50 px-3 py-1 text-xs font-bold text-pink-600">周视图</span>
+        </div>
+        <div ref={trendRef} className="h-72 w-full" />
+      </div>
+
+      <div className="relative overflow-hidden rounded-[28px] border border-indigo-100 bg-white/85 p-5 shadow-sm lg:col-span-2">
+        <div className="absolute -left-10 -bottom-12 h-36 w-36 rounded-full bg-cyan-200/40 blur-3xl"></div>
+        <div className="relative mb-2">
+          <p className="text-xs font-black uppercase tracking-[0.18em] text-indigo-400">Learning Profile</p>
+          <h3 className="mt-1 text-lg font-black text-gray-800">AI 多维学情诊断</h3>
+        </div>
+        <div ref={radarRef} className="h-72 w-full" />
+      </div>
+    </div>
+  );
+}
+
 export default function AdminDashboard() {
   const navigate = useNavigate();
   const apiBaseUrl = API_BASE;
@@ -664,70 +861,6 @@ export default function AdminDashboard() {
     } finally {
       setDataLoading(false);
     }
-  };
-
-  // 雷达图渲染（基于真实数据）
-  const renderRadarChart = () => {
-    const { questionActiveness, focus, thinking, logic, knowledge } = learningData.radarData;
-    // 归一化到0-60像素
-    const scale = (val: number) => (val / 100) * 60;
-    
-    const points = [
-      [75, 75 - scale(questionActiveness)],
-      [75 + scale(focus) * 0.87, 75 + scale(focus) * 0.5],
-      [75 + scale(thinking) * 0.5, 75 + scale(thinking) * 0.87],
-      [75 - scale(logic) * 0.5, 75 + scale(logic) * 0.87],
-      [75 - scale(knowledge) * 0.87, 75 + scale(knowledge) * 0.5],
-    ];
-
-    return (
-      <svg width="150" height="150" viewBox="0 0 150 150">
-        {/* 背景圈 */}
-        {[0.2, 0.4, 0.6, 0.8, 1].map((scale, i) => (
-          <polygon
-            key={i}
-            points={[
-              [75, 75 - 60 * scale],
-              [75 + 52 * scale, 75 + 30 * scale],
-              [75 + 30 * scale, 75 + 60 * scale],
-              [75 - 30 * scale, 75 + 60 * scale],
-              [75 - 52 * scale, 75 + 30 * scale],
-            ].map(p => p.join(',')).join(' ')}
-            fill="none"
-            stroke="#e5e7eb"
-            strokeWidth="1"
-          />
-        ))}
-        {/* 轴 */}
-        {[0, 72, 144, 216, 288].map((angle, i) => {
-          const rad = (angle * Math.PI) / 180;
-          return (
-            <line
-              key={i}
-              x1="75"
-              y1="75"
-              x2={75 + 60 * Math.sin(rad)}
-              y2={75 - 60 * Math.cos(rad)}
-              stroke="#e5e7eb"
-              strokeWidth="1"
-            />
-          );
-        })}
-        {/* 真实数据多边形 */}
-        <polygon
-          points={points.map(p => p.join(',')).join(' ')}
-          fill="rgba(236, 72, 153, 0.3)"
-          stroke="#ec4899"
-          strokeWidth="2"
-        />
-        {/* 轴标签 */}
-        <text x="75" y="10" fontSize="8" textAnchor="middle" fill="#6b7280">提问积极性</text>
-        <text x="135" y="78" fontSize="8" textAnchor="middle" fill="#6b7280">专注度</text>
-        <text x="100" y="140" fontSize="8" textAnchor="middle" fill="#6b7280">思考响应性</text>
-        <text x="15" y="78" fontSize="8" textAnchor="middle" fill="#6b7280">逻辑理解力</text>
-        <text x="40" y="45" fontSize="8" textAnchor="middle" fill="#6b7280">知识掌握度</text>
-      </svg>
-    );
   };
 
   // 文件校验逻辑
@@ -1287,65 +1420,60 @@ export default function AdminDashboard() {
 
         {/* 2. AI 学情报告（完整显示周一到周日七天） */}
         {activeTab === 'report' && (
-          <div className="bg-white/80 backdrop-blur rounded-2xl p-6 shadow-sm">
+          <div className="relative overflow-hidden rounded-[32px] border border-white/80 bg-white/80 p-6 shadow-sm backdrop-blur">
+            <div className="pointer-events-none absolute -right-20 -top-24 h-56 w-56 rounded-full bg-pink-200/45 blur-3xl"></div>
+            <div className="pointer-events-none absolute -left-24 bottom-8 h-56 w-56 rounded-full bg-sky-200/45 blur-3xl"></div>
             {dataLoading ? (
-              <div className="text-center py-10 text-gray-500">加载真实学情数据中...</div>
+              <div className="relative text-center py-10 text-gray-500">加载真实学情数据中...</div>
             ) : (
-              <>
-                <div className="grid grid-cols-3 gap-6 mb-6">
+              <div className="relative space-y-6">
+                <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
                   <div>
-                    <p className="text-sm text-gray-500">今日获智智慧星</p>
-                    <p className="text-2xl font-bold">
-                      {learningData.todayStar} 
+                    <p className="text-xs font-black uppercase tracking-[0.24em] text-pink-400">Learning Report</p>
+                    <h2 className="mt-1 text-2xl font-black text-gray-900">AI 学情报告</h2>
+                    <p className="mt-1 text-xs text-gray-500">基于真实事件流、积分变化和互动状态生成。</p>
+                  </div>
+                  <div className="rounded-full border border-pink-100 bg-white/80 px-4 py-2 text-xs font-bold text-pink-600 shadow-sm">
+                    自动同步 · 周期视图
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                  <div className="relative overflow-hidden rounded-[26px] border border-pink-100 bg-gradient-to-br from-white to-pink-50 p-5 shadow-sm">
+                    <div className="absolute right-4 top-4 h-12 w-12 rounded-2xl bg-pink-100"></div>
+                    <p className="text-sm font-bold text-gray-500">今日获智智慧星</p>
+                    <div className="mt-3 flex items-end gap-2">
+                      <p className="text-4xl font-black text-gray-900">{learningData.todayStar}</p>
                       {learningData.todayStarIncrease > 0 && (
-                        <span className="text-sm text-green-500 ml-2">↑ +{learningData.todayStarIncrease}</span>
+                        <span className="mb-1 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-black text-emerald-600">+{learningData.todayStarIncrease}</span>
                       )}
-                    </p>
+                    </div>
+                    <p className="mt-2 text-xs text-gray-400">累计积分与今日增量</p>
                   </div>
-                  <div>
-                    <p className="text-sm text-gray-500">当前专注时长</p>
-                    <p className="text-2xl font-bold">
-                      {learningData.focusTime} 分钟
-                      {learningData.focusTime > 0 && (
-                        <span className="text-sm text-green-500 ml-2">↑ 今日学习中</span>
-                      )}
-                    </p>
+
+                  <div className="relative overflow-hidden rounded-[26px] border border-sky-100 bg-gradient-to-br from-white to-sky-50 p-5 shadow-sm">
+                    <div className="absolute right-4 top-4 h-12 w-12 rounded-2xl bg-sky-100"></div>
+                    <p className="text-sm font-bold text-gray-500">当前专注时长</p>
+                    <div className="mt-3 flex items-end gap-2">
+                      <p className="text-4xl font-black text-gray-900">{learningData.focusTime}</p>
+                      <span className="mb-1 text-sm font-black text-sky-600">分钟</span>
+                    </div>
+                    <p className="mt-2 text-xs text-gray-400">{learningData.focusTime > 0 ? '今日学习中' : '等待今日学习事件'}</p>
                   </div>
-                  <div>
-                    <p className="text-sm text-gray-500">提问积极性</p>
-                    <p className="text-2xl font-bold">
-                      {learningData.questionActiveness}
-                      <span className="text-xs text-gray-400 ml-2">基于今日互动</span>
-                    </p>
+
+                  <div className="relative overflow-hidden rounded-[26px] border border-indigo-100 bg-gradient-to-br from-white to-indigo-50 p-5 shadow-sm">
+                    <div className="absolute right-4 top-4 h-12 w-12 rounded-2xl bg-indigo-100"></div>
+                    <p className="text-sm font-bold text-gray-500">提问积极性</p>
+                    <div className="mt-3 flex items-end gap-2">
+                      <p className="text-4xl font-black text-gray-900">{learningData.questionActiveness}</p>
+                      <span className="mb-1 text-xs font-black text-indigo-500">互动画像</span>
+                    </div>
+                    <p className="mt-2 text-xs text-gray-400">基于今日用户输入次数</p>
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-6">
-                  {/* 完整显示周一到周日的柱状图 */}
-                  <div>
-                    <p className="text-sm font-medium mb-3">近期积分获取趋势</p>
-                    <div className="flex items-end justify-around h-40">
-                      {learningData.progressData.map((item, i) => (
-                        <div key={i} className="flex flex-col items-center">
-                          <div 
-                            className="w-8 bg-sky-400 rounded-t transition-all duration-500" 
-                            style={{ height: `${Math.max(10, item.score)}px` }}
-                          ></div>
-                          <span className="text-xs mt-2 text-gray-500">{item.day}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* 真实雷达图 */}
-                  <div>
-                    <p className="text-sm font-medium mb-3">AI 多维学情诊断雷达</p>
-                    <div className="flex justify-center">
-                      {renderRadarChart()}
-                    </div>
-                  </div>
-                </div>
-              </>
+                <LearningReportCharts data={learningData} />
+              </div>
             )}
           </div>
         )}
