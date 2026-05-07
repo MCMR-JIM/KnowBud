@@ -235,8 +235,17 @@ class GraphLocator:
 
     def _build_graph_snapshot(self) -> str:
         topic_ids = {t.topic_id for t in self._topics}
+        # Filter to same-subject topics only
+        same_subject = [
+            t for t in self._topics
+            if self._subject is None
+            or any(tag == f"subject:{self._subject}" for tag in t.tags)
+            or not any(tag.startswith("subject:") for tag in t.tags)  # legacy nodes with no subject tag
+        ]
+        if not same_subject:
+            same_subject = list(self._topics)  # fallback: all topics
         nodes = []
-        for topic in self._topics:
+        for topic in same_subject:
             nodes.append([
                 topic.topic_id,
                 topic.title,
