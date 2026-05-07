@@ -4,6 +4,7 @@ import { ChevronLeft, Star, Mic, Send, HelpCircle, Loader2, Volume2, Pause } fro
 import { SessionAPI } from '../api/client';
 import { API_BASE, API_BASE_NO_VERSION } from '../api/config';
 import PdfViewer from "../components/PdfViewer";
+import { useAppDialog } from '../components/AppDialog';
 
 const COMPANIONS: Record<string, string> = {
   "星空兔": "🐰",
@@ -12,6 +13,7 @@ const COMPANIONS: Record<string, string> = {
 
 export default function KidsLearning() {
   const navigate = useNavigate();
+  const appDialog = useAppDialog();
   const apiBaseUrl = API_BASE;
 
   type TopicResource = {
@@ -188,8 +190,7 @@ export default function KidsLearning() {
     } catch (error) {
       console.error("TTS 语音合成请求失败:", error);
       setSpeakingText(null);
-      // 如果网络 TTS 挂了，你可以选择在这里 fallback 回 window.speechSynthesis
-      // alert("语音服务开小差了，请检查后端运行状态");
+      // 如果网络 TTS 挂了，可以选择在这里 fallback 回 window.speechSynthesis
     }
   };
 
@@ -228,7 +229,7 @@ export default function KidsLearning() {
       setIsRecording(true);
     } catch (error) {
       console.error("麦克风权限被拒绝:", error);
-      alert("星空兔需要你的麦克风权限才能听见你说话哦！");
+      await appDialog.alert("星空兔需要你的麦克风权限才能听见你说话哦！", { title: '需要麦克风权限', intent: 'warning' });
     }
   };
 

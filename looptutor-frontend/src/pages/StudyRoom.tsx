@@ -4,6 +4,7 @@ import { ArrowLeft, BookOpen, Search, Smile, Mic, Send, Zap, Loader2, Volume2, C
 import PdfViewer from '../components/PdfViewer';
 import CelebrationModal from '../components/CelebrationModal';
 import { SessionAPI } from '../api/client';
+import { useAppDialog } from '../components/AppDialog';
 
 // ---------------- 模块一：左下角纯净版数据卡片 (与兔头分离) ----------------
 const UserStatsCard = () => (
@@ -163,6 +164,7 @@ const InteractionCard = ({ state, onSend, onSelect, isLoading, isRecording, onSt
 // ---------------- 主容器 ----------------
 export default function StudyRoom() {
   const navigate = useNavigate();
+  const appDialog = useAppDialog();
 
   const [interactionState, setInteractionState] = useState<any>({ type: 'none', message: '' });
   const [showCelebration, setShowCelebration] = useState(false);
@@ -226,7 +228,7 @@ export default function StudyRoom() {
       mediaRecorder.start();
       setIsRecording(true);
     } catch (error) {
-      alert("星空兔需要你的麦克风权限才能听见你说话哦！");
+      await appDialog.alert("星空兔需要你的麦克风权限才能听见你说话哦！", { title: '需要麦克风权限', intent: 'warning' });
     }
   };
 

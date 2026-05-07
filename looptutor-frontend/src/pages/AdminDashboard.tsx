@@ -9,6 +9,7 @@ import { CanvasRenderer } from 'echarts/renderers';
 import { AlertCircle, BookOpen, Clock, FileText, Info, Network, Pencil, Plus, Trash2, UploadCloud, Video, X } from 'lucide-react';
 import { API_BASE } from '../api/config';
 import { KnowledgeAPI, ResourceAPI } from '../api/client';
+import { useAppDialog } from '../components/AppDialog';
 
 echarts.use([BarChart, LineChart, RadarChart, GridComponent, LegendComponent, RadarComponent, TooltipComponent, CanvasRenderer]);
 
@@ -649,6 +650,7 @@ function LearningReportCharts({ data }: { data: LearningDashboardData }) {
 
 export default function AdminDashboard() {
   const navigate = useNavigate();
+  const appDialog = useAppDialog();
   const apiBaseUrl = API_BASE;
   // 核心状态
   const [activeTab, setActiveTab] = useState('task');
@@ -878,12 +880,12 @@ export default function AdminDashboard() {
     const isAllowed = allowedTypes.includes(file.type) || allowedExtensions.some((ext) => lowerName.endsWith(ext));
 
     if (!isAllowed) {
-      alert("仅支持视频、音频、图片、PDF、Word、PPT、TXT等学习常用格式");
+      void appDialog.alert("仅支持视频、音频、图片、PDF、Word、PPT、TXT等学习常用格式", { title: '文件格式不支持', intent: 'warning' });
       return false;
     }
 
     if (file.size > 500 * 1024 * 1024) {
-      alert("文件大小不能超过 500MB");
+      void appDialog.alert("文件大小不能超过 500MB", { title: '文件过大', intent: 'warning' });
       return false;
     }
 
@@ -1009,7 +1011,7 @@ export default function AdminDashboard() {
   const handleSaveSubject = async () => {
     const normalizedName = subjectName.trim();
     if (!normalizedName) {
-      alert('请输入学科名');
+      await appDialog.alert('请输入学科名', { title: '缺少学科名', intent: 'warning' });
       return;
     }
 
@@ -1036,14 +1038,14 @@ export default function AdminDashboard() {
       await fetchAllData();
     } catch (error) {
       console.error('保存学科失败', error);
-      alert('保存失败，请检查后端服务');
+      await appDialog.alert('保存失败，请检查后端服务', { title: '保存失败', intent: 'error' });
     } finally {
       setModalSaving(false);
     }
   };
 
   const handleDeleteSubject = async (topic: GraphTopic) => {
-    if (!window.confirm(`确定删除「${topic.title}」以及其下的知识节点和资源吗？`)) return;
+    if (!(await appDialog.confirm(`确定删除「${topic.title}」以及其下的知识节点和资源吗？`, { title: '删除学科', intent: 'danger', confirmText: '删除' }))) return;
 
     setDeletingSubjectId(topic.topic_id);
     try {
@@ -1052,14 +1054,14 @@ export default function AdminDashboard() {
       await fetchAllData();
     } catch (error) {
       console.error('删除学科失败', error);
-      alert('删除失败，请检查后端服务');
+      await appDialog.alert('删除失败，请检查后端服务', { title: '删除失败', intent: 'error' });
     } finally {
       setDeletingSubjectId('');
     }
   };
 
   const handleDeleteExistingResource = async (resource: TopicResource) => {
-    if (!window.confirm(`确定删除资源「${resource.resource_name}」吗？`)) return;
+    if (!(await appDialog.confirm(`确定删除资源「${resource.resource_name}」吗？`, { title: '删除资源', intent: 'danger', confirmText: '删除' }))) return;
 
     setDeletingResourceId(resource.resource_id);
     try {
@@ -1068,7 +1070,7 @@ export default function AdminDashboard() {
       void fetchAllData();
     } catch (error) {
       console.error('删除资源失败', error);
-      alert('删除资源失败，请检查后端服务');
+      await appDialog.alert('删除资源失败，请检查后端服务', { title: '删除资源失败', intent: 'error' });
     } finally {
       setDeletingResourceId('');
     }
@@ -1122,7 +1124,7 @@ export default function AdminDashboard() {
   // 任务推送功能
   const handlePushTask = async () => {
     if (!selectedPushTopicId) {
-      alert("请先选择要推送的知识节点！");
+      await appDialog.alert("请先选择要推送的知识节点！", { title: '请选择知识节点', intent: 'warning' });
       return;
     }
     setIsLoading(true);
@@ -1133,14 +1135,14 @@ export default function AdminDashboard() {
         body: JSON.stringify({ topic_id: selectedPushTopicId })
       });
       if (res.ok) {
-        alert("✅ 任务已成功推送至魔法舱！");
+        await appDialog.alert("任务已成功推送至魔法舱！", { title: '推送成功', intent: 'success' });
         fetchAllData();
       } else {
-        alert("❌ 推送失败，请检查后端服务是否启动");
+        await appDialog.alert("推送失败，请检查后端服务是否启动", { title: '推送失败', intent: 'error' });
       }
     } catch (error) {
       console.error(error);
-      alert("❌ 无法连接后端服务");
+      await appDialog.alert("无法连接后端服务", { title: '连接失败', intent: 'error' });
     } finally {
       setIsLoading(false);
     }
@@ -1157,11 +1159,11 @@ export default function AdminDashboard() {
         tags: ['parent-approved'],
         reason: '家长确认 AI 建议节点',
       });
-      alert('✅ 已新增知识节点，并回挂相关资源片段');
+      await appDialog.alert('已新增知识节点，并回挂相关资源片段', { title: '审核完成', intent: 'success' });
       await fetchAllData();
     } catch (error) {
       console.error(error);
-      alert('❌ 审核失败，请检查后端服务');
+      await appDialog.alert('审核失败，请检查后端服务', { title: '审核失败', intent: 'error' });
     } finally {
       setReviewingProposalId('');
     }
@@ -1171,11 +1173,11 @@ export default function AdminDashboard() {
     setReviewingProposalId(proposal.proposal_id);
     try {
       await KnowledgeAPI.rejectProposal(proposal.proposal_id, '家长拒绝该新增节点');
-      alert('已拒绝该知识节点建议');
+      await appDialog.alert('已拒绝该知识节点建议', { title: '已拒绝', intent: 'info' });
       await fetchAllData();
     } catch (error) {
       console.error(error);
-      alert('❌ 拒绝失败，请检查后端服务');
+      await appDialog.alert('拒绝失败，请检查后端服务', { title: '拒绝失败', intent: 'error' });
     } finally {
       setReviewingProposalId('');
     }
@@ -1530,9 +1532,9 @@ export default function AdminDashboard() {
                               headers: { "Content-Type": "application/json" },
                               body: JSON.stringify({ topic_id: kp.topicId })
                             });
-                            alert("✅ 任务已推送到孩子的魔法舱！");
+                            await appDialog.alert("任务已推送到孩子的魔法舱！", { title: '推送成功', intent: 'success' });
                           } catch (e) {
-                            alert("❌ 推送失败，请检查网络");
+                            await appDialog.alert("推送失败，请检查网络", { title: '推送失败', intent: 'error' });
                           }
                         }}
                         className="w-full py-2.5 bg-gray-900 text-white text-sm font-bold rounded-lg hover:bg-pink-500 transition-colors cursor-pointer"
@@ -1704,13 +1706,13 @@ export default function AdminDashboard() {
               <p className="text-xs text-gray-500 mb-3">这里的操作将直接影响底层状态，无法撤销。</p>
               <button 
                 onClick={async () => {
-                  if(window.confirm("确定要清空本地上下文状态吗？此操作无法撤销！")) {
+                  if(await appDialog.confirm("确定要清空本地上下文状态吗？此操作无法撤销！", { title: '清空本地上下文', intent: 'danger', confirmText: '清空' })) {
                     try {
                       await fetch(`${apiBaseUrl}/session/reset`, { method: "POST" });
-                      alert("✅ 已清空本地上下文状态");
+                      await appDialog.alert("已清空本地上下文状态", { title: '已清空', intent: 'success' });
                       fetchAllData();
                     } catch (e) {
-                      alert("❌ 操作失败");
+                      await appDialog.alert("操作失败", { title: '操作失败', intent: 'error' });
                     }
                   }
                 }}

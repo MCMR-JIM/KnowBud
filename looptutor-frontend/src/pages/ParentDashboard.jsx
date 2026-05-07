@@ -3,8 +3,10 @@ import React, { useState, useEffect } from 'react';
 import { pushTaskToChild, fetchReviewQueue, fetchChartData } from '../api/parentApi';
 // 引入 Recharts 图表组件
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { useAppDialog } from '../components/AppDialog';
 
 const ParentDashboard = () => {
+  const appDialog = useAppDialog();
   const [reviewQueue, setReviewQueue] = useState([]);
   const [chartData, setChartData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -32,13 +34,13 @@ const ParentDashboard = () => {
     setLoading(true);
     try {
       const result = await pushTaskToChild('topic_demo_01');
-      alert(`推送成功！队列大小更新为: ${result.review_queue_size}`);
+      await appDialog.alert(`推送成功！队列大小更新为: ${result.review_queue_size}`, { title: '推送成功', intent: 'success' });
       
       // 推送后刷新队列
       const updatedQueue = await fetchReviewQueue();
       setReviewQueue(updatedQueue.items || []);
     } catch (error) {
-      alert("推送失败，请检查后端运行状态或控制台报错");
+      await appDialog.alert("推送失败，请检查后端运行状态或控制台报错", { title: '推送失败', intent: 'error' });
     } finally {
       setLoading(false);
     }
