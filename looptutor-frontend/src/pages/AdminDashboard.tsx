@@ -1,6 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { AlertCircle, BookOpen, Clock, FileText, Info, Pencil, Plus, Trash2, UploadCloud, Video, X } from 'lucide-react';
+import * as d3 from 'd3';
+import type { SimulationLinkDatum, SimulationNodeDatum, ZoomTransform } from 'd3';
+import { AlertCircle, BookOpen, Clock, FileText, Info, Network, Pencil, Plus, Trash2, UploadCloud, Video, X } from 'lucide-react';
 import { API_BASE } from '../api/config';
 import { KnowledgeAPI, ResourceAPI } from '../api/client';
 
@@ -24,6 +26,429 @@ type TopicResource = {
 };
 
 type SubjectModalMode = 'create' | 'edit';
+
+type GraphCanvasNode = SimulationNodeDatum & {
+  id: string;
+  title: string;
+  radius: number;
+  collisionRadius: number;
+  topic: GraphTopic;
+  isRoot: boolean;
+  isMistake: boolean;
+  subject: string;
+  targetX?: number;
+  targetY?: number;
+  layoutDepth?: number;
+};
+
+type GraphCanvasLink = SimulationLinkDatum<GraphCanvasNode> & {
+  source: string | GraphCanvasNode;
+  target: string | GraphCanvasNode;
+  type: 'parent' | 'prereq' | 'both';
+};
+
+const getSubjectTag = (tags: string[] = []) => {
+  const tag = tags.find((item) => item.startsWith('subject:'));
+  return tag ? tag.slice('subject:'.length) : '';
+};
+
+const getSubjectLanguageId = (tags: string[] = []) => {
+  const tag = tags.find((item) => item.startsWith('language:'));
+  return tag ? tag.slice('language:'.length) : null;
+};
+
+const stripFileExtension = (filename: string) => filename.replace(/\.[^.]+$/, '') || filename;
+
+function KnowledgeGraphCanvas({
+  topics,
+  selectedTopicId,
+  mistakeTopicIds,
+  onSelectNode,
+}: {
+  topics: GraphTopic[];
+  selectedTopicId?: string;
+  mistakeTopicIds: string[];
+  onSelectNode: (topic: GraphTopic) => void;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const onSelectNodeRef = useRef(onSelectNode);
+  const selectedTopicIdRef = useRef(selectedTopicId);
+  const redrawRef = useRef<(() => void) | null>(null);
+  const mistakeKey = mistakeTopicIds.join('|');
+
+  useEffect(() => {
+    onSelectNodeRef.current = onSelectNode;
+  }, [onSelectNode]);
+
+  useEffect(() => {
+    selectedTopicIdRef.current = selectedTopicId;
+    redrawRef.current?.();
+  }, [selectedTopicId]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    const canvas = canvasRef.current;
+    if (!container || !canvas || topics.length === 0) return;
+
+    let stopRender = () => {};
+
+    const render = () => {
+      stopRender();
+      const rect = container.getBoundingClientRect();
+      const width = Math.max(420, Math.floor(rect.width));
+      const height = Math.max(360, Math.floor(rect.height));
+      const pixelRatio = window.devicePixelRatio || 1;
+      canvas.width = width * pixelRatio;
+      canvas.height = height * pixelRatio;
+      canvas.style.width = `${width}px`;
+      canvas.style.height = `${height}px`;
+
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      const mistakeSet = new Set(mistakeTopicIds);
+      const validIds = new Set(topics.map((topic) => topic.topic_id));
+      const topicCount = Math.max(1, topics.length);
+      const canvasSpan = Math.min(width, height);
+      const nodes: GraphCanvasNode[] = topics.map((topic, index) => {
+        const isRoot = (topic.tags || []).includes('facet:root');
+        const edgeWeight = (topic.parent_ids?.length || 0) + (topic.prerequisite_ids?.length || 0);
+        const angle = index * Math.PI * (3 - Math.sqrt(5));
+        const initialRadius = canvasSpan * (0.14 + 0.38 * Math.sqrt((index + 1) / topicCount));
+        const labelWidth = Math.min(172, Math.max(64, topic.title.length * 11 + 22));
+        const nodeRadius = isRoot ? 18 : 9 + Math.min(edgeWeight * 2, 8);
+        return {
+          id: topic.topic_id,
+          title: topic.title,
+          topic,
+          isRoot,
+          isMistake: mistakeSet.has(topic.topic_id),
+          subject: getSubjectTag(topic.tags || []) || 'general',
+          radius: nodeRadius,
+          collisionRadius: Math.max(nodeRadius + 30, labelWidth / 2 + 14),
+          x: width / 2 + Math.cos(angle) * initialRadius,
+          y: height / 2 + Math.sin(angle) * initialRadius,
+        };
+      });
+      const linkByPair = new Map<string, GraphCanvasLink>();
+      const upsertLink = (source: string, target: string, type: 'parent' | 'prereq') => {
+        const key = `${source}->${target}`;
+        const existing = linkByPair.get(key);
+        if (!existing) {
+          linkByPair.set(key, { source, target, type });
+          return;
+        }
+        if (existing.type !== type) existing.type = 'both';
+      };
+
+      for (const topic of topics) {
+        for (const parentId of topic.parent_ids || []) {
+          if (validIds.has(parentId)) upsertLink(parentId, topic.topic_id, 'parent');
+        }
+        for (const parentId of topic.prerequisite_ids || []) {
+          if (validIds.has(parentId)) upsertLink(parentId, topic.topic_id, 'prereq');
+        }
+      }
+      const links = Array.from(linkByPair.values());
+
+      const outgoing = new Map<string, string[]>();
+      const incomingCount = new Map(nodes.map((node) => [node.id, 0]));
+      for (const link of links) {
+        const sourceId = String(link.source);
+        const targetId = String(link.target);
+        outgoing.set(sourceId, [...(outgoing.get(sourceId) || []), targetId]);
+        incomingCount.set(targetId, (incomingCount.get(targetId) || 0) + 1);
+      }
+
+      const rootNodes = nodes.filter((node) => node.isRoot);
+      const layoutRoots = (rootNodes.length ? rootNodes : nodes.filter((node) => (incomingCount.get(node.id) || 0) === 0)).slice();
+      if (layoutRoots.length === 0 && nodes[0]) layoutRoots.push(nodes[0]);
+
+      const depthById = new Map<string, number>();
+      const rootById = new Map<string, string>();
+      const queue: string[] = [];
+      for (const root of layoutRoots) {
+        depthById.set(root.id, 0);
+        rootById.set(root.id, root.id);
+        queue.push(root.id);
+      }
+
+      while (queue.length > 0) {
+        const sourceId = queue.shift() || '';
+        const nextDepth = (depthById.get(sourceId) || 0) + 1;
+        for (const targetId of outgoing.get(sourceId) || []) {
+          const currentDepth = depthById.get(targetId);
+          if (currentDepth !== undefined && currentDepth >= nextDepth) continue;
+          depthById.set(targetId, nextDepth);
+          rootById.set(targetId, rootById.get(sourceId) || sourceId);
+          queue.push(targetId);
+        }
+      }
+
+      for (const node of nodes) {
+        if (!rootById.has(node.id)) {
+          rootById.set(node.id, node.id);
+          depthById.set(node.id, 0);
+          layoutRoots.push(node);
+        }
+      }
+
+      const uniqueRootIds = Array.from(new Set(layoutRoots.map((root) => root.id)));
+      const rootCenters = new Map<string, { x: number; y: number; angle: number }>();
+      const rootOrbitX = width * 0.28;
+      const rootOrbitY = height * 0.24;
+      uniqueRootIds.forEach((rootId, index) => {
+        const angle = uniqueRootIds.length === 1 ? -Math.PI / 2 : -Math.PI / 2 + (Math.PI * 2 * index) / uniqueRootIds.length;
+        rootCenters.set(rootId, {
+          x: uniqueRootIds.length === 1 ? width / 2 : width / 2 + Math.cos(angle) * rootOrbitX,
+          y: uniqueRootIds.length === 1 ? height / 2 : height / 2 + Math.sin(angle) * rootOrbitY,
+          angle,
+        });
+      });
+
+      const groups = new Map<string, GraphCanvasNode[]>();
+      for (const node of nodes) {
+        const rootId = rootById.get(node.id) || node.id;
+        const depth = depthById.get(node.id) || 0;
+        node.layoutDepth = depth;
+        const key = `${rootId}:${depth}`;
+        groups.set(key, [...(groups.get(key) || []), node]);
+      }
+
+      const maxDepth = Math.max(1, ...nodes.map((node) => node.layoutDepth || 0));
+      const singleRootStep = Math.max(92, Math.min(150, canvasSpan / (maxDepth + 1.7)));
+      const multiRootStep = Math.max(72, Math.min(112, canvasSpan / (maxDepth + 2.6)));
+      for (const [key, groupNodes] of groups) {
+        const [rootId, depthValue] = key.split(':');
+        const depth = Number(depthValue || 0);
+        const rootCenter = rootCenters.get(rootId) || { x: width / 2, y: height / 2, angle: -Math.PI / 2 };
+        const ordered = groupNodes.sort((left, right) => left.title.localeCompare(right.title, 'zh-CN'));
+        for (const [index, node] of ordered.entries()) {
+          if (depth === 0) {
+            node.targetX = rootCenter.x;
+            node.targetY = rootCenter.y;
+            continue;
+          }
+
+          const count = ordered.length;
+          const localSpread = uniqueRootIds.length === 1 ? Math.PI * 2 : Math.min(Math.PI * 0.92, (Math.PI * 2 / uniqueRootIds.length) * 0.78);
+          const baseAngle = uniqueRootIds.length === 1 ? -Math.PI / 2 + depth * 0.42 : rootCenter.angle;
+          const angle = count === 1 ? baseAngle : baseAngle - localSpread / 2 + (localSpread * (index + 0.5)) / count;
+          const ring = (uniqueRootIds.length === 1 ? singleRootStep : multiRootStep) * depth;
+          node.targetX = rootCenter.x + Math.cos(angle) * ring;
+          node.targetY = rootCenter.y + Math.sin(angle) * ring;
+        }
+      }
+
+      let transform: ZoomTransform = d3.zoomIdentity;
+      const spread = Math.max(1, Math.min(1.8, Math.sqrt(topicCount / 22)));
+      const simulation = d3.forceSimulation<GraphCanvasNode>(nodes)
+        .force('link', d3.forceLink<GraphCanvasNode, GraphCanvasLink>(links).id((node) => node.id).distance((link) => (link.type === 'parent' ? 140 : link.type === 'both' ? 154 : 168) * spread).strength(0.26))
+        .force('charge', d3.forceManyBody<GraphCanvasNode>().strength((node) => node.isRoot ? -620 : -400).distanceMin(52).distanceMax(Math.max(width, height) * 0.82))
+        .force('center', d3.forceCenter(width / 2, height / 2))
+        .force('x', d3.forceX<GraphCanvasNode>((node) => node.targetX ?? width / 2).strength((node) => node.isRoot ? 0.22 : 0.12))
+        .force('y', d3.forceY<GraphCanvasNode>((node) => node.targetY ?? height / 2).strength((node) => node.isRoot ? 0.22 : 0.12))
+        .force('collide', d3.forceCollide<GraphCanvasNode>((node) => node.collisionRadius).strength(0.92).iterations(2))
+        .alpha(0.9)
+        .alphaDecay(0.018);
+
+      const drawPill = (x: number, y: number, pillWidth: number, pillHeight: number, radius: number) => {
+        ctx.beginPath();
+        ctx.moveTo(x + radius, y);
+        ctx.lineTo(x + pillWidth - radius, y);
+        ctx.quadraticCurveTo(x + pillWidth, y, x + pillWidth, y + radius);
+        ctx.lineTo(x + pillWidth, y + pillHeight - radius);
+        ctx.quadraticCurveTo(x + pillWidth, y + pillHeight, x + pillWidth - radius, y + pillHeight);
+        ctx.lineTo(x + radius, y + pillHeight);
+        ctx.quadraticCurveTo(x, y + pillHeight, x, y + pillHeight - radius);
+        ctx.lineTo(x, y + radius);
+        ctx.quadraticCurveTo(x, y, x + radius, y);
+        ctx.closePath();
+      };
+
+      const drawArrowHead = (x: number, y: number, angle: number, color: string, size: number) => {
+        ctx.save();
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x - size * Math.cos(angle - Math.PI / 6), y - size * Math.sin(angle - Math.PI / 6));
+        ctx.lineTo(x - size * Math.cos(angle + Math.PI / 6), y - size * Math.sin(angle + Math.PI / 6));
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      };
+
+      const draw = () => {
+        ctx.save();
+        ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.translate(transform.x, transform.y);
+        ctx.scale(transform.k, transform.k);
+
+        for (const link of links) {
+          if (typeof link.source === 'string' || typeof link.target === 'string') continue;
+          const sx = link.source.x || 0;
+          const sy = link.source.y || 0;
+          const tx = link.target.x || 0;
+          const ty = link.target.y || 0;
+          const dx = tx - sx;
+          const dy = ty - sy;
+          const length = Math.hypot(dx, dy);
+          if (length <= 1) continue;
+          const ux = dx / length;
+          const uy = dy / length;
+          const startX = sx + ux * (link.source.radius + 3);
+          const startY = sy + uy * (link.source.radius + 3);
+          const endX = tx - ux * (link.target.radius + 6);
+          const endY = ty - uy * (link.target.radius + 6);
+          const linkColor = link.type === 'parent'
+            ? 'rgba(244, 114, 182, 0.58)'
+            : link.type === 'both'
+              ? 'rgba(251, 191, 36, 0.68)'
+              : 'rgba(125, 211, 252, 0.58)';
+          ctx.beginPath();
+          ctx.moveTo(startX, startY);
+          ctx.lineTo(endX, endY);
+          if (link.type === 'parent') {
+            ctx.setLineDash([6, 6]);
+            ctx.strokeStyle = linkColor;
+            ctx.lineWidth = 1.25;
+          } else if (link.type === 'both') {
+            ctx.setLineDash([10, 4, 2, 4]);
+            ctx.strokeStyle = linkColor;
+            ctx.lineWidth = 1.7;
+          } else {
+            ctx.setLineDash([]);
+            ctx.strokeStyle = linkColor;
+            ctx.lineWidth = 1.5;
+          }
+          ctx.stroke();
+          ctx.setLineDash([]);
+          drawArrowHead(endX, endY, Math.atan2(dy, dx), linkColor, link.type === 'both' ? 9 : link.type === 'parent' ? 7 : 8);
+        }
+        ctx.setLineDash([]);
+
+        for (const node of nodes) {
+          const x = node.x || 0;
+          const y = node.y || 0;
+          const isSelected = node.id === selectedTopicIdRef.current;
+          const haloRadius = node.radius + (node.isMistake ? 10 : 7);
+
+          const halo = ctx.createRadialGradient(x, y, node.radius * 0.4, x, y, haloRadius);
+          halo.addColorStop(0, node.isMistake ? 'rgba(244, 63, 94, 0.34)' : 'rgba(129, 140, 248, 0.34)');
+          halo.addColorStop(1, 'rgba(15, 23, 42, 0)');
+          ctx.fillStyle = halo;
+          ctx.beginPath();
+          ctx.arc(x, y, haloRadius, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.beginPath();
+          ctx.arc(x, y, node.radius, 0, Math.PI * 2);
+          ctx.fillStyle = node.isRoot ? '#fce7f3' : node.isMistake ? '#ffe4e6' : '#eef2ff';
+          ctx.fill();
+          ctx.strokeStyle = isSelected ? '#fbbf24' : node.isMistake ? '#fb7185' : node.isRoot ? '#f472b6' : '#93c5fd';
+          ctx.lineWidth = isSelected ? 3 : 1.8;
+          ctx.stroke();
+
+          ctx.fillStyle = node.isRoot ? '#be185d' : node.isMistake ? '#be123c' : '#1e3a8a';
+          ctx.font = `800 ${node.isRoot ? 11 : 10}px Nunito, Segoe UI, sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(node.isRoot ? 'ROOT' : String(Math.max(1, node.topic.difficulty || 1)), x, y);
+
+          const label = node.title.length > 18 ? `${node.title.slice(0, 18)}...` : node.title;
+          ctx.font = '700 11px Nunito, Segoe UI, sans-serif';
+          const labelWidth = Math.min(164, ctx.measureText(label).width + 20);
+          const labelX = x - labelWidth / 2;
+          const labelY = y + node.radius + 9;
+          ctx.fillStyle = isSelected ? 'rgba(251, 191, 36, 0.92)' : 'rgba(15, 23, 42, 0.78)';
+          drawPill(labelX, labelY, labelWidth, 22, 11);
+          ctx.fill();
+          ctx.fillStyle = isSelected ? '#111827' : '#f8fafc';
+          ctx.fillText(label, x, labelY + 11);
+        }
+
+        ctx.restore();
+      };
+
+      simulation.on('tick', draw);
+      redrawRef.current = draw;
+
+      const selection = d3.select<HTMLCanvasElement, unknown>(canvas);
+      selection.on('.zoom', null).on('.drag', null).on('click', null);
+
+      const zoom = d3.zoom<HTMLCanvasElement, unknown>()
+        .scaleExtent([0.45, 4.5])
+        .on('zoom', (event) => {
+          transform = event.transform;
+          draw();
+        });
+
+      const pointerInGraph = (event: MouseEvent | TouchEvent) => transform.invert(d3.pointer(event, canvas));
+
+      const drag = d3.drag<HTMLCanvasElement, unknown>()
+        .container(canvas)
+        .subject((event) => {
+          const [x, y] = pointerInGraph(event.sourceEvent);
+          return simulation.find(x, y, 28 / transform.k) || undefined;
+        })
+        .on('start', (event) => {
+          const subject = event.subject as GraphCanvasNode | undefined;
+          if (!subject) return;
+          if (!event.active) simulation.alphaTarget(0.28).restart();
+          subject.fx = subject.x;
+          subject.fy = subject.y;
+        })
+        .on('drag', (event) => {
+          const subject = event.subject as GraphCanvasNode | undefined;
+          if (!subject) return;
+          const [x, y] = pointerInGraph(event.sourceEvent);
+          subject.fx = x;
+          subject.fy = y;
+          draw();
+        })
+        .on('end', (event) => {
+          const subject = event.subject as GraphCanvasNode | undefined;
+          if (!subject) return;
+          if (!event.active) simulation.alphaTarget(0);
+          subject.fx = null;
+          subject.fy = null;
+        });
+
+      selection.call(zoom).call(drag);
+      selection.on('click', (event) => {
+        const [x, y] = pointerInGraph(event);
+        const hit = simulation.find(x, y, 24 / transform.k);
+        if (!hit) return;
+        selectedTopicIdRef.current = hit.id;
+        onSelectNodeRef.current(hit.topic);
+        draw();
+      });
+
+      stopRender = () => {
+        simulation.stop();
+        if (redrawRef.current === draw) redrawRef.current = null;
+        selection.on('.zoom', null).on('.drag', null).on('click', null);
+      };
+    };
+
+    render();
+    const observer = new ResizeObserver(render);
+    observer.observe(container);
+
+    return () => {
+      observer.disconnect();
+      stopRender();
+    };
+  }, [topics, mistakeKey]);
+
+  return (
+    <div ref={containerRef} className="relative h-full w-full">
+      <canvas ref={canvasRef} className="h-full w-full cursor-grab active:cursor-grabbing" />
+    </div>
+  );
+}
 
 export default function AdminDashboard() {
   const navigate = useNavigate();
@@ -68,7 +493,8 @@ export default function AdminDashboard() {
   const [dataLoading, setDataLoading] = useState(false);
   // 知识图谱状态
   const [graphNodes, setGraphNodes] = useState<GraphTopic[]>([]);
-  const [selectedNode, setSelectedNode] = useState<any | null>(null);
+  const [selectedNode, setSelectedNode] = useState<GraphTopic | null>(null);
+  const [selectedGraphRootId, setSelectedGraphRootId] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
 
   // 页面加载时自动获取后端数据
@@ -304,18 +730,6 @@ export default function AdminDashboard() {
     );
   };
 
-  const subjectTag = (tags: string[] = []) => {
-    const tag = tags.find((item) => item.startsWith('subject:'));
-    return tag ? tag.slice('subject:'.length) : '';
-  };
-
-  const subjectLanguageId = (tags: string[] = []) => {
-    const tag = tags.find((item) => item.startsWith('language:'));
-    return tag ? tag.slice('language:'.length) : null;
-  };
-
-  const stripFileExtension = (filename: string) => filename.replace(/\.[^.]+$/, '') || filename;
-
   // 文件校验逻辑
   const validateResourceFile = (file: File) => {
     const allowedTypes = [
@@ -443,8 +857,8 @@ export default function AdminDashboard() {
   };
 
   const uploadPendingFilesForSubject = async (topicId: string, tags: string[]) => {
-    const subject = subjectTag(tags);
-    const languageId = subjectLanguageId(tags);
+    const subject = getSubjectTag(tags);
+    const languageId = getSubjectLanguageId(tags);
     for (const file of pendingResourceFiles) {
       const res = await ResourceAPI.uploadResource({
         file,
@@ -527,7 +941,10 @@ export default function AdminDashboard() {
     }
   };
 
-  const subjectRoots = graphNodes.filter((topic) => (topic.tags || []).includes('facet:root'));
+  const subjectRoots = useMemo(
+    () => graphNodes.filter((topic) => (topic.tags || []).includes('facet:root')),
+    [graphNodes],
+  );
 
   const countNodesUnderRoot = (rootId: string) => {
     const childIds = new Set<string>();
@@ -544,6 +961,30 @@ export default function AdminDashboard() {
     walk(rootId);
     return childIds.size;
   };
+
+  const collectSubgraphIds = (rootId: string, topics: GraphTopic[]) => {
+    const ids = new Set([rootId]);
+    let changed = true;
+
+    while (changed) {
+      changed = false;
+      for (const topic of topics) {
+        if (ids.has(topic.topic_id)) continue;
+        const isChild = (topic.parent_ids || []).some((id) => ids.has(id)) || (topic.prerequisite_ids || []).some((id) => ids.has(id));
+        if (!isChild) continue;
+        ids.add(topic.topic_id);
+        changed = true;
+      }
+    }
+
+    return ids;
+  };
+
+  useEffect(() => {
+    if (selectedGraphRootId && !graphNodes.some((topic) => topic.topic_id === selectedGraphRootId)) {
+      setSelectedGraphRootId('');
+    }
+  }, [graphNodes, selectedGraphRootId]);
 
   // 任务推送功能
   const handlePushTask = async () => {
@@ -607,6 +1048,21 @@ export default function AdminDashboard() {
     }
   };
 
+  const mistakeTopicIds = knowledgePoints.map((item) => item.topicId);
+  const visibleGraphNodes = useMemo(() => {
+    if (!selectedGraphRootId) return graphNodes;
+    const visibleGraphIds = collectSubgraphIds(selectedGraphRootId, graphNodes);
+    return graphNodes.filter((node) => visibleGraphIds.has(node.topic_id));
+  }, [graphNodes, selectedGraphRootId]);
+  const visibleGraphEdgeCount = useMemo(
+    () => visibleGraphNodes.reduce(
+      (sum, node) => sum + (node.parent_ids?.length || 0) + (node.prerequisite_ids?.length || 0),
+      0,
+    ),
+    [visibleGraphNodes],
+  );
+  const selectedGraphRoot = subjectRoots.find((topic) => topic.topic_id === selectedGraphRootId);
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-50 to-pink-50 p-6">
       {/* 顶部导航 */}
@@ -648,6 +1104,12 @@ export default function AdminDashboard() {
             📝 错题本与回放
           </button>
           <button
+            onClick={() => setActiveTab('graph')}
+            className={`px-6 py-3 text-sm font-medium cursor-pointer transition-all ${activeTab === 'graph' ? 'text-pink-600 border-b-2 border-pink-500' : 'text-gray-500 hover:text-gray-700'}`}
+          >
+            🕸️ 知识图谱
+          </button>
+          <button
             onClick={() => setActiveTab('debug')}
             className={`px-6 py-3 text-sm font-medium cursor-pointer transition-all ${activeTab === 'debug' ? 'text-pink-600 border-b-2 border-pink-500' : 'text-gray-500 hover:text-gray-700'}`}
           >
@@ -657,7 +1119,7 @@ export default function AdminDashboard() {
       </div>
 
       {/* 标签页内容 */}
-      <div className="max-w-5xl mx-auto">
+      <div className={`${activeTab === 'graph' ? 'max-w-7xl' : 'max-w-5xl'} mx-auto`}>
         {/* 1. 任务配置 */}
         {activeTab === 'task' && (
           <div className="bg-white/80 backdrop-blur rounded-2xl p-6 shadow-sm space-y-6">
@@ -721,7 +1183,7 @@ export default function AdminDashboard() {
                           <p>知识节点</p>
                         </div>
                         <div className="rounded-2xl border border-white/80 bg-white/70 p-3">
-                          <p className="font-bold text-gray-700">{subjectTag(root.tags || []) || 'custom'}</p>
+                          <p className="font-bold text-gray-700">{getSubjectTag(root.tags || []) || 'custom'}</p>
                           <p>学科标识</p>
                         </div>
                       </div>
@@ -890,10 +1352,10 @@ export default function AdminDashboard() {
 
         {/* 3. 错题本与回放 (已重构版) */}
         {activeTab === 'mistake' && (
-          <div className="flex flex-col md:flex-row gap-6 h-[600px]">
+          <div className="h-[600px]">
             
-            {/* 左侧：智能错题流 (重构排版) */}
-            <div className="flex-[4] bg-white/80 backdrop-blur rounded-2xl p-6 shadow-sm flex flex-col h-full border-t-4 border-pink-400">
+            {/* 智能错题流 (重构排版) */}
+            <div className="bg-white/80 backdrop-blur rounded-2xl p-6 shadow-sm flex flex-col h-full border-t-4 border-pink-400">
               <div className="flex items-center gap-2 mb-2">
                 <BookOpen className="text-pink-500" size={24} />
                 <h2 className="text-xl font-bold text-gray-800">智能错题流</h2>
@@ -955,58 +1417,89 @@ export default function AdminDashboard() {
               </div>
             </div>
 
-            {/* 右侧：全局知识图谱 (新增) */}
-            <div className="flex-[6] bg-white/80 backdrop-blur rounded-2xl p-6 shadow-sm flex flex-col h-full border-t-4 border-blue-400 relative">
-              <div className="flex justify-between items-center mb-6">
-                <div>
-                  <h2 className="text-xl font-bold text-gray-800">全局知识拓扑图</h2>
-                  <p className="text-xs text-gray-500 mt-1">点击知识节点查看详细掌握度</p>
+          </div>
+        )}
+
+        {/* 4. 知识图谱大屏 */}
+        {activeTab === 'graph' && (
+          <div className="h-[760px]">
+            <div className="relative flex h-full flex-col overflow-hidden rounded-[2rem] border border-indigo-200/20 bg-slate-950 p-5 shadow-2xl shadow-indigo-950/20">
+              <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_15%_12%,rgba(244,114,182,0.23),transparent_28%),radial-gradient(circle_at_84%_18%,rgba(56,189,248,0.18),transparent_28%),linear-gradient(135deg,rgba(15,23,42,0.94),rgba(49,46,129,0.88))]"></div>
+              <div className="relative mb-4 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                <div className="flex items-start gap-3">
+                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white/10 text-cyan-200 ring-1 ring-white/15">
+                    <Network size={23} />
+                  </div>
+                  <div>
+                    <h2 className="text-xl font-black text-white">知识图谱</h2>
+                    <p className="mt-1 text-xs text-indigo-100/70">D3 力导向结构图，拖拽节点、滚轮缩放，点击查看掌握情况。</p>
+                  </div>
                 </div>
-                <div className="bg-blue-50 text-blue-600 px-3 py-1 rounded-full text-xs font-medium border border-blue-100">
-                  全自动生成
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                  <label className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/10 px-3 py-2 text-xs font-bold text-white/80">
+                    根节点
+                    <select
+                      value={selectedGraphRootId}
+                      onChange={(e) => {
+                        setSelectedGraphRootId(e.target.value);
+                        setSelectedNode(null);
+                        setIsModalOpen(false);
+                      }}
+                      className="min-w-40 rounded-xl border border-white/10 bg-slate-950/80 px-3 py-1.5 text-xs text-white outline-none focus:ring-2 focus:ring-cyan-300/40"
+                    >
+                      <option value="">全部图谱</option>
+                      {subjectRoots.map((root) => (
+                        <option key={root.topic_id} value={root.topic_id}>{root.title}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="flex shrink-0 gap-2 text-[11px] font-bold text-white/80">
+                    <span className="rounded-full border border-white/10 bg-white/10 px-3 py-1">{visibleGraphNodes.length} 节点</span>
+                    <span className="rounded-full border border-white/10 bg-white/10 px-3 py-1">{visibleGraphEdgeCount} 关系</span>
+                  </div>
                 </div>
               </div>
 
-              {/* 画布区域 */}
-              <div className="flex-1 bg-gray-50/50 border border-gray-100 rounded-xl overflow-auto p-8 relative flex items-center justify-center">
-                {graphNodes.length === 0 ? (
-                  <p className="text-gray-400">图谱生成中...</p>
-                ) : (
-                  <div className="flex flex-col items-center gap-8 relative">
-                    {/* 一条贯穿的连接主线 */}
-                    <div className="absolute top-10 bottom-10 w-1 bg-gradient-to-b from-blue-300 via-pink-300 to-purple-300 z-0"></div>
-                    
-                    {graphNodes.map((node, idx) => (
-                      <div 
-                        key={node.topic_id}
-                        onClick={() => {
-                          setSelectedNode(node);
-                          setIsModalOpen(true);
-                        }}
-                        className="relative z-10 flex flex-col items-center cursor-pointer group"
-                      >
-                        <div className={`w-16 h-16 rounded-full flex items-center justify-center shadow-md border-4 transition-transform group-hover:scale-110 ${
-                          idx === 0 ? 'bg-blue-100 border-blue-400 text-blue-700' :
-                          idx === graphNodes.length - 1 ? 'bg-purple-100 border-purple-400 text-purple-700' :
-                          'bg-white border-gray-300 text-gray-600'
-                        }`}>
-                          <span className="font-bold">{idx + 1}</span>
-                        </div>
-                        <div className="bg-white px-4 py-1.5 rounded-full shadow-sm border border-gray-200 mt-2 text-sm font-bold text-gray-700 group-hover:border-blue-400 group-hover:text-blue-600 transition-colors">
-                          {node.title}
-                        </div>
-                      </div>
-                    ))}
+              {selectedGraphRoot && (
+                <div className="relative mb-3 rounded-2xl border border-cyan-300/20 bg-cyan-400/10 px-4 py-2 text-xs font-semibold text-cyan-50">
+                  当前只看「{selectedGraphRoot.title}」根节点下的子图。切回“全部图谱”可查看完整结构。
+                </div>
+              )}
+
+              <div className="relative flex-1 overflow-hidden rounded-[28px] border border-white/10 bg-slate-900/70 shadow-inner">
+                <div className="pointer-events-none absolute inset-0 opacity-25 [background-image:linear-gradient(rgba(255,255,255,0.08)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.08)_1px,transparent_1px)] [background-size:28px_28px]"></div>
+                {visibleGraphNodes.length === 0 ? (
+                  <div className="relative flex h-full flex-col items-center justify-center text-center text-indigo-100/70">
+                    <Network size={44} className="mb-3 text-indigo-200/60" />
+                    <p className="text-sm font-bold">知识图谱生成中...</p>
+                    <p className="mt-1 text-xs">上传学科资源后会自动扩展节点关系。</p>
                   </div>
+                ) : (
+                  <KnowledgeGraphCanvas
+                    topics={visibleGraphNodes}
+                    selectedTopicId={selectedNode?.topic_id}
+                    mistakeTopicIds={mistakeTopicIds}
+                    onSelectNode={(node) => {
+                      setSelectedNode(node);
+                      setIsModalOpen(true);
+                    }}
+                  />
                 )}
+
+                <div className="pointer-events-none absolute bottom-4 left-4 flex flex-wrap gap-2 text-[11px] font-bold text-white/80">
+                  <span className="rounded-full border border-pink-300/30 bg-pink-500/15 px-3 py-1">虚线：层级归属 parent_ids</span>
+                  <span className="rounded-full border border-cyan-300/30 bg-cyan-500/15 px-3 py-1">实线：前置依赖 prerequisite_ids</span>
+                  <span className="rounded-full border border-amber-300/30 bg-amber-500/15 px-3 py-1">黄线：层级 + 前置复合关系</span>
+                  <span className="rounded-full border border-rose-300/30 bg-rose-500/15 px-3 py-1">粉色光晕：错题节点</span>
+                </div>
               </div>
             </div>
 
-            {/* 弹窗组件 (Modal) */}
             {isModalOpen && selectedNode && (
               <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-                <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in duration-200">
-                  <div className="bg-gradient-to-r from-blue-500 to-blue-600 p-6 text-white relative">
+                <div className="bg-white rounded-[28px] shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in duration-200">
+                  <div className="relative overflow-hidden bg-gradient-to-br from-slate-950 via-indigo-900 to-fuchsia-800 p-6 text-white">
+                    <div className="absolute -right-10 -top-12 h-32 w-32 rounded-full bg-cyan-300/20 blur-2xl"></div>
                     <button 
                       onClick={() => setIsModalOpen(false)}
                       className="absolute top-4 right-4 text-white/70 hover:text-white cursor-pointer"
@@ -1014,11 +1507,11 @@ export default function AdminDashboard() {
                       <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
                     </button>
                     <div className="flex items-center gap-3">
-                      <div className="bg-white/20 p-2 rounded-lg">
+                      <div className="bg-white/15 p-2 rounded-xl ring-1 ring-white/15">
                         <Info size={24} />
                       </div>
                       <div>
-                        <p className="text-blue-100 text-xs font-medium uppercase tracking-wider">Node Details</p>
+                        <p className="text-cyan-100 text-xs font-medium uppercase tracking-wider">Knowledge Node</p>
                         <h2 className="text-2xl font-bold">{selectedNode.title}</h2>
                       </div>
                     </div>
@@ -1028,7 +1521,7 @@ export default function AdminDashboard() {
                     <div className="grid grid-cols-2 gap-4">
                       <div className="bg-gray-50 p-4 rounded-xl border border-gray-100 text-center">
                         <p className="text-xs text-gray-500 mb-1">绑定学习资源</p>
-                        <p className="text-3xl font-black text-gray-800">{selectedNode.resources?.length || 0}</p>
+                        <p className="text-3xl font-black text-gray-800">{knowledgePoints.find(k => k.topicId === selectedNode.topic_id)?.resourceCount || 0}</p>
                       </div>
                       <div className="bg-pink-50 p-4 rounded-xl border border-pink-100 text-center">
                         <p className="text-xs text-pink-600 mb-1">累积错题数</p>
@@ -1062,7 +1555,7 @@ export default function AdminDashboard() {
           </div>
         )}
 
-        {/* 4. 系统调试 */}
+        {/* 5. 系统调试 */}
         {activeTab === 'debug' && (
           <div className="bg-white/80 backdrop-blur rounded-2xl p-6 shadow-sm">
             <h2 className="text-lg font-semibold text-gray-700 mb-4">引擎决策日志</h2>
