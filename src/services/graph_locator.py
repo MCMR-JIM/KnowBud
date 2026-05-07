@@ -91,66 +91,103 @@ class GraphLocator:
         if not self._topics or not topics:
             return {"placements": {}, "relay_nodes": []}
 
-        graph_snapshot = self._build_graph_snapshot()
-        topics_json = json.dumps(
-            [{"title": t.get("title", ""), "desc": t.get("desc", "")[:500]} for t in topics],
-            ensure_ascii=False,
-        )
-        system = (
-            "你是知识图谱批量层级排列助手。你的任务是为一组新概念在图中找到层级归属。\n\n"
-            "【图结构格式说明】\n"
-            "现有图每条格式: [节点ID, 节点标题, [前置节点ID列表], [后继节点ID列表]]\n"
-            "例如: [\"light\",\"光学[中继]\",[\"root\"],[\"refraction\",\"reflection\"]]\n"
-            "      表示\"光学[中继]\"的前置节点是\"root\"，后继节点是\"refraction\"和\"reflection\"\n\n"
-            "【parent_ids 说明】\n"
-            "parent_ids 是层级父节点列表——新节点挂在谁下面。\n"
-            "例如新节点「牛顿第二定律」的 parent_ids 应该是[\"力学[中继]\"]或直接父节点ID。\n"
-            "如果新节点无法确定父节点，parent_ids 填根节点ID（如[\"root\"]）。\n"
-            "如果新节点是某个已有节点的细分知识，parent_ids 填那个已有节点的ID。\n\n"
-            "【prerequisite_for_ids 说明】\n"
-            "prerequisite_for_ids 表示哪些已有节点需要先学了这个新节点才能学。\n"
-            "例如新节点「欧姆定律」→ prerequisite_for_ids=[\"串联电路规律\"]\n"
-            "    表示学习串联电路规律之前必须先学会欧姆定律。\n"
-            "如果没有合适的后置节点，填空数组[]。\n\n"
-            "【中继节点说明】\n"
-            "如果 3 个以上新节点可被共同概念归纳，创建一个中继节点。\n"
-            "中继节点标题必须以[中继]结尾，如\"牛顿运动定律[中继]\"。\n"
-            "children 列表填这些新节点的标题（字符串），不是ID。\n\n"
-            f"【当前学科】{self._subject}\n"
-            "返回严格 JSON: {\"relay_nodes\":[{\"title\":\"XX[中继]\",\"children\":[\"子节点标题1\",\"子节点标题2\"]}],"
-            "\"placements\":{\"新节点标题\":{\"parent_ids\":[\"父节点ID\"],\"prerequisite_for_ids\":[\"后置节点ID\"],\"reason\":\"简短理由\"}}}"
-        )
-        user = (
-            f"=== 现有图结构 ===\n{graph_snapshot}\n\n"
-            f"=== 待安排的新节点 ===\n{topics_json}\n\n"
-            "请为每个新节点填入层级归属(parent_ids)和前置关系(prerequisite_for_ids)。"
-        )
+        # Phase 1: cluster similar topics into relay groups (one LLM call)
+        titles = [t.get("title", "") for t in topics]
+        relay_nodes = self._cluster_into_relays(titles)
 
+        # Phase 2: for each topic, search top-K relevant existing nodes + decide placement
+        placements = {}
+        for t in topics:
+            title = t.get("title", "")
+            desc = t.get("desc", "")
+            if not title:
+                continue
+            # Find top-5 most relevant existing topics by title similarity
+            relevant = self._search_relevant_nodes(title, limit=5)
+            if not relevant:
+                relevant = self._topics[:5]  # fallback: first 5 topics
+            relevant_json = json.dumps(
+                [[n.topic_id, n.title,
+                  [p for p in n.parent_ids if p in {x.topic_id for x in self._topics}],
+                  [x.topic_id for x in self._topics if n.topic_id in x.prerequisite_ids]]
+                 for n in relevant],
+                ensure_ascii=False,
+            )
+            pos = self._locate_one(title, desc, relevant_json)
+            if pos:
+                placements[title] = pos
+
+        return {"placements": placements, "relay_nodes": relay_nodes}
+
+    def _search_relevant_nodes(self, title: str, limit: int = 5) -> list["TopicNode"]:
+        """Find most relevant existing topics by title substring overlap."""
+        title_lower = title.lower()
+        scored = []
+        for topic in self._topics:
+            topic_lower = topic.title.lower()
+            # Simple relevance: count shared characters
+            overlap = sum(1 for c in title_lower if c in topic_lower and c.isalnum())
+            if overlap > 0:
+                scored.append((overlap, topic))
+        scored.sort(key=lambda x: -x[0])
+        return [t for _, t in scored[:limit]]
+
+    def _cluster_into_relays(self, titles: list[str]) -> list[dict]:
+        """One LLM call: group related titles into relay clusters."""
+        if len(titles) <= 2:
+            return []
+        titles_json = json.dumps(titles, ensure_ascii=False)
+        system = (
+            "你是概念分组助手。将一组知识点标题按学科领域分组。\n"
+            "每组提炼一个中继标题(加[中继]后缀)，列出组内成员。\n"
+            "每组至少 3 个成员才建中继。不够 3 个的不分组。\n"
+            f"学科: {self._subject}\n"
+            '返回 JSON: [{"title":"XX[中继]","children":["a","b","c"]}]'
+        )
+        user = f"标题列表:\n{titles_json}"
         try:
             response = self._client.chat.completions.create(
                 model=self._model_name,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                temperature=0.3, timeout=120.0,
+                messages=[{"role":"system","content":system},{"role":"user","content":user}],
+                temperature=0.3, timeout=60.0,
             )
-            raw = (response.choices[0].message.content or "").strip()
+            raw = response.choices[0].message.content.strip()
             raw = re.sub(r"^```(?:json)?\s*", "", raw)
             raw = re.sub(r"\s*```$", "", raw)
             data = json.loads(raw)
-            if not isinstance(data, dict):
-                return {"placements": {}, "relay_nodes": []}
-            result = {
-                "placements": {
-                    k: v for k, v in (data.get("placements") or {}).items()
-                    if isinstance(v, dict)
-                },
-                "relay_nodes": _normalize_relay_nodes(data.get("relay_nodes") or []),
-            }
-            return result
+            if isinstance(data, list):
+                return _normalize_relay_nodes(data)
+            return []
         except Exception:
-            return {"placements": {}, "relay_nodes": []}
+            return []
+
+    def _locate_one(self, title: str, desc: str, relevant_json: str) -> dict | None:
+        """LLM decides parent_ids + prerequisite_for_ids from relevant nodes only."""
+        system = (
+            "你是知识图谱定位助手。给定新概念和一组最相关的已有节点，决定新概念的层级位置。\n"
+            "格式说明: 每个已有节点为 [id, title, [前置节点id], [后继节点id]]\n\n"
+            "parent_ids: 新概念挂在哪个已有节点下（不能为空，至少填根节点ID）\n"
+            "prerequisite_for_ids: 哪些已有节点需要先学这个新概念才能学（新概念是它们的前置）\n"
+            f"学科: {self._subject}\n"
+            '返回 JSON: {"parent_ids":["id"],"prerequisite_for_ids":["id"],"reason":"..."}'
+        )
+        user = (
+            f"最相关的已有节点:\n{relevant_json}\n\n"
+            f"新概念: {title}\n描述: {desc[:500]}"
+        )
+        try:
+            response = self._client.chat.completions.create(
+                model=self._model_name,
+                messages=[{"role":"system","content":system},{"role":"user","content":user}],
+                temperature=0.3, timeout=30.0,
+            )
+            raw = response.choices[0].message.content.strip()
+            raw = re.sub(r"^```(?:json)?\s*", "", raw)
+            raw = re.sub(r"\s*```$", "", raw)
+            data = json.loads(raw)
+            return data if isinstance(data, dict) else None
+        except Exception:
+            return None
 
     def review_placements(self, placements: dict, graph_snapshot: str | None = None) -> dict:
         if not placements:
