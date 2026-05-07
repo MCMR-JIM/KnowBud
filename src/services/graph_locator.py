@@ -93,7 +93,7 @@ class GraphLocator:
 
         # Phase 1: cluster similar topics into relay groups (one LLM call)
         titles = [t.get("title", "") for t in topics]
-        relay_nodes = self._cluster_into_relays(titles)
+        relay_nodes = self.cluster_into_relays(titles)
 
         # Phase 2: for each topic, search top-K relevant existing nodes + decide placement
         placements = {}
@@ -132,7 +132,7 @@ class GraphLocator:
         scored.sort(key=lambda x: -x[0])
         return [t for _, t in scored[:limit]]
 
-    def _cluster_into_relays(self, titles: list[str]) -> list[dict]:
+    def cluster_into_relays(self, titles: list[str]) -> list[dict]:
         """One LLM call: group related titles into relay clusters."""
         if len(titles) <= 2:
             return []
