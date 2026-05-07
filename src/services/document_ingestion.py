@@ -935,57 +935,61 @@ def _run_structured_ingestion(
         pending = [{"title": t, "desc": d} for t, d in deduped if t not in topic_map]
 
         if pending:
-            batch_result = locator.batch_locate(pending)
+            BATCH = 12
+            for batch_start in range(0, len(pending), BATCH):
+                batch = pending[batch_start:batch_start + BATCH]
+                batch_result = locator.batch_locate(batch)
 
-            # Review loop (max 3 rounds)
-            for _round in range(3):
-                review = locator.review_placements(batch_result.get("placements", {}))
-                if review.get("ok", True):
-                    break
-                for issue in review.get("issues", []):
-                    title = issue.get("title", "")
-                    pos = batch_result["placements"].get(title)
-                    if pos:
-                        pos["reason"] = (pos.get("reason", "") + f"; review fix: {issue.get('suggestion', '')[:80]}").strip("; ")
+                # Review loop (max 2 rounds for small batches)
+                for _round in range(2):
+                    review = locator.review_placements(batch_result.get("placements", {}))
+                    if review.get("ok", True):
+                        break
+                    for issue in review.get("issues", []):
+                        title = issue.get("title", "")
+                        pos = batch_result["placements"].get(title)
+                        if pos:
+                            pos["reason"] = (pos.get("reason", "") + f"; review fix: {issue.get('suggestion', '')[:80]}").strip("; ")
 
-            # Create relay nodes from batch result
-            new_relays = batch_result.get("relay_nodes") or []
-            if new_relays:
-                _create_relay_and_attach(
-                    backend=backend, tree=new_relays,
-                    root_topic_id=root_topic_id, topic_map=topic_map,
-                    subject=subject, language_id=language_id,
-                    topics=topics,
-                )
-
-            # Create individual topics from placements
-            for title, pos in batch_result.get("placements", {}).items():
-                if title in topic_map:
-                    continue
-                parents = [pid for pid in pos.get("parent_ids", []) if pid in topic_map.values()]
-                if not parents and root_topic_id:
-                    parents = [root_topic_id]
-                successors = [pid for pid in pos.get("prerequisite_for_ids", pos.get("successor_ids", []))
-                              if pid in topic_map.values() and pid != root_topic_id]
-                try:
-                    proposal = backend.create_graph_proposal_from_resource(
-                        title=title, summary=pos.get("reason", "")[:200],
-                        tags=_proposal_tags(
-                            subject=subject, facet=profile.default_facet,
-                            language_id=language_id,
-                        ),
-                        parent_node_ids=parents,
-                        prerequisite_node_ids=successors,
-                        edge_type="part_of" if parents else "requires",
-                        reason=pos.get("reason", "")[:80],
+                # Create relay nodes from batch result
+                new_relays = batch_result.get("relay_nodes") or []
+                if new_relays:
+                    _create_relay_and_attach(
+                        backend=backend, tree=new_relays,
+                        root_topic_id=root_topic_id, topic_map=topic_map,
+                        subject=subject, language_id=language_id,
+                        topics=topics,
                     )
-                    _st, _pr, tpc, _, _ = backend.approve_graph_proposal(
-                        proposal_id=proposal.proposal_id, difficulty=1,
-                    )
-                    topic_map[title] = tpc.topic_id
                     locator.refresh()
-                except Exception:
-                    pass
+
+                # Create individual topics from placements
+                for title, pos in batch_result.get("placements", {}).items():
+                    if title in topic_map:
+                        continue
+                    parents = [pid for pid in pos.get("parent_ids", []) if pid in topic_map.values()]
+                    if not parents and root_topic_id:
+                        parents = [root_topic_id]
+                    successors = [pid for pid in pos.get("prerequisite_for_ids", pos.get("successor_ids", []))
+                                  if pid in topic_map.values() and pid != root_topic_id]
+                    try:
+                        proposal = backend.create_graph_proposal_from_resource(
+                            title=title, summary=pos.get("reason", "")[:200],
+                            tags=_proposal_tags(
+                                subject=subject, facet=profile.default_facet,
+                                language_id=language_id,
+                            ),
+                            parent_node_ids=parents,
+                            prerequisite_node_ids=successors,
+                            edge_type="part_of" if parents else "requires",
+                            reason=pos.get("reason", "")[:80],
+                        )
+                        _st, _pr, tpc, _, _ = backend.approve_graph_proposal(
+                            proposal_id=proposal.proposal_id, difficulty=1,
+                        )
+                        topic_map[title] = tpc.topic_id
+                        locator.refresh()
+                    except Exception:
+                        pass
 
     # ── Process exercises ──
     if exercise_blocks:
