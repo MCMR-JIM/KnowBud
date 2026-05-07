@@ -756,7 +756,12 @@ def _run_structured_ingestion(
     # ── Phase 1: one LLM call to scan full document ──
     scan = _fast_document_scan(backend, chunks, subject, language_id)
     blocks = scan.get("blocks") or []
-    topic_blocks = [b for b in blocks if b.get("type") == "topic_area"]
+    _topic_block_types = {
+        "topic_area", "grammar_point", "vocabulary_theme", "pronunciation",
+        "reading", "functional_expression",
+        "character_learning", "poetry", "reading_comprehension", "writing", "language_point",
+    }
+    topic_blocks = [b for b in blocks if b.get("type") in _topic_block_types]
     exercise_blocks = [b for b in blocks if b.get("type") == "exercise_only"]
 
     if not topic_blocks and not exercise_blocks:
@@ -862,12 +867,59 @@ def _fast_document_scan(
     if len(full_text) > 24000:
         full_text = full_text[:12000] + "\n\n[...省略...]\n\n" + full_text[-12000:]
 
-    lang_hint = f", 语言: {language_id}" if language_id else ""
-    system = (
-        "你是教学文档分析助手。通读以下文档全文，返回结构化分析。\n"
-        f"学科: {subject}{lang_hint}\n"
-        "输出 JSON：{\"doc_type\":\"...\",\"blocks\":[{\"label\":\"...\",\"summary\":\"...\",\"type\":\"topic_area|exercise_only|fuzzy|word_list|appendix\",\"start_marker\":\"...\",\"end_marker\":\"...\"}]}"
-    )
+    if subject == "language" and language_id == "english":
+        system = (
+            "你是英语教材分析助手。通读以下英语教学文档全文。\n"
+            "任务:\n"
+            "1. 判断文档类型: textbook | workbook | examination | vocabulary_list | phonics_chart\n"
+            "2. 识别单元结构 (Unit 1, Unit 2...)\n"
+            "3. 对每个单元提取以下类型的知识块:\n"
+            '   - grammar_point: 语法知识点 (如"现在进行时"、"情态动词 must")\n'
+            '     → type="grammar_point", topic_candidates填语法点名称\n'
+            '   - vocabulary_theme: 词汇主题 (如"School Rules"、"Weather")\n'
+            '     → type="vocabulary_theme", topic_candidates填主题分类名\n'
+            '   - pronunciation: 发音规则 (如"a_e /eɪ/"、"aw /ɔː/")\n'
+            '     → type="pronunciation", topic_candidates填发音规则\n'
+            '   - reading: 阅读课文 (如有明确课文标题)\n'
+            '     → type="reading", topic_candidates填课文标题或主题\n'
+            '   - functional_expression: 功能句型 (如"Making Requests")\n'
+            '     → type="functional_expression", topic_candidates填功能描述\n'
+            "4. 单词表/词汇表标记为 type=word_list, 不提取 topic_candidates\n"
+            "5. 练习题标记为 type=exercise_only\n"
+            "返回 JSON: {\"doc_type\":\"...\",\"blocks\":[{\"label\":\"...\",\"summary\":\"...\","
+            '"type":"grammar_point|vocabulary_theme|pronunciation|reading|functional_expression|'
+            'word_list|exercise_only|fuzzy|appendix","start_marker":"...","end_marker":"..."}]'
+        )
+    elif subject == "language" and language_id == "chinese":
+        system = (
+            "你是语文教材分析助手。通读以下语文教学文档全文。\n"
+            "任务:\n"
+            "1. 判断文档类型: textbook | workbook | examination | poetry_collection | character_practice\n"
+            "2. 识别课文结构 (第X课、第X单元...)\n"
+            "3. 对每课/每单元提取:\n"
+            '   - character_learning: 生字/识字点\n'
+            '     → type="character_learning", topic_candidates填识字主题 (如"会认字:山水火")\n'
+            '   - poetry: 古诗词\n'
+            '     → type="poetry", topic_candidates填诗词标题\n'
+            '   - reading_comprehension: 课文阅读理解\n'
+            '     → type="reading_comprehension", topic_candidates填课文标题或理解主题\n'
+            '   - writing: 写作练习\n'
+            '     → type="writing", topic_candidates填写作类型 (如"看图写话"、"日记")\n'
+            '   - language_point: 语言知识点\n'
+            '     → type="language_point", topic_candidates填知识点 (如"比喻"、"排比")\n'
+            "4. 生字表/写字表标记为 type=word_list\n"
+            "5. 练习题标记为 type=exercise_only\n"
+            "返回 JSON: {\"doc_type\":\"...\",\"blocks\":[{\"label\":\"...\",\"summary\":\"...\","
+            '"type":"character_learning|poetry|reading_comprehension|writing|language_point|'
+            'word_list|exercise_only|fuzzy|appendix","start_marker":"...","end_marker":"..."}]'
+        )
+    else:
+        system = (
+            "你是教学文档分析助手。通读以下文档全文，返回结构化分析。\n"
+            f"学科: {subject}\n"
+            "输出 JSON：{\"doc_type\":\"...\",\"blocks\":[{\"label\":\"...\",\"summary\":\"...\","
+            '"type":"topic_area|exercise_only|fuzzy|word_list|appendix","start_marker":"...","end_marker":"..."}]'
+        )
     user = f"文档全文:\n```text\n{full_text}\n```\n请分析并返回 JSON。"
 
     fallback = {"doc_type": "unknown", "blocks": []}

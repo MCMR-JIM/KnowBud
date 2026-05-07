@@ -984,3 +984,87 @@ def test_structured_ingestion_skips_wordlist(tmp_path: Path) -> None:
         assert segments[0].proposal_id is None
     finally:
         backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
+
+
+def test_english_scan_identifies_grammar_points(tmp_path: Path) -> None:
+    from src.services.document_ingestion import _fast_document_scan, TextUnit
+
+    backend = _build_backend(tmp_path)
+    backend.llm_skill.client.api_key = "test_key"
+
+    def mock_create(**kwargs):
+        return _llm_resp({
+            "doc_type": "textbook",
+            "blocks": [
+                {"label": "Unit 5", "summary": "Present Continuous vs Simple Present",
+                 "type": "grammar_point", "start_marker": "Unit 5", "end_marker": "Unit 6"},
+            ]
+        })
+
+    backend.llm_skill._orig = backend.llm_skill.client.chat.completions.create
+    backend.llm_skill.client.chat.completions.create = mock_create
+
+    try:
+        chunks = [TextUnit(text="Unit 5\nPresent Continuous: He is running.", locator={})]
+        result = _fast_document_scan(backend, chunks, "language", "english")
+        blocks = result.get("blocks", [])
+        assert len(blocks) >= 1
+        assert blocks[0]["type"] == "grammar_point"
+    finally:
+        backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
+
+
+def test_english_scan_identifies_vocabulary_themes(tmp_path: Path) -> None:
+    from src.services.document_ingestion import _fast_document_scan, TextUnit
+
+    backend = _build_backend(tmp_path)
+    backend.llm_skill.client.api_key = "test_key"
+
+    def mock_create(**kwargs):
+        return _llm_resp({
+            "doc_type": "textbook",
+            "blocks": [
+                {"label": "Unit 7", "summary": "School Rules vocabulary",
+                 "type": "vocabulary_theme", "start_marker": "Unit 7", "end_marker": ""},
+            ]
+        })
+
+    backend.llm_skill._orig = backend.llm_skill.client.chat.completions.create
+    backend.llm_skill.client.chat.completions.create = mock_create
+
+    try:
+        chunks = [TextUnit(text="Unit 7\nSchool Rules: must, mustn't, should.", locator={})]
+        result = _fast_document_scan(backend, chunks, "language", "english")
+        blocks = result.get("blocks", [])
+        assert len(blocks) >= 1
+        assert blocks[0]["type"] == "vocabulary_theme"
+    finally:
+        backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
+
+
+def test_chinese_scan_identifies_poetry(tmp_path: Path) -> None:
+    from src.services.document_ingestion import _fast_document_scan, TextUnit
+
+    backend = _build_backend(tmp_path)
+    backend.llm_skill.client.api_key = "test_key"
+
+    def mock_create(**kwargs):
+        return _llm_resp({
+            "doc_type": "textbook",
+            "blocks": [
+                {"label": "第5课", "summary": "静夜思",
+                 "type": "poetry", "start_marker": "第5课", "end_marker": "第6课"},
+            ]
+        })
+
+    backend.llm_skill._orig = backend.llm_skill.client.chat.completions.create
+    backend.llm_skill.client.chat.completions.create = mock_create
+
+    try:
+        chunks = [TextUnit(text="第5课\n静夜思 李白\n床前明月光，疑是地上霜。", locator={})]
+        result = _fast_document_scan(backend, chunks, "language", "chinese")
+        blocks = result.get("blocks", [])
+        assert len(blocks) >= 1
+        assert blocks[0]["type"] == "poetry"
+    finally:
+        backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
