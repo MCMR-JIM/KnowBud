@@ -810,29 +810,37 @@ def get_knowledge_graph() -> KnowledgeGraphResponse:
 
 def _classify_subject_by_title(backend: "SessionBackend", title: str) -> tuple[str, str | None]:
     import json as _json
+    import re as _re
 
-    system = (
-        "你是学科分类助手。给定一个学科或课程名称，输出最匹配的学科分类。\n"
-        "可选学科: math, language, physics, chemistry, biology, history, geography, science\n"
-        "如果是语言学科（英语/语文/日语等），同时输出 language_id (english/chinese/japanese等)。\n"
-        '返回 JSON: {"subject":"science","language_id":null}'
-    )
-    user = f"学科名: {title}"
-    try:
-        client = backend.llm_skill.client
-        response = client.chat.completions.create(
-            model=backend.llm_skill.model_name,
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-            temperature=0.1, timeout=15.0,
+    # Slugify for unique subject namespace
+    slug = _re.sub(r"[^a-zA-Z0-9\u4e00-\u9fff]+", "_", title).strip("_").lower()[:20] or "custom"
+
+    # Only use LLM for language detection
+    is_lang = any(kw in title for kw in ["英语", "语文", "中文", "english", "chinese", "日语", "韩语"])
+    if is_lang:
+        system = (
+            "你是语言分类助手。判断学科名属于哪种语言。\n"
+            '返回 JSON: {"language_id":"english|chinese|japanese|korean|null"}'
         )
-        raw = (response.choices[0].message.content or "").strip()
-        data = _json.loads(raw)
-        subj = data.get("subject", "science")
-        lang = data.get("language_id")
-        valid = {"math", "language", "physics", "chemistry", "biology", "history", "geography", "science"}
-        return (subj if subj in valid else "science"), (lang if isinstance(lang, str) else None)
-    except Exception:
-        return "science", None
+        user = f"学科名: {title}"
+        try:
+            client = backend.llm_skill.client
+            response = client.chat.completions.create(
+                model=backend.llm_skill.model_name,
+                messages=[{"role":"system","content":system},{"role":"user","content":user}],
+                temperature=0.1, timeout=15.0,
+            )
+            raw = response.choices[0].message.content.strip()
+            data = _json.loads(raw)
+            lang = data.get("language_id")
+            if lang in {"english", "chinese", "japanese", "korean"}:
+                return "language", lang
+        except Exception:
+            pass
+        return "language", None
+
+    # Non-language: use slug as unique subject key
+    return slug, None
 
 
 @app.post("/v1/knowledge/subject", tags=["knowledge"])
