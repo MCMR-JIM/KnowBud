@@ -1,33 +1,50 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { BookOpen, AlertCircle, Clock, Video, Info } from 'lucide-react';
+import { AlertCircle, BookOpen, Clock, FileText, Info, Pencil, Plus, Trash2, UploadCloud, Video, X } from 'lucide-react';
 import { API_BASE } from '../api/config';
 import { KnowledgeAPI, ResourceAPI } from '../api/client';
+
+type GraphTopic = {
+  topic_id: string;
+  title: string;
+  difficulty?: number;
+  parent_ids?: string[];
+  prerequisite_ids?: string[];
+  tags?: string[];
+  resources?: unknown[];
+};
+
+type TopicResource = {
+  resource_id: string;
+  resource_name: string;
+  media_type: string;
+  original_filename: string;
+  size_bytes: number;
+  ingestion_status: string;
+};
+
+type SubjectModalMode = 'create' | 'edit';
 
 export default function AdminDashboard() {
   const navigate = useNavigate();
   const apiBaseUrl = API_BASE;
   // 核心状态
   const [activeTab, setActiveTab] = useState('task');
-  const [resourceName, setResourceName] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [uploadFile, setUploadFile] = useState<File | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const [isDragging, setIsDragging] = useState(false);
-  const [selectedUploadTopicId, setSelectedUploadTopicId] = useState('');
   const [selectedPushTopicId, setSelectedPushTopicId] = useState('');
-  const [uploadCategory, setUploadCategory] = useState<'learn' | 'review'>('learn');
   const [knowledgeTopics, setKnowledgeTopics] = useState<{ topicId: string; title: string }[]>([]);
-  const [lastUploadSummary, setLastUploadSummary] = useState<{
-    resourceId: string;
-    mediaType: string;
-    segmentCount: number;
-    classifiedCount: number;
-    proposedCount: number;
-    unclassifiedCount: number;
-    parseFailedCount: number;
-    unsupportedCount: number;
-  } | null>(null);
+  const [subjectModalOpen, setSubjectModalOpen] = useState(false);
+  const [subjectModalMode, setSubjectModalMode] = useState<SubjectModalMode>('create');
+  const [editingSubject, setEditingSubject] = useState<GraphTopic | null>(null);
+  const [subjectName, setSubjectName] = useState('');
+  const [pendingResourceFiles, setPendingResourceFiles] = useState<File[]>([]);
+  const [existingSubjectResources, setExistingSubjectResources] = useState<TopicResource[]>([]);
+  const [modalDragging, setModalDragging] = useState(false);
+  const [modalSaving, setModalSaving] = useState(false);
+  const [modalResourceLoading, setModalResourceLoading] = useState(false);
+  const [deletingSubjectId, setDeletingSubjectId] = useState('');
+  const [deletingResourceId, setDeletingResourceId] = useState('');
+  const modalFileInputRef = useRef<HTMLInputElement>(null);
 
   // 后端真实数据
   const [learningData, setLearningData] = useState({
@@ -50,7 +67,7 @@ export default function AdminDashboard() {
   const [engineLogs, setEngineLogs] = useState<string[]>([]);
   const [dataLoading, setDataLoading] = useState(false);
   // 知识图谱状态
-  const [graphNodes, setGraphNodes] = useState<any[]>([]);
+  const [graphNodes, setGraphNodes] = useState<GraphTopic[]>([]);
   const [selectedNode, setSelectedNode] = useState<any | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
 
@@ -81,12 +98,11 @@ export default function AdminDashboard() {
       if (graphRes.ok) {
         const graphData = await graphRes.json();
         // 原来的处理逻辑
-        const topics = (graphData.topics || []).map((topic: any) => ({
+        const topics = ((graphData.topics || []) as GraphTopic[]).map((topic) => ({
           topicId: topic.topic_id,
           title: topic.title,
         }));
         setKnowledgeTopics(topics);
-        setSelectedUploadTopicId((prev) => topics.some((topic: { topicId: string }) => topic.topicId === prev) ? prev : (topics[0]?.topicId || ''));
         setSelectedPushTopicId((prev) => topics.some((topic: { topicId: string }) => topic.topicId === prev) ? prev : (topics[0]?.topicId || ''));
         
         // 【新增】保存完整的知识图谱节点，供右侧渲染使用
@@ -288,9 +304,20 @@ export default function AdminDashboard() {
     );
   };
 
+  const subjectTag = (tags: string[] = []) => {
+    const tag = tags.find((item) => item.startsWith('subject:'));
+    return tag ? tag.slice('subject:'.length) : '';
+  };
+
+  const subjectLanguageId = (tags: string[] = []) => {
+    const tag = tags.find((item) => item.startsWith('language:'));
+    return tag ? tag.slice('language:'.length) : null;
+  };
+
+  const stripFileExtension = (filename: string) => filename.replace(/\.[^.]+$/, '') || filename;
+
   // 文件校验逻辑
-  const validateAndSetFile = (file: File) => {
-    // 支持学习场景常用格式
+  const validateResourceFile = (file: File) => {
     const allowedTypes = [
       'video/mp4', 'video/mpeg', 'video/avi', 'video/mov', 'video/quicktime',
       'audio/mpeg', 'audio/wav', 'audio/x-wav', 'audio/mp4', 'audio/aac', 'audio/ogg',
@@ -313,90 +340,209 @@ export default function AdminDashboard() {
       return false;
     }
 
-    setUploadFile(file);
-    setResourceName(file.name.split('.')[0]);
-    setLastUploadSummary(null);
     return true;
   };
 
-  // 点击选择文件
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    validateAndSetFile(file);
+  const addResourceFiles = (files: FileList | File[] | null) => {
+    if (!files) return;
+    const validFiles = Array.from(files).filter(validateResourceFile);
+    if (validFiles.length === 0) return;
+
+    setPendingResourceFiles((prev) => {
+      const existingKeys = new Set(prev.map((file) => `${file.name}-${file.size}-${file.lastModified}`));
+      const nextFiles = validFiles.filter((file) => !existingKeys.has(`${file.name}-${file.size}-${file.lastModified}`));
+      return [...prev, ...nextFiles];
+    });
   };
 
-  // 拖拽事件
-  const handleDragEnter = (e: React.DragEvent) => {
+  const handleModalFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    addResourceFiles(e.target.files);
+    e.target.value = '';
+  };
+
+  const handleModalDragEnter = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
-    setIsDragging(true);
+    setModalDragging(true);
   };
 
-  const handleDragOver = (e: React.DragEvent) => {
+  const handleModalDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
-    setIsDragging(true);
+    setModalDragging(true);
   };
 
-  const handleDragLeave = (e: React.DragEvent) => {
+  const handleModalDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
     if (e.currentTarget.contains(e.relatedTarget as Node)) return;
-    setIsDragging(false);
+    setModalDragging(false);
   };
 
-  const handleDrop = (e: React.DragEvent) => {
+  const handleModalDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
-    setIsDragging(false);
-
-    const file = e.dataTransfer.files?.[0];
-    if (!file) return;
-    validateAndSetFile(file);
+    setModalDragging(false);
+    addResourceFiles(e.dataTransfer.files);
   };
 
-  // 提交文件上传
-  const handleUploadSubmit = async () => {
-    if (!uploadFile || !resourceName.trim() || !selectedUploadTopicId) {
-      alert("请选择知识节点、文件并填写资源名称");
+  const resetSubjectModal = () => {
+    setSubjectModalMode('create');
+    setEditingSubject(null);
+    setSubjectName('');
+    setPendingResourceFiles([]);
+    setExistingSubjectResources([]);
+    setModalDragging(false);
+    setModalResourceLoading(false);
+    setDeletingResourceId('');
+  };
+
+  const openCreateSubjectModal = () => {
+    resetSubjectModal();
+    setSubjectModalOpen(true);
+  };
+
+  const openEditSubjectModal = async (topic: GraphTopic) => {
+    resetSubjectModal();
+    setSubjectModalMode('edit');
+    setEditingSubject(topic);
+    setSubjectName(topic.title);
+    setSubjectModalOpen(true);
+    setModalResourceLoading(true);
+    try {
+      const res = await ResourceAPI.getTopicResources(topic.topic_id);
+      setExistingSubjectResources((res.data?.resources || []) as TopicResource[]);
+    } catch (error) {
+      console.error('加载资源失败', error);
+      setExistingSubjectResources([]);
+    } finally {
+      setModalResourceLoading(false);
+    }
+  };
+
+  const closeSubjectModal = () => {
+    if (modalSaving) return;
+    setSubjectModalOpen(false);
+    resetSubjectModal();
+  };
+
+  const pollResourceIngestion = (resourceId: string) => {
+    const intervalId = window.setInterval(async () => {
+      try {
+        const statusRes = await ResourceAPI.getResourceIngestionStatus(resourceId);
+        const status = statusRes.data?.status;
+        if (status === 'completed' || status === 'failed') {
+          window.clearInterval(intervalId);
+          void fetchAllData();
+        }
+      } catch (error) {
+        console.error('轮询资源解析状态失败', error);
+        window.clearInterval(intervalId);
+      }
+    }, 3000);
+  };
+
+  const uploadPendingFilesForSubject = async (topicId: string, tags: string[]) => {
+    const subject = subjectTag(tags);
+    const languageId = subjectLanguageId(tags);
+    for (const file of pendingResourceFiles) {
+      const res = await ResourceAPI.uploadResource({
+        file,
+        topicId,
+        resourceName: stripFileExtension(file.name),
+        category: 'learn',
+        subject,
+        languageId,
+      });
+      const resourceId = res.data?.resource?.resource_id;
+      if (resourceId) pollResourceIngestion(resourceId);
+    }
+  };
+
+  const handleSaveSubject = async () => {
+    const normalizedName = subjectName.trim();
+    if (!normalizedName) {
+      alert('请输入学科名');
       return;
     }
 
-    setUploading(true);
+    setModalSaving(true);
     try {
-      const res = await ResourceAPI.uploadResource({
-        file: uploadFile,
-        topicId: selectedUploadTopicId,
-        resourceName,
-        category: uploadCategory,
-      });
+      let topicId = editingSubject?.topic_id || '';
+      let tags = editingSubject?.tags || [];
 
-      const resource = res.data?.resource;
-      const resourceId = resource?.resource_id;
-      const segmentRes = resourceId ? await ResourceAPI.getResourceSegments(resourceId) : null;
-      const segments = segmentRes?.data?.segments || resource?.segments || [];
-      setLastUploadSummary({
-        resourceId: resourceId || '',
-        mediaType: resource?.media_type || '',
-        segmentCount: segments.length,
-        classifiedCount: segments.filter((segment: any) => segment.status === 'classified').length,
-        proposedCount: segments.filter((segment: any) => segment.status === 'proposed').length,
-        unclassifiedCount: segments.filter((segment: any) => segment.status === 'unclassified').length,
-        parseFailedCount: segments.filter((segment: any) => segment.status === 'parse_failed').length,
-        unsupportedCount: segments.filter((segment: any) => segment.status === 'unsupported').length,
-      });
+      if (subjectModalMode === 'create') {
+        const res = await KnowledgeAPI.createSubject(normalizedName);
+        topicId = res.data?.topic_id;
+        tags = res.data?.tags || [];
+      } else if (editingSubject && normalizedName !== editingSubject.title) {
+        const res = await KnowledgeAPI.updateSubject(editingSubject.topic_id, normalizedName);
+        topicId = res.data?.topic_id || editingSubject.topic_id;
+        tags = res.data?.tags || editingSubject.tags || [];
+      }
 
-      alert("✅ 资源上传成功，已绑定到知识节点");
-      setUploadFile(null);
-      setResourceName("");
-      fetchAllData();
+      if (!topicId) throw new Error('学科创建失败');
+
+      await uploadPendingFilesForSubject(topicId, tags);
+      setSubjectModalOpen(false);
+      resetSubjectModal();
+      await fetchAllData();
     } catch (error) {
-      console.error("上传失败", error);
-      alert("❌ 无法连接后端上传服务");
+      console.error('保存学科失败', error);
+      alert('保存失败，请检查后端服务');
     } finally {
-      setUploading(false);
+      setModalSaving(false);
     }
+  };
+
+  const handleDeleteSubject = async (topic: GraphTopic) => {
+    if (!window.confirm(`确定删除「${topic.title}」以及其下的知识节点和资源吗？`)) return;
+
+    setDeletingSubjectId(topic.topic_id);
+    try {
+      await KnowledgeAPI.deleteSubject(topic.topic_id);
+      if (editingSubject?.topic_id === topic.topic_id) closeSubjectModal();
+      await fetchAllData();
+    } catch (error) {
+      console.error('删除学科失败', error);
+      alert('删除失败，请检查后端服务');
+    } finally {
+      setDeletingSubjectId('');
+    }
+  };
+
+  const handleDeleteExistingResource = async (resource: TopicResource) => {
+    if (!window.confirm(`确定删除资源「${resource.resource_name}」吗？`)) return;
+
+    setDeletingResourceId(resource.resource_id);
+    try {
+      await ResourceAPI.deleteResource(resource.resource_id);
+      setExistingSubjectResources((prev) => prev.filter((item) => item.resource_id !== resource.resource_id));
+      void fetchAllData();
+    } catch (error) {
+      console.error('删除资源失败', error);
+      alert('删除资源失败，请检查后端服务');
+    } finally {
+      setDeletingResourceId('');
+    }
+  };
+
+  const subjectRoots = graphNodes.filter((topic) => (topic.tags || []).includes('facet:root'));
+
+  const countNodesUnderRoot = (rootId: string) => {
+    const childIds = new Set<string>();
+
+    const walk = (parentId: string) => {
+      for (const topic of graphNodes) {
+        if (!(topic.parent_ids || []).includes(parentId) && !(topic.prerequisite_ids || []).includes(parentId)) continue;
+        if (childIds.has(topic.topic_id)) continue;
+        childIds.add(topic.topic_id);
+        walk(topic.topic_id);
+      }
+    };
+
+    walk(rootId);
+    return childIds.size;
   };
 
   // 任务推送功能
@@ -516,95 +662,92 @@ export default function AdminDashboard() {
         {activeTab === 'task' && (
           <div className="bg-white/80 backdrop-blur rounded-2xl p-6 shadow-sm space-y-6">
             <div>
-              <h2 className="text-lg font-semibold text-pink-500 mb-4">上传今日学习资源</h2>
-              <p className="text-xs text-gray-400 mb-2">教学媒体文件（支持视频/音频/图片/PDF/Word/PPT/TXT，单文件最大500MB）</p>
-              
-              <div 
-                onClick={() => document.getElementById('file-upload')?.click()}
-                onDragEnter={handleDragEnter}
-                onDragOver={handleDragOver}
-                onDragLeave={handleDragLeave}
-                onDrop={handleDrop}
-                className={`border-2 border-dashed rounded-lg p-8 mb-4 text-center cursor-pointer transition-all duration-200 ${
-                  isDragging 
-                    ? 'border-pink-400 bg-pink-50' 
-                    : 'border-gray-200 hover:border-pink-300'
-                }`}
-              >
-                <input
-                  id="file-upload"
-                  type="file"
-                  accept="video/*,audio/*,image/*,.pdf,.txt,.doc,.docx,.ppt,.pptx"
-                  onChange={handleFileSelect}
-                  className="hidden"
-                />
-                {uploadFile ? (
-                  <div>
-                    <p className="text-sm font-medium text-pink-600">已选择：{uploadFile.name}</p>
-                    <p className="text-xs text-gray-400 mt-1">大小：{(uploadFile.size / 1024 / 1024).toFixed(2)} MB</p>
-                  </div>
-                ) : (
-                  <div>
-                    <p className="text-sm text-gray-500">点击选择文件，或拖拽文件到此处</p>
-                    {isDragging && <p className="text-sm text-pink-500 mt-2 font-medium">松开鼠标即可上传</p>}
-                  </div>
-                )}
+              <div className="mb-5 flex items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-xl font-black text-gray-800">学科资源配置</h2>
+                  <p className="mt-1 text-xs text-gray-400">两列卡片管理学科；新建或编辑时上传学习资源，单文件最大 500MB。</p>
+                </div>
+                <span className="rounded-full border border-pink-100 bg-pink-50 px-3 py-1 text-xs font-semibold text-pink-600">
+                  {subjectRoots.length} 个学科
+                </span>
               </div>
 
-              <div className="mb-4">
-                <label className="text-sm text-gray-500 mb-1 block">知识节点</label>
-                <select
-                  value={selectedUploadTopicId}
-                  onChange={(e) => setSelectedUploadTopicId(e.target.value)}
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-pink-200"
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                {subjectRoots.map((root) => {
+                  const nodeCount = countNodesUnderRoot(root.topic_id);
+                  const isDeleting = deletingSubjectId === root.topic_id;
+                  return (
+                    <div
+                      key={root.topic_id}
+                      onClick={() => void openEditSubjectModal(root)}
+                      className="group relative min-h-[180px] cursor-pointer overflow-hidden rounded-[28px] border-2 border-solid border-pink-200 bg-gradient-to-br from-white via-rose-50/80 to-amber-50 p-5 shadow-sm transition-all hover:-translate-y-0.5 hover:border-pink-300 hover:shadow-xl"
+                    >
+                      <div className="absolute -right-10 -top-12 h-32 w-32 rounded-full bg-pink-200/30 blur-2xl transition-transform group-hover:scale-125"></div>
+                      <div className="relative flex items-start justify-between gap-3">
+                        <div className="pt-1">
+                          <span className="rounded-full bg-white/80 px-2.5 py-1 text-[11px] font-bold text-pink-500 shadow-sm">已配置</span>
+                          <h3 className="mt-4 max-w-[14rem] truncate text-2xl font-black tracking-tight text-gray-800">{root.title}</h3>
+                        </div>
+                        <div className="flex shrink-0 gap-2">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void openEditSubjectModal(root);
+                            }}
+                            className="rounded-full border border-pink-100 bg-white/90 p-2 text-gray-500 shadow-sm transition-colors hover:border-pink-200 hover:text-pink-600"
+                            aria-label={`编辑${root.title}`}
+                          >
+                            <Pencil size={16} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void handleDeleteSubject(root);
+                            }}
+                            disabled={isDeleting}
+                            className="rounded-full border border-red-100 bg-white/90 p-2 text-gray-400 shadow-sm transition-colors hover:border-red-200 hover:text-red-500 disabled:opacity-50"
+                            aria-label={`删除${root.title}`}
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="relative mt-8 grid grid-cols-2 gap-3 text-xs text-gray-500">
+                        <div className="rounded-2xl border border-white/80 bg-white/70 p-3">
+                          <p className="font-bold text-gray-700">{nodeCount}</p>
+                          <p>知识节点</p>
+                        </div>
+                        <div className="rounded-2xl border border-white/80 bg-white/70 p-3">
+                          <p className="font-bold text-gray-700">{subjectTag(root.tags || []) || 'custom'}</p>
+                          <p>学科标识</p>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+
+                <button
+                  type="button"
+                  onClick={openCreateSubjectModal}
+                  className="group flex min-h-[180px] items-center justify-center rounded-[28px] border-2 border-dashed border-pink-200 bg-white/65 p-5 text-center shadow-sm transition-all hover:-translate-y-0.5 hover:border-pink-400 hover:bg-pink-50/60 hover:shadow-xl"
                 >
-                  <option value="">请选择知识节点</option>
-                  {knowledgeTopics.map((topic) => (
-                    <option key={topic.topicId} value={topic.topicId}>{topic.title}</option>
-                  ))}
-                </select>
+                  <div className="flex flex-col items-center gap-3">
+                    <div className="flex h-16 w-16 items-center justify-center rounded-full bg-gradient-to-br from-pink-500 to-rose-400 text-white shadow-lg shadow-pink-200 transition-transform group-hover:scale-110">
+                      <Plus size={34} strokeWidth={2.8} />
+                    </div>
+                    <div>
+                      <p className="text-base font-black text-gray-800">新建学科</p>
+                      <p className="mt-1 text-xs text-gray-400">添加名称并导入资源</p>
+                    </div>
+                  </div>
+                </button>
               </div>
-              <div className="mb-4">
-                <label className="text-sm text-gray-500 mb-1 block">资源名称</label>
-                <input
-                  type="text"
-                  value={resourceName}
-                  onChange={(e) => setResourceName(e.target.value)}
-                  placeholder="请输入资源名称"
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-pink-200"
-                />
-              </div>
-              <div className="mb-4">
-                <label className="text-sm text-gray-500 mb-1 block">资源用途</label>
-                <select
-                  value={uploadCategory}
-                  onChange={(e) => setUploadCategory(e.target.value as 'learn' | 'review')}
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-pink-200"
-                >
-                  <option value="learn">主线学习资源</option>
-                  <option value="review">复习资源并加入队列</option>
-                </select>
-              </div>
-              <button
-                onClick={handleUploadSubmit}
-                disabled={uploading || !uploadFile}
-                className="bg-pink-100 text-pink-600 px-4 py-2 rounded-lg text-sm hover:bg-pink-200 transition-colors cursor-pointer disabled:opacity-50"
-              >
-                {uploading ? "上传中..." : "保存配置并生成题库"}
-              </button>
-              {lastUploadSummary && (
-                <div className="mt-4 rounded-lg border border-pink-100 bg-pink-50 p-3 text-xs text-gray-700 space-y-1">
-                  <p className="font-medium text-pink-600">文档处理结果</p>
-                  <p>资源 ID：{lastUploadSummary.resourceId}</p>
-                  <p>类型：{lastUploadSummary.mediaType || 'unknown'}</p>
-                  <p>分段总数：{lastUploadSummary.segmentCount}</p>
-                  <p>已归类：{lastUploadSummary.classifiedCount}，候选提案：{lastUploadSummary.proposedCount}</p>
-                  <p>未归类：{lastUploadSummary.unclassifiedCount}，解析失败：{lastUploadSummary.parseFailedCount}，暂不支持：{lastUploadSummary.unsupportedCount}</p>
-                </div>
-              )}
             </div>
 
-            <div>
+            <div className="rounded-[24px] border border-gray-100 bg-white/70 p-5">
               <h2 className="text-lg font-semibold text-gray-700 mb-4">派发学习任务</h2>
               <div className="mb-3">
                 <label className="text-sm text-gray-500 mb-1 block">知识节点</label>
@@ -958,6 +1101,180 @@ export default function AdminDashboard() {
           </div>
         )}
       </div>
+
+      {subjectModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-gray-950/45 p-4 backdrop-blur-sm"
+          onMouseDown={closeSubjectModal}
+        >
+          <div
+            className="w-full max-w-2xl overflow-hidden rounded-[32px] border border-white/70 bg-white shadow-2xl"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="relative overflow-hidden bg-gradient-to-br from-pink-500 via-rose-400 to-orange-300 p-6 text-white">
+              <div className="absolute -right-12 -top-16 h-44 w-44 rounded-full bg-white/20 blur-2xl"></div>
+              <div className="relative flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-[0.28em] text-white/75">Subject Studio</p>
+                  <h2 className="mt-2 text-2xl font-black">
+                    {subjectModalMode === 'create' ? '新建学科' : '编辑学科'}
+                  </h2>
+                  <p className="mt-1 text-sm text-white/80">填写学科名，并把课件、文档、音视频资料放入下方列表。</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeSubjectModal}
+                  disabled={modalSaving}
+                  className="rounded-full bg-white/15 p-2 text-white transition-colors hover:bg-white/25 disabled:opacity-50"
+                  aria-label="关闭弹窗"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-5 p-6">
+              <div>
+                <label className="mb-2 block text-sm font-bold text-gray-700">学科名</label>
+                <input
+                  type="text"
+                  value={subjectName}
+                  onChange={(e) => setSubjectName(e.target.value)}
+                  placeholder="例如：数学、英语阅读、物理实验"
+                  className="w-full rounded-2xl border border-pink-100 bg-pink-50/40 px-4 py-3 text-base font-semibold text-gray-800 shadow-inner outline-none transition-all placeholder:text-gray-400 focus:border-pink-300 focus:bg-white focus:ring-4 focus:ring-pink-100"
+                />
+              </div>
+
+              <div
+                onDragEnter={handleModalDragEnter}
+                onDragOver={handleModalDragOver}
+                onDragLeave={handleModalDragLeave}
+                onDrop={handleModalDrop}
+                className="relative rounded-[24px] border border-gray-200 bg-gray-50/80 p-4"
+              >
+                <input
+                  ref={modalFileInputRef}
+                  type="file"
+                  multiple
+                  accept="video/*,audio/*,image/*,.pdf,.txt,.doc,.docx,.ppt,.pptx"
+                  onChange={handleModalFileSelect}
+                  className="hidden"
+                />
+
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-black text-gray-800">资源列表</h3>
+                    <p className="text-xs text-gray-400">拖入文件直接导入，也可以使用右侧加号选择。</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => modalFileInputRef.current?.click()}
+                    className="flex h-10 w-10 items-center justify-center rounded-full bg-gray-900 text-white shadow-lg shadow-gray-200 transition-transform hover:scale-105"
+                    aria-label="选择文件"
+                  >
+                    <Plus size={22} />
+                  </button>
+                </div>
+
+                <div className={`max-h-72 space-y-2 overflow-y-auto pr-1 transition-all ${modalDragging ? 'blur-[2px]' : ''}`}>
+                  {modalResourceLoading && (
+                    <div className="rounded-2xl border border-dashed border-gray-200 bg-white p-5 text-center text-sm text-gray-400">
+                      正在读取已有资源...
+                    </div>
+                  )}
+
+                  {!modalResourceLoading && existingSubjectResources.map((resource) => (
+                    <div key={resource.resource_id} className="flex items-center justify-between gap-3 rounded-2xl border border-gray-100 bg-white px-4 py-3 shadow-sm">
+                      <div className="flex min-w-0 items-center gap-3">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-pink-50 text-pink-500">
+                          <FileText size={18} />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-bold text-gray-800">{resource.resource_name}</p>
+                          <p className="text-xs text-gray-400">
+                            {resource.media_type || 'file'} · {(resource.size_bytes / 1024 / 1024).toFixed(2)} MB · {resource.ingestion_status}
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void handleDeleteExistingResource(resource)}
+                        disabled={deletingResourceId === resource.resource_id}
+                        className="rounded-full p-2 text-gray-400 transition-colors hover:bg-red-50 hover:text-red-500 disabled:opacity-50"
+                        aria-label={`删除资源${resource.resource_name}`}
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  ))}
+
+                  {pendingResourceFiles.map((file, index) => (
+                    <div key={`${file.name}-${file.size}-${file.lastModified}`} className="flex items-center justify-between gap-3 rounded-2xl border border-amber-100 bg-amber-50/70 px-4 py-3">
+                      <div className="flex min-w-0 items-center gap-3">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white text-amber-500">
+                          <FileText size={18} />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-bold text-gray-800">{file.name}</p>
+                          <p className="text-xs text-amber-700/70">待上传 · {(file.size / 1024 / 1024).toFixed(2)} MB</p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setPendingResourceFiles((prev) => prev.filter((_, itemIndex) => itemIndex !== index))}
+                        className="rounded-full p-2 text-amber-700/60 transition-colors hover:bg-white hover:text-amber-800"
+                        aria-label={`移除待上传资源${file.name}`}
+                      >
+                        <X size={16} />
+                      </button>
+                    </div>
+                  ))}
+
+                  {!modalResourceLoading && existingSubjectResources.length === 0 && pendingResourceFiles.length === 0 && (
+                    <div className="rounded-2xl border border-dashed border-gray-200 bg-white p-8 text-center">
+                      <UploadCloud className="mx-auto text-gray-300" size={42} />
+                      <p className="mt-3 text-sm font-semibold text-gray-500">还没有资源</p>
+                      <p className="mt-1 text-xs text-gray-400">拖入文件，或点击右上角加号导入。</p>
+                    </div>
+                  )}
+                </div>
+
+                {modalDragging && (
+                  <div className="absolute inset-4 z-10 flex flex-col items-center justify-center rounded-[22px] border-2 border-dashed border-pink-300 bg-white/80 text-pink-600 shadow-2xl backdrop-blur-md">
+                    <UploadCloud size={58} strokeWidth={1.8} />
+                    <p className="mt-3 text-lg font-black">松开导入资源</p>
+                    <p className="mt-1 text-xs text-pink-400">支持视频、音频、图片、PDF、Word、PPT、TXT</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-3 border-t border-gray-100 bg-gray-50 px-6 py-4">
+              <p className="text-xs text-gray-400">
+                {pendingResourceFiles.length > 0 ? `${pendingResourceFiles.length} 个资源等待上传` : '保存后会刷新学科卡片'}
+              </p>
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={closeSubjectModal}
+                  disabled={modalSaving}
+                  className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-600 transition-colors hover:bg-gray-100 disabled:opacity-50"
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleSaveSubject()}
+                  disabled={modalSaving || !subjectName.trim()}
+                  className="rounded-xl bg-gray-900 px-5 py-2 text-sm font-bold text-white shadow-lg shadow-gray-200 transition-colors hover:bg-pink-600 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {modalSaving ? '保存中...' : subjectModalMode === 'create' ? '创建并导入' : '保存修改'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

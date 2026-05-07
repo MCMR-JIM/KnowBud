@@ -1,10 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
-import { useSearchParams, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, BookOpen, Search, Smile, Mic, Send, Zap, Loader2, Volume2, Check, MessageCircle } from 'lucide-react';
 import PdfViewer from '../components/PdfViewer';
 import CelebrationModal from '../components/CelebrationModal';
 import { SessionAPI } from '../api/client';
-import { API_BASE } from '../api/config';
 
 // ---------------- 模块一：左下角纯净版数据卡片 (与兔头分离) ----------------
 const UserStatsCard = () => (
@@ -163,7 +162,6 @@ const InteractionCard = ({ state, onSend, onSelect, isLoading, isRecording, onSt
 
 // ---------------- 主容器 ----------------
 export default function StudyRoom() {
-  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
 
   const [interactionState, setInteractionState] = useState<any>({ type: 'none', message: '' });

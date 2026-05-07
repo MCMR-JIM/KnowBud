@@ -135,6 +135,137 @@ class SessionBackend:
         state = self.load_app_state(include_history=False)
         return next((topic for topic in state.curriculum.topics if topic.topic_id == topic_id), None)
 
+    def update_subject_root(
+        self,
+        topic_id: str,
+        title: str,
+        *,
+        subject: str | None = None,
+        language_id: str | None = None,
+    ) -> TopicNode | None:
+        normalized_title = title.strip()
+        if not normalized_title:
+            raise ValueError("title is required")
+
+        state = self.load_app_state(include_history=False)
+        topic = next((item for item in state.curriculum.topics if item.topic_id == topic_id), None)
+        if topic is None:
+            return None
+
+        topic.title = normalized_title
+        if subject:
+            preserved_tags = [
+                tag for tag in topic.tags
+                if not tag.startswith("subject:") and not tag.startswith("language:") and tag != "facet:root"
+            ]
+            topic.tags = [f"subject:{subject}", "facet:root", *preserved_tags]
+            if language_id:
+                topic.tags.append(f"language:{language_id}")
+            topic.tags = list(dict.fromkeys(topic.tags))
+        now = datetime.datetime.now(timezone.utc).isoformat()
+        for proposal in state.learning.graph_proposals:
+            if proposal.created_topic_id != topic_id:
+                continue
+            proposal.title = normalized_title
+            if proposal.summary.startswith("学科：") or proposal.reason == "parent-created subject root":
+                proposal.summary = f"学科：{normalized_title}"
+            proposal.updated_ts = now
+
+        self.save_app_state(state)
+        return topic
+
+    def delete_topic_subtree(self, topic_id: str) -> dict[str, int] | None:
+        state = self.load_app_state(include_history=False)
+        if not any(topic.topic_id == topic_id for topic in state.curriculum.topics):
+            return None
+
+        topics = list(state.curriculum.topics)
+        topic_ids_to_delete: set[str] = set()
+
+        def collect_children(parent_id: str) -> None:
+            if parent_id in topic_ids_to_delete:
+                return
+            topic_ids_to_delete.add(parent_id)
+            for topic in topics:
+                if parent_id in topic.parent_ids or parent_id in topic.prerequisite_ids:
+                    collect_children(topic.topic_id)
+
+        collect_children(topic_id)
+
+        state.curriculum.topics = [topic for topic in topics if topic.topic_id not in topic_ids_to_delete]
+        for topic in state.curriculum.topics:
+            topic.parent_ids = [item for item in topic.parent_ids if item not in topic_ids_to_delete]
+            topic.prerequisite_ids = [item for item in topic.prerequisite_ids if item not in topic_ids_to_delete]
+
+        for deleted_topic_id in topic_ids_to_delete:
+            state.learning.mastery_map.pop(deleted_topic_id, None)
+            state.learning.shadow_observation_map.pop(deleted_topic_id, None)
+            state.learning.shadow_wrong_streak_map.pop(deleted_topic_id, None)
+
+        state.learning.review_queue = [item for item in state.learning.review_queue if item not in topic_ids_to_delete]
+        state.learning.error_book = [record for record in state.learning.error_book if record.topic_id not in topic_ids_to_delete]
+
+        now = datetime.datetime.now(timezone.utc).isoformat()
+        for proposal in state.learning.graph_proposals:
+            if proposal.created_topic_id in topic_ids_to_delete:
+                proposal.status = "rejected"
+                proposal.reason = "parent-deleted subject"
+            proposal.parent_node_ids = [item for item in proposal.parent_node_ids if item not in topic_ids_to_delete]
+            proposal.prerequisite_node_ids = [item for item in proposal.prerequisite_node_ids if item not in topic_ids_to_delete]
+            proposal.updated_ts = now
+
+        self.save_app_state(state)
+
+        resources_deleted = 0
+        for resource in self.list_all_resources():
+            if resource.topic_id in topic_ids_to_delete and self.delete_resource(resource.resource_id):
+                resources_deleted += 1
+
+        segments_unlinked = 0
+        for resource in self.list_all_resources():
+            changed = False
+            for segment in resource.segments:
+                if segment.topic_id not in topic_ids_to_delete:
+                    continue
+                segment.topic_id = None
+                segment.status = "unclassified"
+                segment.decision = "unclassified"
+                segment.reason = "subject deleted"
+                changed = True
+                segments_unlinked += 1
+            if changed:
+                self.replace_resource_segments(resource.resource_id, resource.segments)
+
+        return {
+            "deleted_topic_count": len(topic_ids_to_delete),
+            "deleted_resource_count": resources_deleted,
+            "unlinked_segment_count": segments_unlinked,
+        }
+
+    def delete_resource(self, resource_id: str) -> bool:
+        stored_path: str | None = None
+        with self._db_connection() as conn:
+            self._ensure_storage_initialized(conn)
+            row = conn.execute(
+                "SELECT stored_path FROM resource_library WHERE resource_id = ?",
+                (resource_id,),
+            ).fetchone()
+            if row is None:
+                return False
+
+            stored_path = str(row["stored_path"])
+            conn.execute("DELETE FROM resource_segments WHERE resource_id = ?", (resource_id,))
+            conn.execute("DELETE FROM resource_library WHERE resource_id = ?", (resource_id,))
+            conn.commit()
+
+        if stored_path:
+            try:
+                Path(stored_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+        return True
+
     def create_resource_record(
         self,
         *,

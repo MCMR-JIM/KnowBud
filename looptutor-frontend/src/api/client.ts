@@ -65,12 +65,16 @@ export const ResourceAPI = {
     topicId: string;
     resourceName: string;
     category?: 'learn' | 'review';
+    subject?: string;
+    languageId?: string | null;
   }) => {
     const formData = new FormData();
     formData.append('file', payload.file);
     formData.append('topic_id', payload.topicId);
     formData.append('resource_name', payload.resourceName);
     formData.append('category', payload.category || 'learn');
+    if (payload.subject) formData.append('subject', payload.subject);
+    if (payload.languageId) formData.append('language_id', payload.languageId);
     return apiClient.post('/resource/upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     });
@@ -78,9 +82,26 @@ export const ResourceAPI = {
   getTopicResources: (topicId: string) => apiClient.get(`/resource/topics/${topicId}`),
   getTopicTeachingCues: (topicId: string) => apiClient.get(`/resource/topics/${topicId}/teaching-cues`),
   getResourceSegments: (resourceId: string) => apiClient.get(`/resource/${resourceId}/segments`),
+  getResourceIngestionStatus: (resourceId: string) => apiClient.get(`/resource/${resourceId}/ingestion-status`),
+  deleteResource: (resourceId: string) => apiClient.delete(`/resource/${resourceId}`),
 };
 
 export const KnowledgeAPI = {
+  createSubject: (title: string) => {
+    const formData = new FormData();
+    formData.append('title', title);
+    return apiClient.post('/knowledge/subject', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    });
+  },
+  updateSubject: (topicId: string, title: string) => {
+    const formData = new FormData();
+    formData.append('title', title);
+    return apiClient.patch(`/knowledge/subject/${topicId}`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    });
+  },
+  deleteSubject: (topicId: string) => apiClient.delete(`/knowledge/subject/${topicId}`),
   getProposals: (params?: { status?: string; trigger?: string }) => apiClient.get('/knowledge/proposals', { params }),
   approveProposal: (proposalId: string, payload: Record<string, unknown> = {}) =>
     apiClient.post(`/knowledge/proposals/${proposalId}/approve`, payload),
