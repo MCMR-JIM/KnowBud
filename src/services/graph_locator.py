@@ -87,6 +87,81 @@ class GraphLocator:
         except Exception:
             return GraphPosition(exists=False, reason="LLM call failed")
 
+    def batch_locate(self, topics: list[dict]) -> dict:
+        if not self._topics or not topics:
+            return {"placements": {}, "relay_nodes": []}
+
+        graph_snapshot = self._build_graph_snapshot()
+        topics_json = json.dumps(
+            [{"title": t.get("title", ""), "desc": t.get("desc", "")[:500]} for t in topics],
+            ensure_ascii=False,
+        )
+        system = (
+            "你是知识图谱批量排列助手。\n"
+            "现有图结构(每行格式: [id, title, [前置id], [后继id]]):\n"
+            f"{graph_snapshot}\n\n"
+            "待安排的新节点:\n"
+            f"{topics_json}\n\n"
+            "任务:\n"
+            "1. 为每个新节点决定 parent_ids 和 successor_ids\n"
+            "2. 如果多个新节点可被共同概念归纳，创建中继节点(标题加[中继])，挂其下\n"
+            "3. 已有节点不要重复创建\n"
+            "4. 每个新节点标题必须出现在 placements 中\n"
+            "返回 JSON: {\"relay_nodes\":[{\"title\":\"XX[中继]\",\"children\":[\"a\",\"b\"]}],"
+            "\"placements\":{\"节点标题\":{\"parent_ids\":[],\"successor_ids\":[],\"reason\":\"...\"}}}"
+        )
+
+        try:
+            response = self._client.chat.completions.create(
+                model=self._model_name,
+                messages=[{"role": "system", "content": system}],
+                temperature=0.3, timeout=120.0,
+            )
+            raw = (response.choices[0].message.content or "").strip()
+            raw = re.sub(r"^```(?:json)?\s*", "", raw)
+            raw = re.sub(r"\s*```$", "", raw)
+            data = json.loads(raw)
+            if not isinstance(data, dict):
+                return {"placements": {}, "relay_nodes": []}
+            return {
+                "placements": data.get("placements") or {},
+                "relay_nodes": data.get("relay_nodes") or [],
+            }
+        except Exception:
+            return {"placements": {}, "relay_nodes": []}
+
+    def review_placements(self, placements: dict, graph_snapshot: str | None = None) -> dict:
+        if not placements:
+            return {"ok": True, "issues": []}
+
+        snap = graph_snapshot or self._build_graph_snapshot()
+        placements_json = json.dumps(placements, ensure_ascii=False)
+        system = (
+            "你是图谱审核助手。检查节点安排是否有明显问题。\n"
+            "检查规则:\n"
+            "1. 节点是否归到了错误的学科分支下\n"
+            "2. 前置关系是否倒置(后置概念成了前置)\n"
+            "3. 节点是否挂在了不相关的父节点下\n"
+            "不要求完美，只标记明显不合理处。\n"
+            "返回 JSON: {\"ok\":bool,\"issues\":[{\"title\":\"...\",\"problem\":\"...\",\"suggestion\":\"...\"}]}"
+        )
+        user = f"图结构:\n{snap}\n\n安排结果:\n{placements_json}\n请审核。"
+        try:
+            response = self._client.chat.completions.create(
+                model=self._model_name,
+                messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+                temperature=0.2, timeout=60.0,
+            )
+            raw = (response.choices[0].message.content or "").strip()
+            raw = re.sub(r"^```(?:json)?\s*", "", raw)
+            raw = re.sub(r"\s*```$", "", raw)
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                return {"ok": bool(data.get("ok", True)), "issues": data.get("issues") or []}
+            return {"ok": True, "issues": []}
+        except Exception:
+            return {"ok": True, "issues": []}
+
     def _compute_successors(self, tid: str) -> list[str]:
         return [t.topic_id for t in self._topics if tid in t.prerequisite_ids]
 

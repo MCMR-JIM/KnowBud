@@ -161,3 +161,94 @@ class TestGraphLocator:
             assert '"lens"' in captured_prompt[0]
         finally:
             backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
+
+
+class TestBatchLocate:
+    def test_batch_locate_groups_related(self, tmp_path: Path):
+        backend = _build_backend(tmp_path)
+        backend.llm_skill.client.api_key = "test_key"
+
+        state = backend.load_app_state(include_history=False)
+        state.curriculum.topics = [
+            TopicNode(topic_id="root", title="科学", difficulty=1, prerequisite_ids=[], tags=["subject:science"]),
+        ]
+        backend.save_app_state(state)
+
+        def mock_create(**kwargs):
+            return _llm_resp({
+                "relay_nodes": [
+                    {"title": "牛顿运动定律[中继]", "children": ["牛顿第一定律", "牛顿第二定律"]},
+                ],
+                "placements": {
+                    "牛顿第一定律": {"parent_ids": [], "successor_ids": [], "reason": ""},
+                    "牛顿第二定律": {"parent_ids": [], "successor_ids": [], "reason": ""},
+                },
+            })
+
+        backend.llm_skill._orig = backend.llm_skill.client.chat.completions.create
+        backend.llm_skill.client.chat.completions.create = mock_create
+
+        try:
+            locator = GraphLocator(backend, "science")
+            result = locator.batch_locate([
+                {"title": "牛顿第一定律", "desc": "惯性定律"},
+                {"title": "牛顿第二定律", "desc": "F=ma"},
+            ])
+            assert len(result.get("relay_nodes", [])) == 1
+            assert result["relay_nodes"][0]["title"] == "牛顿运动定律[中继]"
+            assert "牛顿第一定律" in result.get("placements", {})
+        finally:
+            backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
+
+    def test_review_passes_clean(self, tmp_path: Path):
+        backend = _build_backend(tmp_path)
+        backend.llm_skill.client.api_key = "test_key"
+
+        state = backend.load_app_state(include_history=False)
+        state.curriculum.topics = [
+            TopicNode(topic_id="root", title="科学", difficulty=1, prerequisite_ids=[], tags=["subject:science"]),
+        ]
+        backend.save_app_state(state)
+
+        def mock_create(**kwargs):
+            return _llm_resp({"ok": True, "issues": []})
+
+        backend.llm_skill._orig = backend.llm_skill.client.chat.completions.create
+        backend.llm_skill.client.chat.completions.create = mock_create
+
+        try:
+            locator = GraphLocator(backend, "science")
+            result = locator.review_placements({"a": {"parent_ids": [], "successor_ids": []}})
+            assert result["ok"] is True
+            assert result["issues"] == []
+        finally:
+            backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
+
+    def test_review_catches_misplacement(self, tmp_path: Path):
+        backend = _build_backend(tmp_path)
+        backend.llm_skill.client.api_key = "test_key"
+
+        def mock_create(**kwargs):
+            return _llm_resp({
+                "ok": False,
+                "issues": [{"title": "光合作用", "problem": "物理分支下不应有生物概念", "suggestion": "移至生物分支"}],
+            })
+
+        backend.llm_skill._orig = backend.llm_skill.client.chat.completions.create
+        backend.llm_skill.client.chat.completions.create = mock_create
+
+        try:
+            locator = GraphLocator(backend, "science")
+            result = locator.review_placements({"光合作用": {"parent_ids": ["force"], "successor_ids": []}})
+            assert result["ok"] is False
+            assert len(result["issues"]) >= 1
+            assert result["issues"][0]["title"] == "光合作用"
+        finally:
+            backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
+
+    def test_batch_locate_empty_input(self, tmp_path: Path):
+        backend = _build_backend(tmp_path)
+        backend.llm_skill.client.api_key = "test_key"
+        locator = GraphLocator(backend, "science")
+        result = locator.batch_locate([])
+        assert result == {"placements": {}, "relay_nodes": []}
