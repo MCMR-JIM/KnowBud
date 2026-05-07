@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import base64
+import logging
 import mimetypes
 import os
 import shutil
 import threading
 import uuid
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, AsyncIterator, Callable
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,6 +38,7 @@ from src.api.schemas import (
     PushReviewResponse,
     ReviewQueueItem,
     ResourceInfo,
+    ResourceIngestionStatusResponse,
     ResourceSegmentListResponse,
     ResourceSegmentInfo,
     ResourceTeachingCueInfo,
@@ -62,6 +65,7 @@ if TYPE_CHECKING:
 API_VERSION = "1.3.0"
 SINGLE_SESSION_ID = "default"
 TURN_EVENT_KIND = "api_turn_completed"
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="LoopTutor Frontend API",
@@ -249,6 +253,52 @@ def get_backend() -> "SessionBackend":
 @lru_cache(maxsize=1)
 def get_runtime() -> SingleSessionRuntime:
     return SingleSessionRuntime()
+
+
+def _start_ingestion_task(target: Callable[[], None]) -> None:
+    thread = threading.Thread(target=target, name="resource-ingestion", daemon=True)
+    thread.start()
+
+
+def _resource_segment_counts(record) -> dict[str, int]:
+    counts = {
+        "segment_count": len(record.segments),
+        "classified_count": 0,
+        "proposed_count": 0,
+        "unclassified_count": 0,
+        "parse_failed_count": 0,
+        "unsupported_count": 0,
+    }
+    for segment in record.segments:
+        if segment.status == "classified":
+            counts["classified_count"] += 1
+        elif segment.status == "proposed":
+            counts["proposed_count"] += 1
+        elif segment.status == "unclassified":
+            counts["unclassified_count"] += 1
+        elif segment.status in {"parse_failed", "ingestion_failed"}:
+            counts["parse_failed_count"] += 1
+        elif segment.status == "unsupported":
+            counts["unsupported_count"] += 1
+    return counts
+
+
+def _build_ingestion_failed_segment(resource_id: str, media_type: str, error: str):
+    from src.core.models import ResourceSegment
+
+    return ResourceSegment(
+        segment_id=f"{resource_id}_ingestion_failed_0",
+        start_ms=0,
+        end_ms=None,
+        label="chunk",
+        status="ingestion_failed",
+        sequence_index=0,
+        text=None,
+        locator={"kind": media_type or "unknown"},
+        decision="unclassified",
+        confidence=0.0,
+        reason=f"文档入库失败: {error[:120]}",
+    )
 
 
 @lru_cache(maxsize=1)
@@ -494,6 +544,8 @@ async def upload_resource(
     topic_id: str = Form(...),
     resource_name: str = Form(...),
     category: str = Form("learn"),
+    subject: str = Form(""),
+    language_id: str = Form(""),
 ) -> ResourceUploadResponse:
     normalized_topic_id = topic_id.strip()
     if not normalized_topic_id:
@@ -535,17 +587,10 @@ async def upload_resource(
         original_filename=original_name,
         stored_path=str(stored_path.resolve()),
         size_bytes=stored_path.stat().st_size,
+        ingestion_status="processing",
+        ingestion_error=None,
+        segments=[],
     )
-
-    if media_type in {"txt", "pdf", "docx", "pptx", "doc"}:
-        topics = backend.load_app_state(include_history=False).curriculum.topics
-        segments = ingest_document_resource(
-            backend=backend,
-            record=record,
-            topics=topics,
-            default_topic_id=normalized_topic_id,
-        )
-        record = record.model_copy(update={"segments": segments})
 
     runtime = get_runtime()
     if normalized_category == "review":
@@ -565,28 +610,24 @@ async def upload_resource(
             "original_filename": original_name,
             "stored_path": str(stored_path),
             "queued": queued,
+            "ingestion_status": record.ingestion_status,
         },
     )
 
-    if media_type in {"txt", "pdf", "docx", "pptx", "doc"}:
-        classified_count = sum(1 for segment in record.segments if segment.status == "classified")
-        proposed_count = sum(1 for segment in record.segments if segment.status == "proposed")
-        unclassified_count = sum(1 for segment in record.segments if segment.status == "unclassified")
-        parse_failed_count = sum(1 for segment in record.segments if segment.status == "parse_failed")
-        unsupported_count = sum(1 for segment in record.segments if segment.status == "unsupported")
-        backend.append_learning_event(
-            kind="resource_ingested",
-            payload={
-                "resource_id": record.resource_id,
-                "segment_count": len(record.segments),
-                "classified_count": classified_count,
-                "proposed_count": proposed_count,
-                "unclassified_count": unclassified_count,
-                "parse_failed_count": parse_failed_count,
-                "unsupported_count": unsupported_count,
-                "media_type": media_type,
-            },
-        )
+    logger.info(
+        "upload accepted",
+        extra={
+            "resource_id": record.resource_id,
+            "topic_id": normalized_topic_id,
+            "media_type": media_type,
+        },
+    )
+    _subj = subject.strip() or None
+    _lang = language_id.strip() or None
+    _start_ingestion_task(lambda: _run_resource_ingestion(
+        resource_id=record.resource_id, default_topic_id=normalized_topic_id,
+        subject=_subj, language_id=_lang,
+    ))
 
     return ResourceUploadResponse(
         session_id=SINGLE_SESSION_ID,
@@ -594,6 +635,70 @@ async def upload_resource(
         review_queue_size=len(state.learning.review_queue),
         resource=_resource_info(record, topic.title),
     )
+
+
+def _run_resource_ingestion(
+    *, resource_id: str, default_topic_id: str,
+    subject: str | None = None, language_id: str | None = None,
+) -> None:
+    backend = get_backend()
+    record = backend.get_resource(resource_id)
+    if record is None:
+        logger.warning("ingestion skipped: resource missing", extra={"resource_id": resource_id})
+        return
+
+    logger.info("ingestion started", extra={"resource_id": resource_id, "media_type": record.media_type})
+
+    def progress(event: str, payload: dict[str, object]) -> None:
+        if event == "document_parsed":
+            logger.info("document parsed chunk count", extra=payload)
+        elif event == "chunk_classification_progress":
+            logger.info("chunk classification progress", extra=payload)
+
+    try:
+        topics = backend.load_app_state(include_history=False).curriculum.topics
+        segments = ingest_document_resource(
+            backend=backend,
+            record=record,
+            topics=topics,
+            default_topic_id=default_topic_id,
+            progress_callback=progress,
+            subject=subject, language_id=language_id,
+            enable_graph_search=not bool(subject),
+            enable_new_pipeline=bool(subject),
+        )
+        backend.update_resource_ingestion(resource_id, status="completed", error=None)
+        updated = backend.get_resource(resource_id)
+        if updated is None:
+            logger.warning("ingestion completed but resource missing", extra={"resource_id": resource_id})
+            return
+        counts = _resource_segment_counts(updated)
+        backend.append_learning_event(
+            kind="resource_ingested",
+            payload={
+                "resource_id": resource_id,
+                "segment_count": counts["segment_count"],
+                "classified_count": counts["classified_count"],
+                "proposed_count": counts["proposed_count"],
+                "unclassified_count": counts["unclassified_count"],
+                "parse_failed_count": counts["parse_failed_count"],
+                "unsupported_count": counts["unsupported_count"],
+                "media_type": record.media_type,
+            },
+        )
+        logger.info(
+            "ingestion completed",
+            extra={"resource_id": resource_id, "segment_count": len(segments), "media_type": record.media_type},
+        )
+    except Exception as exc:
+        error = str(exc)[:500]
+        failure_segments = [_build_ingestion_failed_segment(resource_id, record.media_type, error)]
+        try:
+            backend.replace_resource_segments(resource_id, failure_segments)
+        except Exception:
+            logger.exception("failed to persist ingestion failure segment", extra={"resource_id": resource_id})
+        backend.update_resource_ingestion(resource_id, status="failed", error=error)
+        logger.exception("ingestion failed", extra={"resource_id": resource_id, "media_type": record.media_type})
 
 
 @app.get("/v1/resource/topics/{topic_id}", response_model=TopicResourceListResponse, tags=["resource"])
@@ -609,6 +714,26 @@ def get_topic_resources(topic_id: str) -> TopicResourceListResponse:
         topic_id=topic.topic_id,
         topic_title=topic.title,
         resources=[_resource_info(resource, topic.title) for resource in resources],
+    )
+
+
+@app.get("/v1/resource/{resource_id}/ingestion-status", response_model=ResourceIngestionStatusResponse, tags=["resource"])
+def get_resource_ingestion_status(resource_id: str) -> ResourceIngestionStatusResponse:
+    backend = get_backend()
+    record = backend.get_resource(resource_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"resource_id not found: {resource_id}")
+
+    counts = _resource_segment_counts(record)
+    return ResourceIngestionStatusResponse(
+        resource_id=resource_id,
+        status=record.ingestion_status,
+        segment_count=counts["segment_count"],
+        classified_count=counts["classified_count"],
+        proposed_count=counts["proposed_count"],
+        unclassified_count=counts["unclassified_count"],
+        parse_failed_count=counts["parse_failed_count"],
+        error=record.ingestion_error,
     )
 
 
@@ -681,6 +806,74 @@ def get_knowledge_graph() -> KnowledgeGraphResponse:
     runtime = get_runtime()
     state = runtime.load_state()
     return _build_graph_response(state)
+
+
+def _classify_subject_by_title(backend: "SessionBackend", title: str) -> tuple[str, str | None]:
+    import json as _json
+    import re as _re
+
+    # Slugify for unique subject namespace
+    slug = _re.sub(r"[^a-zA-Z0-9\u4e00-\u9fff]+", "_", title).strip("_").lower()[:20] or "custom"
+
+    # Only use LLM for language detection
+    is_lang = any(kw in title for kw in ["英语", "语文", "中文", "english", "chinese", "日语", "韩语"])
+    if is_lang:
+        system = (
+            "你是语言分类助手。判断学科名属于哪种语言。\n"
+            '返回 JSON: {"language_id":"english|chinese|japanese|korean|null"}'
+        )
+        user = f"学科名: {title}"
+        try:
+            client = backend.llm_skill.client
+            response = client.chat.completions.create(
+                model=backend.llm_skill.model_name,
+                messages=[{"role":"system","content":system},{"role":"user","content":user}],
+                temperature=0.1, timeout=15.0,
+            )
+            raw = response.choices[0].message.content.strip()
+            data = _json.loads(raw)
+            lang = data.get("language_id")
+            if lang in {"english", "chinese", "japanese", "korean"}:
+                return "language", lang
+        except Exception:
+            pass
+        return "language", None
+
+    # Non-language: use slug as unique subject key
+    return slug, None
+
+
+@app.post("/v1/knowledge/subject", tags=["knowledge"])
+def create_subject_root(
+    title: str = Form(...),
+) -> dict[str, Any]:
+    backend = get_backend()
+    _title = title.strip()
+    subject, language_id = _classify_subject_by_title(backend, _title)
+    tags = [f"subject:{subject}", "facet:root"]
+    if language_id:
+        tags.append(f"language:{language_id}")
+
+    proposal = backend.create_graph_proposal_from_resource(
+        title=_title,
+        summary=f"学科：{_title}",
+        tags=tags,
+        parent_node_ids=[],
+        edge_type="part_of",
+        reason="parent-created subject root",
+    )
+    _state, _proposal, topic, _, _ = backend.approve_graph_proposal(
+        proposal_id=proposal.proposal_id,
+        difficulty=1,
+    )
+    return {"topic_id": topic.topic_id, "title": topic.title, "tags": topic.tags}
+
+
+@app.get("/v1/knowledge/graph/report", tags=["knowledge"])
+def get_knowledge_graph_report() -> dict[str, Any]:
+    backend = get_backend()
+    state = backend.load_app_state(include_history=False)
+    return _build_graph_report(state=state, resources=backend.list_all_resources())
 
 
 @app.get("/v1/knowledge/proposals", response_model=list[ProposalInfo], tags=["knowledge"])
@@ -912,6 +1105,125 @@ def _build_graph_response(state) -> KnowledgeGraphResponse:
     )
 
 
+def _build_graph_report(*, state, resources: list[object]) -> dict[str, Any]:
+    topics = state.curriculum.topics
+    topic_ids = {topic.topic_id for topic in topics}
+    segment_status_counter: Counter[str] = Counter()
+    topic_segment_counter: Counter[str] = Counter()
+    cross_topic_pair_counter: Counter[str] = Counter()
+    resource_rows: list[dict[str, Any]] = []
+
+    for resource in resources:
+        linked_topics = sorted(
+            {
+                segment.topic_id
+                for segment in getattr(resource, "segments", [])
+                if segment.topic_id in topic_ids
+            }
+        )
+        proposed_proposal_ids = sorted(
+            {
+                segment.proposal_id
+                for segment in getattr(resource, "segments", [])
+                if segment.proposal_id
+            }
+        )
+        for segment in getattr(resource, "segments", []):
+            segment_status_counter[segment.status] += 1
+            if segment.topic_id in topic_ids:
+                topic_segment_counter[segment.topic_id] += 1
+                if segment.topic_id != resource.topic_id:
+                    cross_topic_pair_counter[f"{resource.topic_id}->{segment.topic_id}"] += 1
+        resource_rows.append(
+            {
+                "resource_id": resource.resource_id,
+                "home_topic_id": resource.topic_id,
+                "resource_name": resource.resource_name,
+                "media_type": resource.media_type,
+                "ingestion_status": getattr(resource, "ingestion_status", "pending"),
+                "segment_count": len(getattr(resource, "segments", [])),
+                "linked_topic_ids": linked_topics,
+                "proposal_ids": proposed_proposal_ids,
+            }
+        )
+
+    prerequisite_edges = [
+        {"from": prerequisite_id, "to": topic.topic_id, "edge_type": "requires"}
+        for topic in topics
+        for prerequisite_id in topic.prerequisite_ids
+        if prerequisite_id in topic_ids
+    ]
+    dependents_map: dict[str, list[str]] = defaultdict(list)
+    for edge in prerequisite_edges:
+        dependents_map[str(edge["from"])].append(str(edge["to"]))
+
+    proposal_status_counter = Counter(proposal.status for proposal in state.learning.graph_proposals)
+    proposal_edge_counter = Counter(proposal.edge_type for proposal in state.learning.graph_proposals)
+    mastery_state_counter = Counter(mastery.mastery_state for mastery in state.learning.mastery_map.values())
+    cross_topic_resource_count = sum(
+        1
+        for row in resource_rows
+        if any(topic_id != row["home_topic_id"] for topic_id in row["linked_topic_ids"])
+    )
+
+    topic_rows = []
+    for topic in topics:
+        mastery = state.learning.mastery_map.get(topic.topic_id)
+        topic_rows.append(
+            {
+                "topic_id": topic.topic_id,
+                "title": topic.title,
+                "difficulty": topic.difficulty,
+                "tags": list(topic.tags),
+                "prerequisite_ids": list(topic.prerequisite_ids),
+                "dependent_ids": sorted(dependents_map.get(topic.topic_id, [])),
+                "resource_count": sum(
+                    1
+                    for row in resource_rows
+                    if row["home_topic_id"] == topic.topic_id or topic.topic_id in row["linked_topic_ids"]
+                ),
+                "classified_segment_count": topic_segment_counter[topic.topic_id],
+                "mastery_state": mastery.mastery_state if mastery else "unknown",
+            }
+        )
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "session_id": SINGLE_SESSION_ID,
+        "source": "runtime",
+        "counts": {
+            "topic_count": len(topics),
+            "prerequisite_edge_count": len(prerequisite_edges),
+            "resource_count": len(resources),
+            "segment_count": sum(len(getattr(resource, "segments", [])) for resource in resources),
+            "classified_segments": segment_status_counter["classified"],
+            "proposed_segments": segment_status_counter["proposed"],
+            "unclassified_segments": segment_status_counter["unclassified"],
+            "cross_topic_resource_count": cross_topic_resource_count,
+            "graph_proposals": len(state.learning.graph_proposals),
+        },
+        "status_breakdown": {
+            "segment_status": dict(segment_status_counter),
+            "mastery_state": dict(mastery_state_counter),
+            "proposal_status": dict(proposal_status_counter),
+            "proposal_edge_type": dict(proposal_edge_counter),
+        },
+        "topics": topic_rows,
+        "prerequisite_edges": prerequisite_edges,
+        "resources": resource_rows,
+        "cross_topic_pairs_top20": [
+            {"pair": pair, "segment_count": count}
+            for pair, count in cross_topic_pair_counter.most_common(20)
+        ],
+        "cross_topic_resources_sample": [
+            row
+            for row in resource_rows
+            if any(topic_id != row["home_topic_id"] for topic_id in row["linked_topic_ids"])
+        ][:40],
+        "graph_proposals": [proposal.model_dump() for proposal in state.learning.graph_proposals],
+    }
+
+
 def _build_turn_response(
     *,
     turn_id: str,
@@ -993,6 +1305,7 @@ def _topic_info(topic) -> TopicInfo:
         topic_id=topic.topic_id,
         title=topic.title,
         difficulty=topic.difficulty,
+        parent_ids=list(getattr(topic, "parent_ids", [])),
         prerequisite_ids=list(topic.prerequisite_ids),
         tags=list(topic.tags),
     )
@@ -1004,7 +1317,10 @@ def _proposal_info(record) -> ProposalInfo:
         title=record.title,
         summary=record.summary,
         trigger=record.trigger,
+        tags=list(getattr(record, "tags", [])),
         parent_node_ids=list(record.parent_node_ids),
+        prerequisite_node_ids=list(getattr(record, "prerequisite_node_ids", [])),
+        pending_parent_proposal_ids=list(getattr(record, "pending_parent_proposal_ids", [])),
         edge_type=record.edge_type,
         status=record.status,
         reason=record.reason,
@@ -1039,6 +1355,8 @@ def _resource_info(record, topic_title: str) -> ResourceInfo:
         resource_url=f"/v1/resource/files/{record.resource_id}",
         size_bytes=record.size_bytes,
         created_ts=record.created_ts,
+        ingestion_status=record.ingestion_status,
+        ingestion_error=record.ingestion_error,
         segments=[_resource_segment_info(segment) for segment in record.segments],
     )
 

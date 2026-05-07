@@ -31,6 +31,8 @@ class UIRenderBundle:
     messages: list[str] = field(default_factory=list)
 
 class SessionBackend:
+    _ALLOWED_EDGE_TYPES: set[str] = {item.value for item in EdgeType}
+
     _PROPOSAL_RECORD_TRANSITIONS: dict[str, set[str]] = {
         "proposed": {"validated", "rejected", "shadow"},
         "validated": {"shadow", "rejected"},
@@ -144,6 +146,9 @@ class SessionBackend:
         original_filename: str,
         stored_path: str,
         size_bytes: int,
+        ingestion_status: str = "pending",
+        ingestion_error: str | None = None,
+        segments: list[ResourceSegment] | None = None,
     ) -> ResourceRecord:
         record = ResourceRecord(
             resource_id=f"res_{int(time.time() * 1000)}",
@@ -156,7 +161,11 @@ class SessionBackend:
             stored_path=stored_path,
             size_bytes=size_bytes,
             created_ts=datetime.datetime.now(timezone.utc).isoformat(),
-            segments=[
+            ingestion_status=ingestion_status,
+            ingestion_error=ingestion_error,
+            segments=segments
+            if segments is not None
+            else [
                 ResourceSegment(
                     segment_id="seg_full",
                     start_ms=0,
@@ -171,6 +180,21 @@ class SessionBackend:
             self._insert_resource_row(conn, record)
         return record
 
+    def update_resource_ingestion(
+        self,
+        resource_id: str,
+        *,
+        status: str,
+        error: str | None = None,
+    ) -> None:
+        with self._db_connection() as conn:
+            self._ensure_storage_initialized(conn)
+            conn.execute(
+                "UPDATE resource_library SET ingestion_status = ?, ingestion_error = ? WHERE resource_id = ?",
+                (status, error, resource_id),
+            )
+            conn.commit()
+
     def list_resources_by_topic(self, topic_id: str) -> list[ResourceRecord]:
         return self.list_resources_related_to_topic(topic_id)
 
@@ -180,7 +204,7 @@ class SessionBackend:
             rows = conn.execute(
                 """
                 SELECT resource_id, topic_id, resource_name, category, media_type, mime_type,
-                       original_filename, stored_path, size_bytes, created_ts, segments_json
+                       original_filename, stored_path, size_bytes, created_ts, ingestion_status, ingestion_error, segments_json
                 FROM resource_library
                 WHERE resource_id IN (
                     SELECT DISTINCT r.resource_id
@@ -200,7 +224,7 @@ class SessionBackend:
             row = conn.execute(
                 """
                 SELECT resource_id, topic_id, resource_name, category, media_type, mime_type,
-                       original_filename, stored_path, size_bytes, created_ts, segments_json
+                       original_filename, stored_path, size_bytes, created_ts, ingestion_status, ingestion_error, segments_json
                 FROM resource_library
                 WHERE resource_id = ?
                 """,
@@ -233,7 +257,7 @@ class SessionBackend:
             rows = conn.execute(
                 """
                 SELECT resource_id, topic_id, resource_name, category, media_type, mime_type,
-                       original_filename, stored_path, size_bytes, created_ts, segments_json
+                       original_filename, stored_path, size_bytes, created_ts, ingestion_status, ingestion_error, segments_json
                 FROM resource_library
                 ORDER BY created_ts DESC, resource_id DESC
                 """
@@ -245,19 +269,25 @@ class SessionBackend:
         *,
         title: str,
         summary: str,
+        tags: list[str] | None = None,
         parent_node_ids: list[str],
+        pending_parent_proposal_ids: list[str] | None = None,
+        prerequisite_node_ids: list[str] | None = None,
         edge_type: str,
         reason: str,
     ) -> GraphProposalRecord:
         state = self.load_app_state(include_history=False)
         now = datetime.datetime.now(timezone.utc).isoformat()
-        safe_edge_type = edge_type if edge_type in {"requires", "supports", "related"} else "requires"
+        safe_edge_type = edge_type if edge_type in self._ALLOWED_EDGE_TYPES else "requires"
         proposal = GraphMutationProposal(
             proposal_id=f"proposal_{int(time.time() * 1000)}_{os.urandom(4).hex()}",
             trigger="resource_ingest",
             title=title.strip(),
             summary=summary.strip(),
+            tags=list(dict.fromkeys(tags or [])),
             parent_node_ids=list(parent_node_ids),
+            prerequisite_node_ids=list(dict.fromkeys(prerequisite_node_ids or [])),
+            pending_parent_proposal_ids=list(dict.fromkeys(pending_parent_proposal_ids or [])),
             edge_type=EdgeType(safe_edge_type),
             reason=reason[:80],
         )
@@ -293,10 +323,24 @@ class SessionBackend:
         if not approved_title:
             raise ValueError("title is required")
         approved_summary = (summary if summary is not None else proposal.summary).strip()
-        approved_parents = [item for item in (parent_node_ids if parent_node_ids is not None else proposal.parent_node_ids) if item in valid_topic_ids]
-        approved_edge_type = edge_type if edge_type in {"requires", "supports", "related"} else proposal.edge_type
-        if approved_edge_type not in {"requires", "supports", "related"}:
+        parent_override = parent_node_ids is not None
+        approved_parents = [item for item in (parent_node_ids if parent_override else proposal.parent_node_ids) if item in valid_topic_ids]
+        if not parent_override:
+            approved_parents = list(
+                dict.fromkeys(
+                    [
+                        *approved_parents,
+                        *self._resolve_pending_parent_topic_ids(
+                            state=state,
+                            pending_parent_proposal_ids=proposal.pending_parent_proposal_ids,
+                        ),
+                    ]
+                )
+            )
+        approved_edge_type = edge_type if edge_type in self._ALLOWED_EDGE_TYPES else proposal.edge_type
+        if approved_edge_type not in self._ALLOWED_EDGE_TYPES:
             approved_edge_type = "requires"
+        approved_tags = list(dict.fromkeys([*proposal.tags, *(tags or [])]))
 
         created_topic_id = proposal.created_topic_id
         topic = next((item for item in state.curriculum.topics if item.topic_id == created_topic_id), None) if created_topic_id else None
@@ -306,8 +350,15 @@ class SessionBackend:
                 topic_id=created_topic_id,
                 title=approved_title,
                 difficulty=max(1, min(5, difficulty)),
-                prerequisite_ids=approved_parents if approved_edge_type == "requires" else [],
-                tags=list(dict.fromkeys([*(tags or []), "resource-approved", "active"])),
+                parent_ids=list(approved_parents) if approved_edge_type != "requires" else [],
+                prerequisite_ids=list(dict.fromkeys(
+                    pid for pid in (
+                        *(approved_parents if approved_edge_type == "requires" else []),
+                        *(p for p in getattr(proposal, "prerequisite_node_ids", []) if p in valid_topic_ids)
+                    )
+                    if pid != created_topic_id  # never self-reference
+                )),
+                tags=list(dict.fromkeys([*approved_tags, "resource-approved", "active"])),
             )
             state.curriculum.topics.append(topic)
             state.learning.mastery_map.setdefault(created_topic_id, NodeMastery(mastery_state="unknown"))
@@ -315,16 +366,34 @@ class SessionBackend:
             topic.title = approved_title
             topic.difficulty = max(1, min(5, difficulty))
             if approved_edge_type == "requires":
-                topic.prerequisite_ids = approved_parents
-            topic.tags = list(dict.fromkeys([*topic.tags, *(tags or []), "resource-approved", "active"]))
+                topic.prerequisite_ids = list(dict.fromkeys([*(getattr(topic, "prerequisite_ids", [])), *approved_parents]))
+            else:
+                topic.parent_ids = list(dict.fromkeys([*(getattr(topic, "parent_ids", [])), *approved_parents]))
+            topic.prerequisite_ids = list(dict.fromkeys(
+                pid for pid in (
+                    *(getattr(topic, "prerequisite_ids", [])),
+                    *(p for p in getattr(proposal, "prerequisite_node_ids", []) if p in valid_topic_ids)
+                )
+                if pid != topic.topic_id  # never self-reference
+            ))
+            topic.tags = list(dict.fromkeys([*topic.tags, *approved_tags, "resource-approved", "active"]))
 
         proposal.title = approved_title
         proposal.summary = approved_summary
+        proposal.tags = approved_tags
         proposal.parent_node_ids = approved_parents
+        if parent_override:
+            proposal.pending_parent_proposal_ids = []
         proposal.edge_type = approved_edge_type
         proposal.created_topic_id = created_topic_id
         self._activate_proposal_record(proposal, reason=(reason or "approved resource proposal")[:80])
         proposal.updated_ts = now
+        self._propagate_approved_parent_to_child_proposals(
+            state=state,
+            parent_proposal_id=proposal_id,
+            parent_topic_id=created_topic_id,
+            updated_ts=now,
+        )
         self.save_app_state(state)
 
         relinked_count = self._relink_segments_for_approved_proposal(proposal_id=proposal_id, topic_id=created_topic_id)
@@ -360,6 +429,52 @@ class SessionBackend:
     @staticmethod
     def _find_graph_proposal(state: AppState, proposal_id: str) -> GraphProposalRecord | None:
         return next((rec for rec in state.learning.graph_proposals if rec.proposal_id == proposal_id), None)
+
+    @staticmethod
+    def _resolve_pending_parent_topic_ids(*, state: AppState, pending_parent_proposal_ids: list[str]) -> list[str]:
+        valid_topic_ids = {topic.topic_id for topic in state.curriculum.topics}
+        proposal_by_id = {proposal.proposal_id: proposal for proposal in state.learning.graph_proposals}
+        resolved: list[str] = []
+        for proposal_id in pending_parent_proposal_ids:
+            parent_proposal = proposal_by_id.get(proposal_id)
+            if parent_proposal is None or not parent_proposal.created_topic_id:
+                continue
+            if parent_proposal.created_topic_id in valid_topic_ids:
+                resolved.append(parent_proposal.created_topic_id)
+        return list(dict.fromkeys(resolved))
+
+    @staticmethod
+    def _propagate_approved_parent_to_child_proposals(
+        *,
+        state: AppState,
+        parent_proposal_id: str,
+        parent_topic_id: str,
+        updated_ts: str,
+    ) -> None:
+        topic_by_id = {topic.topic_id: topic for topic in state.curriculum.topics}
+        for proposal in state.learning.graph_proposals:
+            if parent_proposal_id not in proposal.pending_parent_proposal_ids:
+                continue
+            if parent_topic_id not in proposal.parent_node_ids:
+                proposal.parent_node_ids.append(parent_topic_id)
+                proposal.updated_ts = updated_ts
+            if parent_proposal_id in proposal.pending_parent_proposal_ids:
+                proposal.pending_parent_proposal_ids = [
+                    item for item in proposal.pending_parent_proposal_ids if item != parent_proposal_id
+                ]
+                proposal.updated_ts = updated_ts
+            if not proposal.created_topic_id:
+                continue
+            topic = topic_by_id.get(proposal.created_topic_id)
+            if topic is not None:
+                if proposal.edge_type == "requires":
+                    if parent_topic_id not in topic.prerequisite_ids:
+                        topic.prerequisite_ids.append(parent_topic_id)
+                else:
+                    if parent_topic_id not in getattr(topic, "parent_ids", []):
+                        if not hasattr(topic, "parent_ids"):
+                            topic.parent_ids = []
+                        topic.parent_ids.append(parent_topic_id)
 
     def _activate_proposal_record(self, rec: GraphProposalRecord, *, reason: str) -> None:
         if rec.status == "proposed":
@@ -798,6 +913,13 @@ class SessionBackend:
         target_status = proposal.status.value
         for rec in state.learning.graph_proposals:
             if rec.proposal_id == proposal.proposal_id:
+                rec.title = proposal.title
+                rec.summary = proposal.summary
+                rec.tags = list(dict.fromkeys(proposal.tags))
+                rec.parent_node_ids = list(proposal.parent_node_ids)
+                rec.prerequisite_node_ids = list(dict.fromkeys(getattr(proposal, "prerequisite_node_ids", [])))
+                rec.pending_parent_proposal_ids = list(dict.fromkeys(proposal.pending_parent_proposal_ids))
+                rec.edge_type = proposal.edge_type.value
                 self._transition_proposal_record(rec, to_status=target_status, reason=proposal.reason)
                 rec.reason = proposal.reason
                 rec.created_topic_id = proposal.created_topic_id
@@ -810,7 +932,10 @@ class SessionBackend:
                 title=proposal.title,
                 summary=proposal.summary,
                 trigger=proposal.trigger,
+                tags=list(dict.fromkeys(proposal.tags)),
                 parent_node_ids=list(proposal.parent_node_ids),
+                prerequisite_node_ids=list(dict.fromkeys(getattr(proposal, "prerequisite_node_ids", []))),
+                pending_parent_proposal_ids=list(dict.fromkeys(proposal.pending_parent_proposal_ids)),
                 edge_type=proposal.edge_type.value,
                 status=target_status,
                 reason=proposal.reason,
@@ -1051,6 +1176,8 @@ class SessionBackend:
                 stored_path TEXT NOT NULL,
                 size_bytes INTEGER NOT NULL,
                 created_ts TEXT NOT NULL,
+                ingestion_status TEXT NOT NULL DEFAULT 'pending',
+                ingestion_error TEXT,
                 segments_json TEXT NOT NULL
             )
             """
@@ -1089,6 +1216,7 @@ class SessionBackend:
             """
         )
         self._ensure_resource_segment_columns(conn)
+        self._ensure_resource_library_columns(conn)
         conn.commit()
 
     @staticmethod
@@ -1108,6 +1236,18 @@ class SessionBackend:
             conn.execute("ALTER TABLE resource_segments ADD COLUMN guiding_question TEXT")
         if "teaching_hint" not in columns:
             conn.execute("ALTER TABLE resource_segments ADD COLUMN teaching_hint TEXT")
+
+    @staticmethod
+    def _ensure_resource_library_columns(conn: sqlite3.Connection) -> None:
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(resource_library)").fetchall()
+            if row["name"] is not None
+        }
+        if "ingestion_status" not in columns:
+            conn.execute("ALTER TABLE resource_library ADD COLUMN ingestion_status TEXT NOT NULL DEFAULT 'pending'")
+        if "ingestion_error" not in columns:
+            conn.execute("ALTER TABLE resource_library ADD COLUMN ingestion_error TEXT")
 
     def _load_state_row(self, conn: sqlite3.Connection) -> AppState | None:
         row = conn.execute("SELECT state_json FROM app_state WHERE state_id = 1").fetchone()
@@ -1195,9 +1335,9 @@ class SessionBackend:
             """
             INSERT INTO resource_library(
                 resource_id, topic_id, resource_name, category, media_type, mime_type,
-                original_filename, stored_path, size_bytes, created_ts, segments_json
+                original_filename, stored_path, size_bytes, created_ts, ingestion_status, ingestion_error, segments_json
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.resource_id,
@@ -1210,6 +1350,8 @@ class SessionBackend:
                 record.stored_path,
                 record.size_bytes,
                 record.created_ts,
+                record.ingestion_status,
+                record.ingestion_error,
                 json.dumps([segment.model_dump() for segment in record.segments], ensure_ascii=False),
             ),
         )
@@ -1301,6 +1443,8 @@ class SessionBackend:
             stored_path=str(row["stored_path"]),
             size_bytes=int(row["size_bytes"]),
             created_ts=str(row["created_ts"]),
+            ingestion_status=str(row["ingestion_status"] or "pending"),
+            ingestion_error=str(row["ingestion_error"]) if row["ingestion_error"] is not None else None,
             segments=segments,
         )
 

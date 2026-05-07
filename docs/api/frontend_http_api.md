@@ -187,7 +187,8 @@ uvicorn src.api.app:app --host 0.0.0.0 --port 8090 --reload
 | `summary` | `string` | 提案摘要，说明建议新增节点覆盖的知识点 |
 | `trigger` | `string` | 触发来源 |
 | `parent_node_ids` | `string[]` | 建议连接到的父/前置节点 ID 列表 |
-| `edge_type` | `string` | 建议边类型，常见值：`requires`、`supports`、`related` |
+| `pending_parent_proposal_ids` | `string[]` | 待批准的父提案 ID 列表；父提案批准后会回填到 `parent_node_ids` |
+| `edge_type` | `string` | 建议边类型，常见值：`requires`、`supports`、`related`、`part_of`、`derived_from`、`defines`、`explains`、`evidence_for`、`causes`、`uses`、`formula_uses_quantity` |
 | `status` | `string` | 当前状态 |
 | `reason` | `string` | 触发原因 |
 | `created_topic_id` | `string \| null` | 若已创建主题，则为新主题 ID |
@@ -1036,6 +1037,36 @@ PDF 翻页联动接口。儿童端 PDF 预览组件翻页后调用该接口，�
 ##### Status codes
 
 - `200`：成功返回图谱快照
+
+
+#### `GET /v1/knowledge/graph/report`
+
+返回当前运行态知识图诊断报告，结构兼容 `graph_report.json` 测试页加载格式。
+
+##### Response `200`
+
+```json
+{
+  "session_id": "default",
+  "source": "runtime",
+  "counts": {
+    "topic_count": 1,
+    "prerequisite_edge_count": 0,
+    "resource_count": 0,
+    "segment_count": 0,
+    "graph_proposals": 0
+  },
+  "topics": [],
+  "prerequisite_edges": [],
+  "resources": [],
+  "graph_proposals": []
+}
+```
+
+##### Status codes
+
+- `200`：成功返回运行态图诊断报告
+
 
 #### `GET /v1/knowledge/proposals`
 

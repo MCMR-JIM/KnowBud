@@ -10,6 +10,14 @@ class EdgeType(str, Enum):
     REQUIRES = "requires"
     SUPPORTS = "supports"
     RELATED = "related"
+    PART_OF = "part_of"
+    DERIVED_FROM = "derived_from"
+    DEFINES = "defines"
+    EXPLAINS = "explains"
+    EVIDENCE_FOR = "evidence_for"
+    CAUSES = "causes"
+    USES = "uses"
+    FORMULA_USES_QUANTITY = "formula_uses_quantity"
 
 
 class ProposalStatus(str, Enum):
@@ -40,7 +48,10 @@ class GraphMutationProposal(BaseModel):
     trigger: str
     title: str
     summary: str
+    tags: list[str] = Field(default_factory=list)
     parent_node_ids: list[str] = Field(default_factory=list)
+    prerequisite_node_ids: list[str] = Field(default_factory=list)
+    pending_parent_proposal_ids: list[str] = Field(default_factory=list)
     edge_type: EdgeType = EdgeType.REQUIRES
     status: ProposalStatus = ProposalStatus.PROPOSED
     reason: str = ""

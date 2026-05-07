@@ -23,6 +23,11 @@ build/
 
 # Runtime / local data (generated)
 data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
 data/state.json
 data/resource_index.json
 data/state.tmp

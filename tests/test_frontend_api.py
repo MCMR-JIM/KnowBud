@@ -83,6 +83,9 @@ class FakeBackend:
             return len(self._events)
         return sum(1 for event in self._events if event.kind == kind)
 
+    def list_all_resources(self):
+        return []
+
 
 def make_client(monkeypatch) -> TestClient:
     backend = FakeBackend()
@@ -106,6 +109,14 @@ def test_health_and_single_session_state(monkeypatch) -> None:
     assert state.status_code == 200
     assert state.json()["session_id"] == "default"
     assert state.json()["learning"]["current_topic_id"] == "demo_01"
+
+    report = client.get("/v1/knowledge/graph/report")
+    assert report.status_code == 200
+    payload = report.json()
+    assert payload["source"] == "runtime"
+    assert payload["counts"]["topic_count"] == 1
+    assert payload["topics"][0]["topic_id"] == "demo_01"
+    assert payload["resources"] == []
 
 
 def test_turns_events_and_constraints(monkeypatch) -> None:

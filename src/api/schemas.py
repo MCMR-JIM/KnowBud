@@ -34,6 +34,7 @@ class TopicInfo(BaseModel):
     topic_id: str
     title: str
     difficulty: int
+    parent_ids: list[str] = Field(default_factory=list)
     prerequisite_ids: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
 
@@ -43,7 +44,10 @@ class ProposalInfo(BaseModel):
     title: str
     summary: str = ""
     trigger: str
+    tags: list[str] = Field(default_factory=list)
     parent_node_ids: list[str] = Field(default_factory=list)
+    prerequisite_node_ids: list[str] = Field(default_factory=list)
+    pending_parent_proposal_ids: list[str] = Field(default_factory=list)
     edge_type: str = "requires"
     status: str
     reason: str
@@ -181,6 +185,8 @@ class ResourceInfo(BaseModel):
     resource_url: str
     size_bytes: int
     created_ts: str
+    ingestion_status: str = "pending"
+    ingestion_error: Optional[str] = None
     segments: list[ResourceSegmentInfo] = Field(default_factory=list)
 
 
@@ -221,6 +227,17 @@ class TopicTeachingCueListResponse(BaseModel):
 class ResourceSegmentListResponse(BaseModel):
     resource_id: str
     segments: list[ResourceSegmentInfo] = Field(default_factory=list)
+
+
+class ResourceIngestionStatusResponse(BaseModel):
+    resource_id: str
+    status: str
+    segment_count: int = 0
+    classified_count: int = 0
+    proposed_count: int = 0
+    unclassified_count: int = 0
+    parse_failed_count: int = 0
+    error: Optional[str] = None
 
 
 class CreateSessionRequest(BaseModel):

@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, ValidationError
 from openai import OpenAI
 
 from src.skills.base_skill import BaseSkill, SkillContext
+from src.agent.models import EdgeType
 from src.core.models import PendingQuestion, EvaluationResult, RadarScore, TopicNode
 
 
@@ -52,10 +53,11 @@ class LLMTutorSkill(BaseSkill):
 
     @staticmethod
     def _build_http_client() -> httpx.Client:
+        timeout = httpx.Timeout(connect=10.0, read=60.0, write=60.0, pool=10.0)
         try:
-            return httpx.Client(trust_env=False)
+            return httpx.Client(timeout=timeout, trust_env=False)
         except TypeError:
-            return httpx.Client()
+            return httpx.Client(timeout=timeout)
 
     # ... 下面的 analyze_session_performance 等方法保持原样不动 ...
 
@@ -164,8 +166,16 @@ class LLMTutorSkill(BaseSkill):
         ]
         system_prompt = (
             "你是儿童学习知识图谱策展助手。你的任务是判断一个教学资源片段应该挂到已有知识节点，"
-            "还是应该提出一个新知识节点。只能复用给定的已有节点；如果没有合适节点，但片段表达了明确、"
-            "可教学的知识点，请提出新节点。不要为了泛泛内容创建节点。"
+            "还是应该提出一个新知识节点。\n"
+            "【节点合并与复用规则】\n"
+            "1. 只能复用给定的已有节点；如果没有合适节点，但片段表达了明确、可教学的知识点，请提出新节点。\n"
+            "2. 如果你要提出的新节点和已有节点的概念本质相同（只是换了种说法），请直接选择 link 到已有节点！\n"
+            "3. 不要为了泛泛内容创建节点。\n"
+            "【新节点命名规范】\n"
+            "1. 提取最精炼的专业术语或核心概念，作为新知识点的名称。\n"
+            "2. 绝对不要包含“什么是”、“关于”、“浅析”等冗余前缀。\n"
+            "3. 绝对不要包含“是什么”、“及其应用”、“的证明”、“的推导”、“定理证明”、“的意义”、“的概念”等冗余后缀。\n"
+            "4. 例如：遇到“实数完备性定理及其应用”，请提炼为“实数完备性定理”；遇到“恐龙为什么灭绝”，提炼为“恐龙灭绝原因”。"
         )
         user_prompt = (
             "给定已有知识节点列表：\n"
@@ -176,8 +186,9 @@ class LLMTutorSkill(BaseSkill):
             f"```text\n{text[:4000]}\n```\n"
             '只返回 JSON：{ "decision": "link" | "propose" | "unclassified", "topic_id": string|null, '
             '"confidence": number, "reason": string, "proposed_topic": { "title": string, '
-            '"summary": string, "parent_node_ids": [string], "edge_type": "requires" | "supports" | "related" } | null, '
+            '"summary": string, "parent_node_ids": [string], "edge_type": "requires" | "supports" | "related" | "part_of" | "derived_from" | "defines" | "explains" | "evidence_for" | "causes" | "uses" | "formula_uses_quantity" } | null, '
             '"guiding_question": string, "teaching_hint": string }\n'
+            "注意：在 proposed_topic 中，请务必从已有知识节点中挑选合适的 ID 填入 parent_node_ids 以建立层级关系。\n"
             "guiding_question 是老师可以直接用来引出学习的儿童友好问题，不超过 60 字。"
             "teaching_hint 是老师讲解该片段的简短提示，不超过 80 字。"
         )
@@ -203,7 +214,7 @@ class LLMTutorSkill(BaseSkill):
     ) -> dict[str, object]:
         valid_topic_ids = {topic.topic_id for topic in topics}
         allowed_decisions = {"link", "propose", "unclassified"}
-        allowed_edge_types = {"requires", "supports", "related"}
+        allowed_edge_types = {item.value for item in EdgeType}
 
         decision = result.decision if result.decision in allowed_decisions else "unclassified"
         topic_id = result.topic_id if result.topic_id in valid_topic_ids else None
@@ -272,7 +283,8 @@ class LLMTutorSkill(BaseSkill):
                 response = self.client.chat.completions.create(
                     model=self.model_name,
                     messages=messages,
-                    temperature=0.3 
+                    temperature=0.3,
+                    timeout=60.0,
                 )
                 raw_content = response.choices[0].message.content.strip()
                 

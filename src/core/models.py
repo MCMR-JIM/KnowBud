@@ -15,7 +15,8 @@ class TopicNode(BaseModel):
     topic_id: str
     title: str
     difficulty: int
-    prerequisite_ids: list[str]
+    parent_ids: list[str] = Field(default_factory=list)
+    prerequisite_ids: list[str] = Field(default_factory=list)
     tags: list[str]
 
 class PendingQuestion(BaseModel):
@@ -63,6 +64,7 @@ class ResourceSegment(BaseModel):
     topic_id: Optional[str] = None
     proposal_id: Optional[str] = None
     proposed_topic_title: Optional[str] = None
+    proposed_parent_node_ids: list[str] = Field(default_factory=list)
     decision: str = "link"
     confidence: float = 0.0
     reason: str = ""
@@ -81,6 +83,8 @@ class ResourceRecord(BaseModel):
     stored_path: str
     size_bytes: int
     created_ts: str
+    ingestion_status: str = "pending"
+    ingestion_error: Optional[str] = None
     segments: list[ResourceSegment] = Field(default_factory=list)
 
 
@@ -89,7 +93,10 @@ class GraphProposalRecord(BaseModel):
     title: str
     summary: str
     trigger: str
+    tags: list[str] = Field(default_factory=list)
     parent_node_ids: list[str] = Field(default_factory=list)
+    prerequisite_node_ids: list[str] = Field(default_factory=list)
+    pending_parent_proposal_ids: list[str] = Field(default_factory=list)
     edge_type: str = "requires"
     status: str = "proposed"
     reason: str = ""
