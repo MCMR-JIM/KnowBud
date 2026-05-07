@@ -166,7 +166,7 @@ class GraphLocator:
             "2. 前置倒置：如「加法」被标记为「乘法」的前置而非反过来\n"
             "3. 不相关父节点：如「光的折射」挂到了「力学[中继]」下\n"
             "4. 自引用：节点引用自己作为 parent 或 prerequisite_for\n\n"
-            "返回 JSON: {\"ok\":bool,\"issues\":[{\"title\":\"节点标题\",\"problem\":\"简短描述\",\"suggestion\":\"建议修改\"}]}"\n"
+            "返回 JSON: {\"ok\":bool,\"issues\":[{\"title\":\"节点标题\"}]}\n"
             "没有问题时返回 {\"ok\":true,\"issues\":[]}"
         )
         user = (
