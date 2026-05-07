@@ -97,22 +97,33 @@ class GraphLocator:
             ensure_ascii=False,
         )
         system = (
-            "你是知识图谱批量排列助手。\n"
-            "现有图结构和待安排节点如下。\n"
-            "任务:\n"
-            "1. 为每个新节点决定 parent_ids(层级父节点,它挂在谁下面)\n"
-            "2. 为每个新节点决定 prerequisite_for_ids(哪些已有节点需要先学了这个新节点才能学)\n"
-            "   例如: 新节点「欧姆定律」→ prerequisite_for_ids=[\"串联电路规律\"] 表示学串联电路前要先学欧姆定律\n"
-            "3. 如果多个新节点可被共同概念归纳，创建中继节点(标题加[中继])，挂其下\n"
-            "4. 已有节点不要重复创建\n"
-            "5. 每个新节点标题必须出现在 placements 中\n"
-            f"学科: {self._subject}\n"
-            "返回 JSON: {\"relay_nodes\":[{\"title\":\"XX[中继]\",\"children\":[\"a\",\"b\"]}],"
-            "\"placements\":{\"节点标题\":{\"parent_ids\":[],\"prerequisite_for_ids\":[],\"reason\":\"...\"}}}"
+            "你是知识图谱批量层级排列助手。你的任务是为一组新概念在图中找到层级归属。\n\n"
+            "【图结构格式说明】\n"
+            "现有图每条格式: [节点ID, 节点标题, [前置节点ID列表], [后继节点ID列表]]\n"
+            "例如: [\"light\",\"光学[中继]\",[\"root\"],[\"refraction\",\"reflection\"]]\n"
+            "      表示\"光学[中继]\"的前置节点是\"root\"，后继节点是\"refraction\"和\"reflection\"\n\n"
+            "【parent_ids 说明】\n"
+            "parent_ids 是层级父节点列表——新节点挂在谁下面。\n"
+            "例如新节点「牛顿第二定律」的 parent_ids 应该是[\"力学[中继]\"]或直接父节点ID。\n"
+            "如果新节点无法确定父节点，parent_ids 填根节点ID（如[\"root\"]）。\n"
+            "如果新节点是某个已有节点的细分知识，parent_ids 填那个已有节点的ID。\n\n"
+            "【prerequisite_for_ids 说明】\n"
+            "prerequisite_for_ids 表示哪些已有节点需要先学了这个新节点才能学。\n"
+            "例如新节点「欧姆定律」→ prerequisite_for_ids=[\"串联电路规律\"]\n"
+            "    表示学习串联电路规律之前必须先学会欧姆定律。\n"
+            "如果没有合适的后置节点，填空数组[]。\n\n"
+            "【中继节点说明】\n"
+            "如果 3 个以上新节点可被共同概念归纳，创建一个中继节点。\n"
+            "中继节点标题必须以[中继]结尾，如\"牛顿运动定律[中继]\"。\n"
+            "children 列表填这些新节点的标题（字符串），不是ID。\n\n"
+            f"【当前学科】{self._subject}\n"
+            "返回严格 JSON: {\"relay_nodes\":[{\"title\":\"XX[中继]\",\"children\":[\"子节点标题1\",\"子节点标题2\"]}],"
+            "\"placements\":{\"新节点标题\":{\"parent_ids\":[\"父节点ID\"],\"prerequisite_for_ids\":[\"后置节点ID\"],\"reason\":\"简短理由\"}}}"
         )
         user = (
-            f"现有图结构(每行格式: [id, title, [前置id], [后继id]]):\n{graph_snapshot}\n\n"
-            f"待安排的新节点:\n{topics_json}"
+            f"=== 现有图结构 ===\n{graph_snapshot}\n\n"
+            f"=== 待安排的新节点 ===\n{topics_json}\n\n"
+            "请为每个新节点填入层级归属(parent_ids)和前置关系(prerequisite_for_ids)。"
         )
 
         try:
@@ -148,15 +159,21 @@ class GraphLocator:
         snap = graph_snapshot or self._build_graph_snapshot()
         placements_json = json.dumps(placements, ensure_ascii=False)
         system = (
-            "你是图谱审核助手。检查节点安排是否有明显问题。\n"
-            "检查规则:\n"
-            "1. 节点是否归到了错误的学科分支下\n"
-            "2. 前置关系是否倒置(后置概念成了前置)\n"
-            "3. 节点是否挂在了不相关的父节点下\n"
-            "不要求完美，只标记明显不合理处。\n"
-            "返回 JSON: {\"ok\":bool,\"issues\":[{\"title\":\"...\",\"problem\":\"...\",\"suggestion\":\"...\"}]}"
+            "你是图谱审核助手。检查节点安排是否有明显错误。\n"
+            "只标记一眼就能看出的问题，不要求完美。\n\n"
+            "【检查项】\n"
+            "1. 跨学科错位：如物理概念挂到了化学节点下\n"
+            "2. 前置倒置：如「加法」被标记为「乘法」的前置而非反过来\n"
+            "3. 不相关父节点：如「光的折射」挂到了「力学[中继]」下\n"
+            "4. 自引用：节点引用自己作为 parent 或 prerequisite_for\n\n"
+            "返回 JSON: {\"ok\":bool,\"issues\":[{\"title\":\"节点标题\",\"problem\":\"简短描述\",\"suggestion\":\"建议修改\"}]}"\n"
+            "没有问题时返回 {\"ok\":true,\"issues\":[]}"
         )
-        user = f"图结构:\n{snap}\n\n安排结果:\n{placements_json}\n请审核。"
+        user = (
+            f"=== 图结构 ===\n{snap}\n\n"
+            f"=== 待审核安排 ===\n{placements_json}\n\n"
+            "请审核并返回结果。"
+        )
         try:
             response = self._client.chat.completions.create(
                 model=self._model_name,
