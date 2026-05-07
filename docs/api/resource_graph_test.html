@@ -243,8 +243,6 @@
     .subject-card .sub-stats { font-size: 12px; color: var(--fg-soft); margin-bottom: 6px; }
     .subject-card .btn-soft { font-size: 11px; padding: 4px 10px; }
     .subject-card .btn-soft:hover { opacity: 0.85; }
-    #newSubjectTag { padding: 4px 8px; font-size: 13px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg-card); color: var(--fg); }
-    #newSubjectLang { padding: 4px 6px; font-size: 13px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg-card); color: var(--fg); }
 
     /* --- Upload Modal --- */
     .modal-overlay {
@@ -333,18 +331,7 @@
       <section class="panel section">
         <h2>学科资源管理</h2>
         <div class="stack" style="margin-bottom:8px">
-          <input id="newSubjectName" placeholder="输入学科名（如高等数学）" style="flex:1" />
-          <select id="newSubjectTag">
-            <option value="math">数学</option>
-            <option value="language">语言</option>
-            <option value="physics">物理</option>
-            <option value="chemistry">化学</option>
-            <option value="biology">生物</option>
-            <option value="history">历史</option>
-            <option value="geography">地理</option>
-            <option value="science">科学</option>
-          </select>
-          <input id="newSubjectLang" placeholder="语言ID（可选）" style="width:80px" />
+          <input id="newSubjectName" placeholder="输入学科名（如高等数学、英语听力、编程基础）" style="flex:1" />
           <button id="createSubjectBtn" class="btn-green">创建学科</button>
         </div>
         <div id="subjectCards" class="subject-grid"></div>
@@ -1201,12 +1188,8 @@
     async function createSubject() {
       const name = el('newSubjectName').value.trim();
       if (!name) return alert('请输入学科名');
-      const subject = el('newSubjectTag').value;
-      const lang = el('newSubjectLang').value.trim();
       const form = new FormData();
       form.append('title', name);
-      form.append('subject', subject);
-      if (lang) form.append('language_id', lang);
       try {
         const res = await api('/knowledge/subject', { method: 'POST', body: form });
         log('学科已创建', res);

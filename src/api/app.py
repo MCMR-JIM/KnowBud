@@ -808,19 +808,43 @@ def get_knowledge_graph() -> KnowledgeGraphResponse:
     return _build_graph_response(state)
 
 
+def _classify_subject_by_title(backend: "SessionBackend", title: str) -> tuple[str, str | None]:
+    import json as _json
+
+    system = (
+        "你是学科分类助手。给定一个学科或课程名称，输出最匹配的学科分类。\n"
+        "可选学科: math, language, physics, chemistry, biology, history, geography, science\n"
+        "如果是语言学科（英语/语文/日语等），同时输出 language_id (english/chinese/japanese等)。\n"
+        '返回 JSON: {"subject":"science","language_id":null}'
+    )
+    user = f"学科名: {title}"
+    try:
+        client = backend.llm_skill.client
+        response = client.chat.completions.create(
+            model=backend.llm_skill.model_name,
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=0.1, timeout=15.0,
+        )
+        raw = (response.choices[0].message.content or "").strip()
+        data = _json.loads(raw)
+        subj = data.get("subject", "science")
+        lang = data.get("language_id")
+        valid = {"math", "language", "physics", "chemistry", "biology", "history", "geography", "science"}
+        return (subj if subj in valid else "science"), (lang if isinstance(lang, str) else None)
+    except Exception:
+        return "science", None
+
+
 @app.post("/v1/knowledge/subject", tags=["knowledge"])
 def create_subject_root(
     title: str = Form(...),
-    subject: str = Form(...),
-    language_id: str = Form(""),
 ) -> dict[str, Any]:
     backend = get_backend()
     _title = title.strip()
-    _subject = subject.strip()
-    _lang = language_id.strip() or None
-    tags = [f"subject:{_subject}", "facet:root"]
-    if _lang:
-        tags.append(f"language:{_lang}")
+    subject, language_id = _classify_subject_by_title(backend, _title)
+    tags = [f"subject:{subject}", "facet:root"]
+    if language_id:
+        tags.append(f"language:{language_id}")
 
     proposal = backend.create_graph_proposal_from_resource(
         title=_title,
