@@ -254,19 +254,47 @@ export default function StudyRoom() {
     }
   };
 
-  const mockCheckpoints: Record<number, any> = {
-    2: { type: 'choice', message: '小朋友，三角龙有几个角呢？快选一个吧！', options: ['A. 1个', 'B. 2个', 'C. 3个', 'D. 没有角'] },
-    4: { type: 'short_answer', message: '恐龙好神奇！打字或者语音告诉我，你最喜欢哪种恐龙呀？' }
-  };
+  // 动态获取当前主线 Topic_ID (组件顶部可加入状态：const [currentTopicId, setCurrentTopicId] = useState('');)
+  useEffect(() => {
+    SessionAPI.getState().then(res => {
+      if (res.data?.learning?.current_topic_id) {
+        setCurrentTopicId(res.data.learning.current_topic_id);
+      }
+    }).catch(e => console.error("获取当前状态失败", e));
+  }, []);
 
+  const [currentTopicId, setCurrentTopicId] = useState('');
+
+  // 🌟 真实接入后端：AI 根据 PDF 页码动态出题
   const handlePageChange = async (p: number) => {
     setCurrentPage(p);
-    if (answeredPages.includes(p)) { setInteractionState({ type: 'none', message: '' }); return; }
-    if (mockCheckpoints[p]) {
-      setInteractionState(mockCheckpoints[p]);
-      handleHoverRead(mockCheckpoints[p].message);
-    } else {
+    
+    // 如果这页已经答过或播报过，就不再重复打扰孩子
+    if (answeredPages.includes(p)) { 
+      setInteractionState({ type: 'none', message: '' }); 
+      return; 
+    }
+
+    if (!currentTopicId) return; // 如果没有获取到主题，暂不触发
+
+    setIsLoading(true);
+    try {
+      // 真实请求：告诉后端当前读到了第几页
+      const response = await SessionAPI.getKnowledgeByPage(currentTopicId, p);
+      const knowledgeText = response.data.knowledge_text;
+
+      // 如果大模型返回了这一页的引导语或考点
+      if (knowledgeText && knowledgeText.trim() !== "") {
+        setInteractionState({ type: 'feedback', message: knowledgeText });
+        handleHoverRead(knowledgeText); // 星空兔自动开口说话
+      } else {
+        setInteractionState({ type: 'none', message: '' });
+      }
+    } catch (error) {
+      console.error("AI 巡场提问失败:", error);
       setInteractionState({ type: 'none', message: '' });
+    } finally {
+      setIsLoading(false);
     }
   };
 
