@@ -981,8 +981,9 @@ def _run_structured_ingestion(
                 pass
 
     # ── Process exercises ──
+    exercise_segments: list[ResourceSegment] = []
     if exercise_blocks:
-        _process_exercise_blocks(
+        exercise_segments = _process_exercise_blocks(
             backend=backend, blocks=exercise_blocks, chunks=chunks,
             topics=topics, topic_map=topic_map,
             record=record, subject=subject, language_id=language_id,
@@ -990,9 +991,10 @@ def _run_structured_ingestion(
         )
 
     # ── Build segments ──
-    return _build_segments_from_scan(
+    scan_segments = _build_segments_from_scan(
         scan=scan, record=record, topics=topics, topic_map=topic_map,
     )
+    return scan_segments + exercise_segments
 
 
 # ── Phase 1 helpers ──
@@ -1190,8 +1192,39 @@ def _process_exercise_blocks(
     language_id: str | None,
     profile: object,
     _proposal_tags: object,
-) -> None:
-    pass  # Exercises processed in segment builder
+) -> list[ResourceSegment]:
+    segments: list[ResourceSegment] = []
+    seg_offset = 9000  # high offset to avoid ID collision
+    for block in blocks:
+        block_text = _extract_block_text(block, chunks)
+        if not block_text:
+            continue
+        # Match exercise text to nearest topic by keyword overlap
+        matched_tid = None
+        best_score = 0
+        block_lower = block_text.lower()
+        for title, tid in topic_map.items():
+            score = sum(1 for word in title.lower().split() if word in block_lower)
+            if score > best_score:
+                best_score = score
+                matched_tid = tid
+        seg_offset += 1
+        segments.append(
+            ResourceSegment(
+                segment_id=_segment_id(record.resource_id, seg_offset),
+                start_ms=0, end_ms=None, label="exercise",
+                status="classified" if matched_tid else "unclassified",
+                sequence_index=seg_offset,
+                text=block_text[:2000],
+                locator={"kind": "structured", "section_type": "exercise", "bound_topic_id": matched_tid},
+                topic_id=matched_tid,
+                proposal_id=None,
+                decision="link" if matched_tid else "unclassified",
+                confidence=min(0.85, best_score / 5) if matched_tid else 0.0,
+                reason=f"exercise matched to topic by keyword overlap (score={best_score})" if matched_tid else "no matching topic found",
+            )
+        )
+    return segments
 
 
 def _build_segments_from_scan(
