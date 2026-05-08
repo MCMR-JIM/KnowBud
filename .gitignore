@@ -56,3 +56,9 @@ htmlcov/
 
 # 前端依赖与产物 (Frontend)
 node_modules/
+
+# 忽略本地数据库文件
+data/state.db
+data/state.db-shm
+data/state.db-wal
+*.db
