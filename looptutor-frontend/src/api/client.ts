@@ -86,7 +86,12 @@ export const SettingsAPI = {
   getSettings: () => apiClient.get('/settings'),
   saveSettings: (data: Record<string, unknown>) => apiClient.post('/settings', data),
   getModels: () => apiClient.get('/settings/models'),
-  downloadModel: (model: string, path: string) => apiClient.post('/settings/model/download', { model, download_path: path }),
+  downloadModel: (model: string, path: string) => {
+    const fd = new FormData();
+    fd.append('model', model);
+    fd.append('path', path);
+    return apiClient.post('/settings/model/download', fd);
+  },
   getDownloadStatus: (model: string) => apiClient.get(`/settings/model/download/status`, { params: { model } }),
   cancelDownload: (model: string) => apiClient.post('/settings/model/download/cancel', { model }),
   deleteModel: (model: string) => apiClient.delete('/settings/model/download', { params: { model } }),
