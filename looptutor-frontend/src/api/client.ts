@@ -90,4 +90,5 @@ export const SettingsAPI = {
   getDownloadStatus: (model: string) => apiClient.get(`/settings/model/download/status`, { params: { model } }),
   cancelDownload: (model: string) => apiClient.post('/settings/model/download/cancel', { model }),
   deleteModel: (model: string) => apiClient.delete('/settings/model/download', { params: { model } }),
+  validatePath: (model: string, path: string) => apiClient.post('/settings/model/validate', new URLSearchParams({ model, path }).toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }),
 };

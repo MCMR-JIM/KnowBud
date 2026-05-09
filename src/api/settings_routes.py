@@ -267,6 +267,21 @@ def delete_model(model: str = Query(...), path: str = Query(...)) -> dict[str, A
 
     with download_lock:
         download_progress.pop(model, None)
+
+
+@router.post("/model/validate")
+def validate_model_path(model: str = Form(...), path: str = Form(...)):
+    """Check if given directory contains valid model files (config.json etc)."""
+    model_path = Path(path)
+    if not model_path.exists():
+        return {"valid": False, "error": "路径不存在"}
+    if not model_path.is_dir():
+        return {"valid": False, "error": "路径不是文件夹"}
+    required = ["config.json"]
+    missing = [f for f in required if not (model_path / f).exists()]
+    if missing:
+        return {"valid": False, "error": f"缺少必要文件: {', '.join(missing)}。请确认路径指向模型快照目录（含 config.json）。"}
+    return {"valid": True, "files": sorted(p.name for p in model_path.iterdir() if p.is_file())[:20]}
         download_state.pop(model, None)
 
     return {"model": model, "deleted": True}
