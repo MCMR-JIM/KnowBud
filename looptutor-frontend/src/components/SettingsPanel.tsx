@@ -1,7 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { createPortal } from 'react-dom';
 import { SettingsAPI } from '../api/client';
-import { useAppDialog } from './AppDialog';
 
 type GPUInfo = {
   cuda_available: boolean;
@@ -71,7 +69,6 @@ export default function SettingsPanel() {
   const [saving, setSaving] = useState(false);
   const [confirmModal, setConfirmModal] = useState<{open: boolean, title: string, message: string, onConfirm: () => void, confirmText: string} | null>(null);
   const intervalRefs = useRef<Record<string, ReturnType<typeof setInterval>>>({});
-  const appDialog = useAppDialog();
 
   useEffect(() => {
     void loadSettings();
@@ -79,16 +76,6 @@ export default function SettingsPanel() {
     void detectGPU();
     void scanExistingModelsFromCache();
   }, []);
-
-  // Save modelPaths to backend whenever they change
-  useEffect(() => {
-    if (Object.keys(modelPaths).length > 0) {
-      const timer = setTimeout(() => {
-        SettingsAPI.saveSettings({ model_paths: modelPaths }).catch(() => {});
-      }, 300);
-      return () => clearTimeout(timer);
-    }
-  }, [modelPaths]);
 
   async function scanExistingModelsFromCache() {
     try {
@@ -149,9 +136,6 @@ export default function SettingsPanel() {
         setMaxTokens(data.local.max_tokens || 500);
         setTemp(data.local.temperature != null ? data.local.temperature : 0.7);
         setTimeoutSec(data.local.timeout_sec || 120);
-      }
-      if (data.model_paths && typeof data.model_paths === 'object') {
-        setModelPaths(data.model_paths);
       }
     } catch { /* ignore */ }
   }
@@ -279,18 +263,18 @@ export default function SettingsPanel() {
 
   const handleCancel = useCallback(async (modelKey: string) => {
     const p = modelPaths[modelKey] || '';
-    const ok = await appDialog.confirm('将取消下载。' + '\n' + '路径: ' + p + '\n\n' + '是否同时清理已下载的部分文件？', { intent: 'warning', confirmText: '取消并清理', title: '确认取消' });
-    if (!ok) {
-      await SettingsAPI.cancelDownload(modelKey);
-      if (intervalRefs.current[modelKey]) { clearInterval(intervalRefs.current[modelKey]); delete intervalRefs.current[modelKey]; }
-      setDownloadStates((prev) => ({ ...prev, [modelKey]: { progress: 0, status: 'cancelled' } }));
-    } else {
-      await SettingsAPI.cancelDownload(modelKey);
-      if (p) await SettingsAPI.deleteModel(modelKey).catch(() => {});
-      if (intervalRefs.current[modelKey]) { clearInterval(intervalRefs.current[modelKey]); delete intervalRefs.current[modelKey]; }
-      setDownloadStates((prev) => ({ ...prev, [modelKey]: { progress: 0, status: 'cancelled' } }));
-    }
-  }, [modelPaths, appDialog]);
+    setConfirmModal({
+      open: true, title: '确认取消',
+      message: `将取消下载。\n路径: ${p}\n\n是否同时清理已下载的部分文件？`,
+      confirmText: '取消并清理', onConfirm: async () => {
+        setConfirmModal(null);
+        await SettingsAPI.cancelDownload(modelKey);
+        if (p) await SettingsAPI.deleteModel(modelKey).catch(() => {});
+        if (intervalRefs.current[modelKey]) { clearInterval(intervalRefs.current[modelKey]); delete intervalRefs.current[modelKey]; }
+        setDownloadStates((prev) => ({ ...prev, [modelKey]: { progress: 0, status: 'cancelled' } }));
+      }
+    });
+  }, [modelPaths]);
 
   const handleDelete = useCallback(async (modelKey: string) => {
     const path = modelPaths[modelKey]?.trim();
@@ -581,10 +565,17 @@ export default function SettingsPanel() {
                           <button onClick={() => handleCancel(m.key)} className="rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100">取消</button>
                         </>
                       ) : isDone ? (
-                        <button onClick={async () => {
+                        <button onClick={() => {
                           const p = modelPaths[m.key] || '';
-                          const ok = await appDialog.confirm('将删除以下路径的模型文件：' + '\n' + p + '\n\n' + '此操作不可撤销。', { intent: 'danger', confirmText: '确认删除', title: '确认删除' });
-                          if (ok) handleDelete(m.key);
+                          setConfirmModal({
+                            open: true, title: '确认删除',
+                            message: `将删除以下路径的模型文件：\n${p}\n\n此操作不可撤销。`,
+                            confirmText: '确认删除',
+                            onConfirm: () => {
+                              setConfirmModal(null);
+                              handleDelete(m.key);
+                            }
+                          });
                         }} className="rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100">删除</button>
                       ) : (
                         <button onClick={async () => {
@@ -593,14 +584,24 @@ export default function SettingsPanel() {
                             if (!res.data?.path) return;
                             const path = res.data.path;
                             setModelPaths((prev) => ({ ...prev, [m.key]: path }));
+                            // Check if folder is empty
                             const validation = await SettingsAPI.validatePath(m.key, path);
                             const hasFiles = validation.data?.files && validation.data.files.length > 0;
                             if (hasFiles) {
-                              const ok = await appDialog.confirm(path + '\n' + '此文件夹已有文件，建议选择空文件夹开始下载。是否继续？', { intent: 'warning', confirmText: '仍然下载', title: '文件夹不为空' });
-                              if (!ok) return;
+                              setConfirmModal({
+                                open: true, title: '文件夹不为空',
+                                message: `${path}\n此文件夹已有文件，建议选择空文件夹开始下载。是否继续？`,
+                                confirmText: '仍然下载',
+                                onConfirm: async () => {
+                                  setConfirmModal(null);
+                                  await SettingsAPI.downloadModel(m.key, path);
+                                  setDownloadStates((prev) => ({ ...prev, [m.key]: { progress: 0, status: 'downloading' } }));
+                                }
+                              });
+                            } else {
+                              await SettingsAPI.downloadModel(m.key, path);
+                              setDownloadStates((prev) => ({ ...prev, [m.key]: { progress: 0, status: 'downloading' } }));
                             }
-                            await SettingsAPI.downloadModel(m.key, path);
-                            setDownloadStates((prev) => ({ ...prev, [m.key]: { progress: 0, status: 'downloading' } }));
                           } catch { /* cancelled */ }
                         }} className="rounded-lg bg-blue-500 px-4 py-1.5 text-xs font-bold text-gray-900 hover:bg-blue-600">下载</button>
                       )}
@@ -630,67 +631,39 @@ export default function SettingsPanel() {
         </div>
       )}
 
+      {/* ===== Save Button ===== */}
       <div className="sticky bottom-0 border-t border-gray-100 bg-white/90 pt-6 backdrop-blur flex items-center gap-2">
         <span className="text-xs text-gray-400">{saving ? '保存中...' : '已自动保存'}</span>
         <span className="text-xs text-emerald-500">{saving ? '' : '✓'}</span>
       </div>
-      
-      {/* ===== Confirmation Modal ===== */}
-      {confirmModal?.open && createPortal(
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-gray-950/45 p-4 backdrop-blur-sm"
-          onClick={() => setConfirmModal(null)}
-        >
-          <div
-            className="w-full max-w-md overflow-hidden rounded-[32px] border border-white/70 bg-white shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
+
+      {/* Confirm modal */}
+      {confirmModal?.open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-950/45 p-4 backdrop-blur-sm" onClick={() => setConfirmModal(null)}>
+          <div className="w-full max-w-md overflow-hidden rounded-[32px] border border-white/70 bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="relative overflow-hidden bg-gradient-to-br from-pink-500 via-rose-400 to-orange-300 p-6 text-white">
               <div className="absolute -right-12 -top-16 h-44 w-44 rounded-full bg-white/20 blur-2xl"></div>
               <div className="relative flex items-start justify-between gap-4">
                 <div>
-                  <p className="text-xs font-bold uppercase tracking-[0.28em] text-white/75">
-                    操作确认
-                  </p>
+                  <p className="text-xs font-bold uppercase tracking-[0.28em] text-white/75">操作确认</p>
                   <h2 className="mt-2 text-2xl font-black">{confirmModal.title}</h2>
-                  <p className="mt-1 text-sm text-white/80">确认继续当前操作。</p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setConfirmModal(null)}
-                  className="rounded-full bg-white/15 p-2 text-white transition-colors hover:bg-white/25"
-                  aria-label="关闭弹窗"
-                >
-                  <span className="text-base font-bold">×</span>
+                <button type="button" onClick={() => setConfirmModal(null)} className="rounded-full bg-white/15 p-2 text-white transition-colors hover:bg-white/25" aria-label="关闭">
+                  ×
                 </button>
               </div>
             </div>
-
             <div className="space-y-4 p-6">
               <div className="rounded-2xl border border-gray-100 bg-gray-50/80 p-4">
-                <p className="whitespace-pre-wrap text-sm leading-6 text-gray-600">
-                  {confirmModal.message}
-                </p>
+                <p className="whitespace-pre-wrap text-sm leading-6 text-gray-600">{confirmModal.message}</p>
               </div>
             </div>
-
             <div className="flex justify-end gap-3 border-t border-gray-100 bg-gray-50 px-6 py-4">
-              <button
-                onClick={() => setConfirmModal(null)}
-                className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-bold text-gray-600 transition-colors hover:bg-gray-100"
-              >
-                取消
-              </button>
-              <button
-                onClick={confirmModal.onConfirm}
-                className="rounded-xl bg-gray-900 px-5 py-2 text-sm font-black text-white shadow-lg shadow-gray-200 transition-colors hover:bg-pink-600"
-              >
-                {confirmModal.confirmText}
-              </button>
+              <button onClick={() => setConfirmModal(null)} className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-bold text-gray-600 hover:bg-gray-100">取消</button>
+              <button onClick={confirmModal.onConfirm} className="rounded-xl bg-gray-900 px-5 py-2 text-sm font-black text-white shadow-lg shadow-gray-200 hover:bg-pink-600 transition-colors">{confirmModal.confirmText}</button>
             </div>
           </div>
-        </div>,
-        document.body
+        </div>
       )}
     </div>
   );

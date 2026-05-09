@@ -21,25 +21,14 @@ router = APIRouter(prefix="/v1/settings", tags=["settings"])
 
 @router.get("/scan-models")
 def scan_existing_models():
-    """Scan user-specified paths and HF cache for already-downloaded models."""
+    """Scan HF cache and return which models are already downloaded."""
     from huggingface_hub import scan_cache_dir
 
     found: dict[str, str] = {}
-    
-    # 1. Check user-specified paths first (persisted in settings)
-    settings = load_raw_settings()
-    saved_paths = settings.get("model_paths", {})
-    for model_key, path in saved_paths.items():
-        if path and Path(path).exists():
-            found[model_key] = path
-
-    # 2. Fallback: scan HF cache for repos matching known models
     try:
         hf_cache_info = scan_cache_dir()
         for repo in hf_cache_info.repos:
             for model_key, model_def in LLM_MODELS.items():
-                if model_key in found:
-                    continue  # already found via user path
                 if model_def["repo_id"] in repo.repo_id:
                     snapshots = list(repo.repo_path.glob("snapshots/*"))
                     if snapshots:
@@ -147,10 +136,6 @@ def _save_settings(data: dict[str, Any]) -> None:
         json.dump(data, file, ensure_ascii=False, indent=2)
 
 
-def load_raw_settings() -> dict[str, Any]:
-    return _load_settings()
-
-
 def _detect_gpu() -> dict[str, Any]:
     info: dict[str, Any] = {"cuda_available": False, "gpu_name": "", "vram_total_gb": 0, "vram_free_gb": 0}
 
@@ -208,8 +193,6 @@ def save_settings(payload: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         settings["remote"].update(payload["remote"] or {})
     if "local" in payload:
         settings["local"].update(payload["local"] or {})
-    if "model_paths" in payload:
-        settings["model_paths"] = payload["model_paths"]
     _save_settings(settings)
     logger.info("settings saved", extra={"mode": settings["mode"]})
     return settings
@@ -394,41 +377,37 @@ def pause_download(model: str = Form(...)) -> dict[str, Any]:
 
 
 @router.delete("/model/download")
-def delete_model(model: str = Query(...)) -> dict[str, Any]:
-    # Use persisted model_paths from settings, NOT in-memory download_paths
-    settings = load_raw_settings()
-    saved_paths = settings.get("model_paths", {})
-    path = saved_paths.get(model, "")
-    
-    if not path:
-        return {"model": model, "deleted": False, "reason": "no path configured"}
-    
-    target_path = Path(path).resolve()
-    
-    # SAFETY GUARDS — never delete if path is dangerous
+def delete_model(model: str = Query(...), path: str = Query("")) -> dict[str, Any]:
+    target = path.strip() or download_paths.get(model, "")
+    if not target:
+        return {"model": model, "deleted": False, "reason": "no path provided"}
+    target_path = Path(target).resolve()
+
+    # --- SAFETY CHECKS ---
+    # 1. Path must exist and be a directory
     if not target_path.exists():
         return {"model": model, "deleted": False, "reason": "path not found"}
     if not target_path.is_dir():
         return {"model": model, "deleted": False, "reason": "path is not a directory"}
-    
-    # Must contain model files (config.json + tokenizer) as proof this is a model directory
-    required_files = ["config.json", "tokenizer_config.json"]
-    if not all((target_path / f).exists() for f in required_files):
-        return {"model": model, "deleted": False, "reason": "path does not appear to be a model directory (missing config.json/tokenizer_config.json)"}
-    
-    # Reject dangerous paths
-    dangerous = [Path.home(), Path("C:/"), Path("D:/"), Path("E:/Programme"),
-                 Path("E:/Programme/LoopTutor"), Path(__file__).resolve().parents[3]]
-    if any(target_path == d or str(target_path).startswith(str(d) + "/") and list(target_path.parents).count(d) > 0 for d in dangerous if d.exists()):
-        # Actually check more carefully — too many false positives. Just check direct matches.
-        pass
-    for d in dangerous:
-        if target_path == d:
-            return {"model": model, "deleted": False, "reason": "refusing to delete system/project directory"}
+
+    # 2. Path must look like a model directory (contain config.json or safetensors)
+    is_model_dir = (
+        (target_path / "config.json").exists()
+        or any(p.suffix == ".safetensors" for p in target_path.iterdir())
+        or (target_path / "model.safetensors.index.json").exists()
+    )
+    if not is_model_dir:
+        return {"model": model, "deleted": False, "reason": "路径不包含模型文件，拒绝删除以保护数据"}
+
+    # 3. Never delete project-critical directories
+    dangerous = {".git", ".env", ".gitignore", "package.json", "pyproject.toml", "Cargo.toml", "setup.py", "Makefile"}
+    for item in dangerous:
+        if (target_path / item).exists() and (target_path / item).is_file():
+            return {"model": model, "deleted": False, "reason": f"路径包含项目文件 ({item})，拒绝删除以保护项目"}
 
     try:
         import shutil
-        shutil.rmtree(str(target_path), ignore_errors=True)
+        shutil.rmtree(target_path, ignore_errors=False)
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"delete failed: {str(exc)}") from exc
 
@@ -437,11 +416,7 @@ def delete_model(model: str = Query(...)) -> dict[str, Any]:
         download_state.pop(model, None)
         download_speed.pop(model, None)
         download_paths.pop(model, None)
-
-    # Also remove from saved settings
-    saved_paths.pop(model, None)
-    settings["model_paths"] = saved_paths
-    _save_settings(settings)
+        download_speed.pop(model, None)
 
     return {"model": model, "deleted": True}
 
