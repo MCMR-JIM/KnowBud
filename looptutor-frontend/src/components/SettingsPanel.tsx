@@ -400,26 +400,13 @@ export default function SettingsPanel() {
           <div>
             <div className="mb-2 flex items-center gap-1">
               <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">模型路径</span>
-              <InfoTooltip text="本地模型的文件夹路径，首次使用需下载" />
+              <InfoTooltip text="本地模型的文件夹绝对路径（如 D:\Models\gemma-3-4b），首次使用需下载" />
             </div>
-            <div className="flex gap-2">
-              <input
-                type="text" value={localPath} onChange={(e) => setLocalPath(e.target.value)}
-                placeholder="输入或选择本地模型目录路径"
-                className="flex-1 rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold outline-none transition-all focus:border-blue-300 focus:ring-4 focus:ring-blue-50"
-              />
-              <button
-                onClick={async () => {
-                  try {
-                    const dirHandle = await (window as any).showDirectoryPicker();
-                    setLocalPath(dirHandle.name);
-                  } catch { /* user cancelled */ }
-                }}
-                className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm font-semibold text-gray-600 transition-all hover:bg-gray-100"
-              >
-                浏览
-              </button>
-            </div>
+            <input
+              type="text" value={localPath} onChange={(e) => setLocalPath(e.target.value)}
+              placeholder="D:\Models\gemma-3-4b"
+              className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold outline-none transition-all focus:border-blue-300 focus:ring-4 focus:ring-blue-50"
+            />
           </div>
 
           <div className="grid grid-cols-2 gap-4">
@@ -497,40 +484,14 @@ export default function SettingsPanel() {
                       <span className="col-span-2">推荐显卡: <strong className="text-gray-700">{m.gpu}</strong></span>
                     </div>
 
-                    {/* Download path with folder picker */}
-                    <div className="mb-3 flex items-center gap-2">
+                    {/* Download path */}
+                    <div className="mb-3">
                       <input
                         type="text" value={modelPaths[m.key] || ''}
                         onChange={(e) => setModelPaths((prev) => ({ ...prev, [m.key]: e.target.value }))}
-                        placeholder="下载路径"
-                        className="flex-1 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-xs font-semibold outline-none transition-all focus:border-blue-300 focus:bg-white"
+                        placeholder="D:\Models\gemma-3-4b"
+                        className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-xs font-semibold outline-none transition-all focus:border-blue-300 focus:bg-white"
                       />
-                      <input
-                        ref={(el) => { if (el) { el.setAttribute('webkitdirectory', ''); el.setAttribute('directory', ''); } }}
-                        type="file"
-                        className="hidden"
-                        id={`folder-picker-${m.key}`}
-                        onChange={(e) => {
-                          const files = e.target.files;
-                          if (files && files.length > 0) {
-                            const dirName = files[0].webkitRelativePath.split('/')[0];
-                            setModelPaths((prev) => ({ ...prev, [m.key]: dirName }));
-                          }
-                          e.target.value = '';
-                        }}
-                      />
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          try {
-                            const dirHandle = await (window as any).showDirectoryPicker();
-                            setModelPaths((prev) => ({ ...prev, [m.key]: dirHandle.name }));
-                          } catch { /* user cancelled */ }
-                        }}
-                        className="shrink-0 rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-bold text-gray-600 hover:bg-gray-100"
-                      >
-                        浏览
-                      </button>
                     </div>
                     <div className="mb-2 flex items-center gap-1">
                       <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">下载路径</span>
@@ -548,7 +509,7 @@ export default function SettingsPanel() {
                       {isDownloading ? `${Math.round(progress)}%` : isDone ? '已完成 ✓' : isError ? '下载失败 ✗' : ds?.status === 'cancelled' ? '已取消' : '等待下载'}
                     </span>
 
-                    <div className="mt-3 flex flex-wrap gap-2">
+                    <div className="mt-3 flex flex-wrap justify-end gap-2">
                       {isDownloading ? (
                         <>
                           <button onClick={() => handlePause(m.key)} className="rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-bold text-gray-600 hover:bg-gray-200">暂停</button>
