@@ -76,46 +76,7 @@ export default function SettingsPanel() {
     void loadSettings();
     void loadModels();
     void detectGPU();
-    void scanExistingModelsFromCache();
   }, []);
-
-  async function scanExistingModelsFromCache() {
-    try {
-      const res = await SettingsAPI.scanModels();
-      if (res.data?.models) {
-        setModelPaths((prev) => ({ ...prev, ...res.data.models }));
-      }
-    } catch { /* ignore */ }
-  }
-
-  // Auto-save on any config change (debounced 500ms)
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setSaving(true);
-      SettingsAPI.saveSettings({
-        mode, provider,
-        remote: { api_key: apiKey, base_url: baseUrl, model },
-        local: { model_path: localPath, precision: dtype, max_tokens: maxTokens, temperature: temp },
-      }).finally(() => setSaving(false));
-    }, 500);
-    return () => clearTimeout(timer);
-  }, [mode, provider, apiKey, baseUrl, model, localPath, dtype, maxTokens, temp]);
-
-  // Auto-save on any config change (debounced 500ms)
-  useEffect(() => {
-    const active = Object.entries(intervalRefs.current);
-    for (const [, id] of active) clearInterval(id);
-    intervalRefs.current = {};
-
-    for (const [key, state] of Object.entries(downloadStates)) {
-      if (state.status === 'downloading') {
-        intervalRefs.current[key] = setInterval(() => void pollDownload(key), 500);
-      }
-    }
-    return () => {
-      for (const id of Object.values(intervalRefs.current)) clearInterval(id);
-    };
-  }, [downloadStates]);
 
   async function loadSettings() {
     try {
@@ -123,22 +84,9 @@ export default function SettingsPanel() {
       const data = res.data;
       if (data.mode) setMode(data.mode);
       if (data.provider) setProvider(data.provider);
-      if (data.remote) {
-        setApiKey(data.remote.api_key || '');
-        setBaseUrl(data.remote.base_url || '');
-        setModel(data.remote.model || '');
-        if (!data.remote.base_url && data.provider) {
-          const prov = PROVIDERS.find((p) => p.key === data.provider);
-          if (prov) setBaseUrl(prov.baseUrl);
-        }
-      }
-      if (data.local) {
-        setLocalPath(data.local.model_path || '');
-        setDtype(data.local.precision || 'bfloat16');
-        setMaxTokens(data.local.max_tokens || 500);
-        setTemp(data.local.temperature != null ? data.local.temperature : 0.7);
-        setTimeoutSec(data.local.timeout_sec || 120);
-      }
+      if (data.remote) { setApiKey(data.remote.api_key||''); setBaseUrl(data.remote.base_url||''); setModel(data.remote.model||''); }
+      if (data.local) { setLocalPath(data.local.model_path||''); setDtype(data.local.precision||'bfloat16'); setMaxTokens(data.local.max_tokens||500); setTemp(data.local.temperature!=null?data.local.temperature:0.7); setTimeoutSec(data.local.timeout_sec||120); }
+      if (data.model_paths) setModelPaths(data.model_paths);
     } catch { /* ignore */ }
   }
 
@@ -147,31 +95,7 @@ export default function SettingsPanel() {
     try {
       const res = await SettingsAPI.getGPU();
       setGpu(res.data);
-    } catch {
-      setGpu(null);
-    } finally {
-      setGpuLoading(false);
-    }
-  }
-
-  async function testConnection() {
-    setTestResult('检测中...');
-    try {
-      await SettingsAPI.getModels();
-      setTestResult('✓ 连接成功');
-    } catch {
-      setTestResult('✗ 连接失败');
-    }
-  }
-
-  function recommendedModel(): ModelDef | null {
-    if (!gpu || !gpu.cuda_available) return null;
-    const free = gpu.vram_free_gb || gpu.vram_total_gb;
-    if (free >= 54) return models.find((m) => m.key === 'qwen-27b') || null;
-    if (free >= 24) return models.find((m) => m.key === 'gemma-12b') || null;
-    if (free >= 14) return models.find((m) => m.key === 'qwen-7b') || null;
-    if (free >= 8) return models.find((m) => m.key === 'gemma-4b') || null;
-    return models.find((m) => m.key === 'gemma-4b') || null;
+    } catch { /* ignore */ } finally { setGpuLoading(false); }
   }
 
   async function loadModels() {
@@ -180,22 +104,51 @@ export default function SettingsPanel() {
       const raw = res.data.models || {};
       const list: ModelDef[] = Object.entries(raw).map(([key, info]: [string, unknown]) => {
         const m = info as Record<string, string>;
-        return {
-          key, label: m.label || key, size: m.size || '', vram: m.vram || '',
-          gpu: m.gpu || '', repo_id: m.repo_id || '', description: m.description || '',
-        };
+        return { key, label: m.label || key, size: m.size || '', vram: m.vram || '', gpu: m.gpu || '', repo_id: m.repo_id || '', description: m.description || '' };
       });
       setModels(list);
       for (const def of list) void checkDownloadStatus(def.key);
-      // Parser models
       const rawParser = res.data.parser_models || {};
       setParserModels(Object.entries(rawParser).map(([key, info]: [string, unknown]) => {
         const m = info as Record<string, string>;
         return { key, label: m.label || key, size: m.size || '', vram: m.vram || '', gpu: m.gpu || '', repo_id: m.repo_id || '', description: m.description || '' };
       }));
-      for (const def of parserModels) void checkDownloadStatus(def.key);
     } catch { /* ignore */ }
   }
+
+  async function testConnection() {
+    setTestResult('检测中...');
+    try { await SettingsAPI.getModels(); setTestResult('✓ 连接成功'); }
+    catch { setTestResult('✗ 连接失败'); }
+  }
+
+  // Scan existing model paths to detect already-downloaded models
+  async function scanExistingModels() {
+    for (const m of [...models, ...parserModels]) {
+      const path = modelPaths[m.key]?.trim();
+      if (!path) continue;
+      try {
+        const res = await SettingsAPI.validatePath(m.key, path);
+        if (res.data?.valid) {
+          setDownloadStates((prev) => ({ ...prev, [m.key]: { progress: 100, status: 'done' } }));
+        }
+      } catch { /* ignore */ }
+    }
+  }
+
+  // Save modelPaths to backend on change
+  useEffect(() => {
+    if (Object.keys(modelPaths).length === 0) return;
+    const timer = setTimeout(() => {
+      SettingsAPI.saveSettings({ model_paths: modelPaths }).catch(() => {});
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [modelPaths]);
+
+  // Scan when models or paths change
+  useEffect(() => {
+    if (models.length > 0) void scanExistingModels();
+  }, [models, modelPaths]);
 
   async function checkDownloadStatus(modelKey: string) {
     try {
@@ -210,25 +163,6 @@ export default function SettingsPanel() {
       setDownloadStates((prev) => ({ ...prev, [modelKey]: { progress: prog, status, speed: res.data?.speed_mbps } }));
     } catch { /* ignore */ }
   }
-
-  // Scan existing model paths to detect already-downloaded models
-  async function scanExistingModels() {
-    for (const m of models) {
-      const path = modelPaths[m.key]?.trim();
-      if (!path) continue;
-      try {
-        const res = await SettingsAPI.validatePath(m.key, path);
-        if (res.data?.valid) {
-          setDownloadStates((prev) => ({ ...prev, [m.key]: { progress: 100, status: 'done' } }));
-        }
-      } catch { /* ignore */ }
-    }
-  }
-
-  // Scan when models or paths change
-  useEffect(() => {
-    if (models.length > 0) void scanExistingModels();
-  }, [models, modelPaths]);
 
   async function pollDownload(modelKey: string) {
     try {
@@ -296,6 +230,16 @@ export default function SettingsPanel() {
     }
   }, [modelPaths]);
 
+  function recommendedModel(): ModelDef | null {
+    if (!gpu || !gpu.cuda_available) return null;
+    const free = gpu.vram_free_gb || gpu.vram_total_gb;
+    if (free >= 54) return models.find((m) => m.key === 'qwen-27b') || null;
+    if (free >= 24) return models.find((m) => m.key === 'gemma-12b') || null;
+    if (free >= 14) return models.find((m) => m.key === 'qwen-7b') || null;
+    if (free >= 8) return models.find((m) => m.key === 'gemma-4b') || null;
+    return models.find((m) => m.key === 'gemma-4b') || null;
+  }
+
   const recommended = recommendedModel();
   const providerModels = PROVIDERS.find((p) => p.key === provider)?.models || [];
 
@@ -326,7 +270,7 @@ export default function SettingsPanel() {
           <div className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 transition-all duration-500 ease-out" style={{ width: `${progress}%` }}/>
         </div>
         <span className="text-sm text-gray-500">
-          {isDownloading ? `${Math.round(progress)}%` + (ds?.speed ? ` · ${ds.speed.toFixed(1)} MB/s` : '') : isDone ? '已完成 ✓' : isError(ds) ? '下载失败 ✗' : ds?.status === 'paused' ? '已暂停' : '等待下载'}
+          {isDownloading ? `${Math.round(progress)}%` + (ds?.speed ? ` · ${ds.speed.toFixed(1)} MB/s` : '') : isDone ? '已完成 ✓' : ds?.status === 'error' ? '下载失败 ✗' : ds?.status === 'paused' ? '已暂停' : '等待下载'}
         </span>
         <div className="mt-3 flex flex-wrap justify-end gap-2">
           {isDone ? (
@@ -341,7 +285,7 @@ export default function SettingsPanel() {
   };
 
   return (
-    <div className="bg-white/80 rounded-[32px] p-8 shadow-sm">
+    <div className="bg-white/80 rounded-[32px] p-8 shadow-sm space-y-6">
       <div>
         <h2 className="text-2xl font-black text-gray-800">系统设置</h2>
         <p className="mt-1 text-sm text-gray-400">配置 LLM 模型服务，管理本地模型下载。</p>
@@ -363,7 +307,7 @@ export default function SettingsPanel() {
 
       {/* ===== Remote API Settings ===== */}
       {mode === 'api' && (
-        <div className="space-y-6">
+        <div className="space-y-5">
           {/* Provider Selection Cards */}
           <div>
             <div className="mb-3 flex items-center gap-1">
@@ -499,13 +443,17 @@ export default function SettingsPanel() {
             </div>
             <select
               value={localPath}
-              onChange={(e) => setLocalPath(e.target.value)}
+              onChange={(e) => {
+                const path = e.target.value;
+                setLocalPath(path);
+              }}
               className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold outline-none transition-all focus:border-blue-300 focus:ring-4 focus:ring-blue-50"
             >
-              <option value="">未选择</option>
+              <option value="">末选择</option>
               {Object.entries(downloadStates).filter(([, ds]) => ds.status === 'done').map(([key]) => {
-                const m = models.find((mod) => mod.key === key);
-                return <option key={key} value={modelPaths[key] || ''}>{m?.label || key} ({modelPaths[key] || ''})</option>;
+                const m = models.find((mod) => mod.key === key) || parserModels.find((mod) => mod.key === key);
+                const p = modelPaths[key] || '';
+                return <option key={key} value={p}>{m?.label || key}</option>;
               })}
             </select>
           </div>
@@ -560,127 +508,14 @@ export default function SettingsPanel() {
               <>
                 <h3 className="mb-3 text-sm font-black uppercase tracking-[0.14em] text-gray-500">文档解析前置依赖</h3>
                 <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2">
-                  {parserModels.map((m) => renderModelCard(m))}
+                  {parserModels.map((m) => renderCard(m, true))}
                 </div>
                 <h3 className="mb-3 text-sm font-black uppercase tracking-[0.14em] text-gray-500">可选模型</h3>
               </>
             )}
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               {parserModels.length === 0 && <h3 className="mb-3 text-sm font-black uppercase tracking-[0.14em] text-gray-500">模型下载</h3>}
-              {models.map((m) => {
-                const ds = downloadStates[m.key];
-                const isDownloading = ds?.status === 'downloading';
-                const isDone = ds?.status === 'done';
-                const isError = ds?.status === 'error';
-                const progress = ds?.progress || 0;
-                const vramGB = parseFloat(m.vram) || 0;
-                const gpuVramOK = gpu && gpu.vram_total_gb >= vramGB;
-
-                return (
-                  <div key={m.key} className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm transition-shadow hover:shadow-md">
-                    <div className="flex items-start justify-between gap-3 mb-3">
-                      <div>
-                        <h4 className="text-base font-black text-gray-800">{m.label}</h4>
-                        <p className="mt-1 text-xs text-gray-400">{m.description}</p>
-                      </div>
-                      {isDownloading && <span className="rounded-full bg-blue-50 px-2.5 py-0.5 text-xs font-black text-blue-600">下载中</span>}
-                      {ds?.status === 'paused' && <span className="rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-black text-amber-600">已暂停</span>}
-                      {isDone && <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-black text-emerald-600">已下载</span>}
-                      {isError && <span className="rounded-full bg-rose-50 px-2.5 py-0.5 text-xs font-black text-rose-600">失败</span>}
-                      {!isDownloading && !isDone && !isError && !gpuVramOK && gpu && <span className="rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-black text-amber-600">显存不足</span>}
-                    </div>
-
-                    <div className="mb-3 grid grid-cols-2 gap-1 text-xs text-gray-400">
-                      <span>文件大小: <strong className="text-gray-700">{m.size}</strong></span>
-                      <span>显存需求: <strong className="text-gray-700">{m.vram}</strong></span>
-                      <span className="col-span-2">推荐显卡: <strong className="text-gray-700">{m.gpu}</strong></span>
-                    </div>
-
-                    {/* Download path */}
-                    <div className="mb-2 flex items-center gap-1">
-                      <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">路径</span>
-                      {isDone && <span className="text-xs text-emerald-500">✓ 已验证</span>}
-                    </div>
-
-                    {/* Progress bar */}
-                    <div className="w-full h-3 bg-gray-200 rounded-full overflow-hidden mb-1">
-                      <div
-                        className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 transition-all duration-500 ease-out"
-                        style={{ width: `${progress}%` }}
-                      />
-                    </div>
-                    <span className="text-sm text-gray-500">
-                      {isDownloading ? `${Math.round(progress)}%` + (ds?.speed ? ` · ${ds.speed.toFixed(1)} MB/s` : '') : isDone ? '已完成 ✓' : isError ? '下载失败 ✗' : ds?.status === 'paused' ? '已暂停 ⏸' : ds?.status === 'cancelled' ? '已取消' : '等待下载'}
-                    </span>
-
-                    <div className="mt-3 flex flex-wrap justify-end gap-2">
-                      {isDownloading ? (
-                        <>
-                          <button onClick={() => handlePause(m.key)} className="rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-bold text-gray-600 hover:bg-gray-200">暂停</button>
-                          <button onClick={() => handleCancel(m.key)} className="rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100">取消</button>
-                        </>
-                      ) : ds?.status === 'paused' ? (
-                        <>
-                          <button onClick={() => handleResume(m.key)} className="rounded-lg bg-blue-500 px-3 py-1.5 text-xs font-bold text-gray-900 hover:bg-blue-600">继续</button>
-                          <button onClick={() => handleCancel(m.key)} className="rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100">取消</button>
-                        </>
-                      ) : isDone ? (
-                        <button onClick={() => {
-                          const p = modelPaths[m.key] || '';
-                          setConfirmModal({
-                            open: true, title: '确认删除',
-                            message: `将删除以下路径的模型文件：\n${p}\n\n此操作不可撤销。`,
-                            confirmText: '确认删除',
-                            onConfirm: () => {
-                              setConfirmModal(null);
-                              handleDelete(m.key);
-                            }
-                          });
-                        }} className="rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100">删除</button>
-                      ) : (
-                        <button onClick={async () => {
-                          try {
-                            const res = await SettingsAPI.browseFolder();
-                            if (!res.data?.path) return;
-                            const path = res.data.path;
-                            setModelPaths((prev) => ({ ...prev, [m.key]: path }));
-                            // Check if folder is empty
-                            const validation = await SettingsAPI.validatePath(m.key, path);
-                            const hasFiles = validation.data?.files && validation.data.files.length > 0;
-                            if (hasFiles) {
-                              setConfirmModal({
-                                open: true, title: '文件夹不为空',
-                                message: `${path}\n此文件夹已有文件，建议选择空文件夹开始下载。是否继续？`,
-                                confirmText: '仍然下载',
-                                onConfirm: async () => {
-                                  setConfirmModal(null);
-                                  await SettingsAPI.downloadModel(m.key, path);
-                                  setDownloadStates((prev) => ({ ...prev, [m.key]: { progress: 0, status: 'downloading' } }));
-                                }
-                              });
-                            } else {
-                              await SettingsAPI.downloadModel(m.key, path);
-                              setDownloadStates((prev) => ({ ...prev, [m.key]: { progress: 0, status: 'downloading' } }));
-                            }
-                          } catch { /* cancelled */ }
-                        }} className="rounded-lg bg-blue-500 px-4 py-1.5 text-xs font-bold text-gray-900 hover:bg-blue-600">下载</button>
-                      )}
-                      <button onClick={async () => {
-                        try {
-                          const res = await SettingsAPI.browseFolder();
-                          if (!res.data?.path) return;
-                          const path = res.data.path;
-                          setModelPaths((prev) => ({ ...prev, [m.key]: path }));
-                          const validation = await SettingsAPI.validatePath(m.key, path);
-                          if (validation.data?.valid) {
-                            setDownloadStates((prev) => ({ ...prev, [m.key]: { progress: 100, status: 'done' } }));
-                          }
-                        } catch { /* cancelled */ }
-                      }} className="rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-bold text-gray-600 hover:bg-gray-200">浏览</button>
-                    </div>
-                  </div>
-                );
-              })}
+              {models.map((m) => renderCard(m, false))}
               {models.length === 0 && (
                 <div className="col-span-2 rounded-2xl border border-dashed border-gray-200 bg-gray-50 py-10 text-center text-sm text-gray-400">
                   加载模型列表中...

@@ -26,9 +26,11 @@ def scan_existing_models():
 
     found: dict[str, str] = {}
     try:
-    hf_cache_info = scan_cache_dir()
-    for repo in hf_cache_info.repos:
-        for model_key, model_def in {**LLM_MODELS, **PARSER_MODELS}.items():
+        hf_cache_info = scan_cache_dir()
+        for repo in hf_cache_info.repos:
+            for model_key, model_def in {**LLM_MODELS, **PARSER_MODELS}.items():
+                if model_key in found:
+                    continue
                 if model_def["repo_id"] in repo.repo_id:
                     snapshots = list(repo.repo_path.glob("snapshots/*"))
                     if snapshots:
@@ -214,8 +216,9 @@ def save_settings(payload: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         settings["remote"].update(payload["remote"] or {})
     if "local" in payload:
         settings["local"].update(payload["local"] or {})
+    if "model_paths" in payload:
+        settings["model_paths"] = payload["model_paths"]
     _save_settings(settings)
-    logger.info("settings saved", extra={"mode": settings["mode"]})
     return settings
 
 
