@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { SettingsAPI } from '../api/client';
 import { useAppDialog } from './AppDialog';
 
@@ -622,7 +623,7 @@ export default function SettingsPanel() {
       </div>
       
       {/* ===== Confirmation Modal ===== */}
-      {confirmModal?.open && (
+      {confirmModal?.open && createPortal(
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-gray-950/45 p-4 backdrop-blur-sm"
           onClick={() => setConfirmModal(null)}
@@ -675,7 +676,8 @@ export default function SettingsPanel() {
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
