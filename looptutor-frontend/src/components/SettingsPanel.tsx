@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { SettingsAPI } from '../api/client';
+import { X } from 'lucide-react';
 
 type GPUInfo = {
   cuda_available: boolean;
@@ -291,7 +292,7 @@ export default function SettingsPanel() {
   const providerModels = PROVIDERS.find((p) => p.key === provider)?.models || [];
 
   return (
-    <div className="bg-white/80 rounded-[32px] p-8 shadow-sm space-y-10">
+    <div className="bg-white/80 rounded-[32px] p-8 shadow-sm space-y-8">
       <div>
         <h2 className="text-2xl font-black text-gray-800">系统设置</h2>
         <p className="mt-1 text-sm text-gray-400">配置 LLM 模型服务，管理本地模型下载。</p>
@@ -648,9 +649,7 @@ export default function SettingsPanel() {
                   <p className="text-xs font-bold uppercase tracking-[0.28em] text-white/75">操作确认</p>
                   <h2 className="mt-2 text-2xl font-black">{confirmModal.title}</h2>
                 </div>
-                <button type="button" onClick={() => setConfirmModal(null)} className="rounded-full bg-white/15 p-2 text-white transition-colors hover:bg-white/25" aria-label="关闭">
-                  ×
-                </button>
+                <button type="button" onClick={() => setConfirmModal(null)} className="rounded-full bg-white/15 p-2 text-white transition-colors hover:bg-white/25" aria-label="关闭弹窗"><X size={20} /></button>
               </div>
             </div>
             <div className="space-y-4 p-6">
