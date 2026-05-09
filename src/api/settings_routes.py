@@ -283,6 +283,9 @@ def delete_model(model: str = Query(...), path: str = Query(...)) -> dict[str, A
 
     with download_lock:
         download_progress.pop(model, None)
+        download_state.pop(model, None)
+
+    return {"model": model, "deleted": True}
 
 
 @router.post("/model/validate")
@@ -298,6 +301,3 @@ def validate_model_path(model: str = Form(...), path: str = Form(...)):
     if missing:
         return {"valid": False, "error": f"缺少必要文件: {', '.join(missing)}。请确认路径指向模型快照目录（含 config.json）。"}
     return {"valid": True, "files": sorted(p.name for p in model_path.iterdir() if p.is_file())[:20]}
-        download_state.pop(model, None)
-
-    return {"model": model, "deleted": True}
