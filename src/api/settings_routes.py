@@ -202,35 +202,97 @@ def list_models() -> dict[str, Any]:
 
 
 def _hf_download_worker(model_key: str, repo_id: str, download_path: str) -> None:
+    """Custom HF downloader with pause/resume/cancel via traffic monitoring."""
+    import time as _time
+    import httpx
+    from huggingface_hub import HfApi, hf_hub_url
+
     try:
-        from huggingface_hub import snapshot_download
+        api = HfApi()
+        repo_info = api.repo_info(repo_id=repo_id, repo_type="model")
+        files = repo_info.siblings
 
-        with download_lock:
-            download_state[model_key] = "downloading"
-            download_progress[model_key] = 0
+        total_size = sum(f.size or 0 for f in files)
+        if total_size == 0:
+            with httpx.Client(timeout=10, follow_redirects=True) as client:
+                for f in files:
+                    try:
+                        url = hf_hub_url(repo_id=repo_id, filename=f.rfilename, repo_type="model")
+                        resp = client.head(url)
+                        if "Content-Length" in resp.headers:
+                            f.size = int(resp.headers["Content-Length"])
+                            total_size += f.size
+                    except Exception:
+                        pass
 
-        def progress_callback(progress: float, _total: float | None = None) -> None:
-            with download_lock:
-                download_progress[model_key] = max(0, min(99.9, round(progress, 1)))
+        downloaded_size = 0
+        target_dir = Path(download_path)
+        target_dir.mkdir(parents=True, exist_ok=True)
 
-        snapshot_download(
-            repo_id=repo_id,
-            local_dir=download_path,
-            local_dir_use_symlinks=False,
-            resume_download=True,
-            tqdm_class=None,
-        )
+        for file_info in files:
+            if download_state.get(model_key) == "cancelled":
+                raise Exception("Download cancelled by user")
+
+            while download_state.get(model_key) == "paused":
+                _time.sleep(0.5)
+                if download_state.get(model_key) == "cancelled":
+                    raise Exception("Download cancelled by user")
+
+            filename = file_info.rfilename
+            file_size = file_info.size or 0
+            target_path = target_dir / filename
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+
+            if target_path.exists() and target_path.stat().st_size == file_size:
+                downloaded_size += file_size
+                if total_size > 0:
+                    with download_lock:
+                        download_progress[model_key] = min(int((downloaded_size / total_size) * 100), 99)
+                continue
+
+            url = hf_hub_url(repo_id=repo_id, filename=filename, repo_type="model")
+            file_downloaded = target_path.stat().st_size if target_path.exists() else 0
+            if file_downloaded > 0:
+                downloaded_size += file_downloaded
+
+            headers = {"Range": f"bytes={file_downloaded}-"} if file_downloaded > 0 else {}
+            mode = "ab" if file_downloaded > 0 else "wb"
+
+            with httpx.Client(timeout=None, follow_redirects=True) as client:
+                with client.stream("GET", url, headers=headers) as resp:
+                    if resp.status_code == 416:
+                        continue
+                    last_log = _time.time()
+                    with open(target_path, mode) as f:
+                        for chunk in resp.iter_bytes(chunk_size=65536):
+                            if download_state.get(model_key) == "cancelled":
+                                raise Exception("Download cancelled by user")
+                            while download_state.get(model_key) == "paused":
+                                _time.sleep(0.5)
+                                if download_state.get(model_key) == "cancelled":
+                                    raise Exception("Download cancelled by user")
+                            f.write(chunk)
+                            downloaded_size += len(chunk)
+                            if _time.time() - last_log > 0.5 and total_size > 0:
+                                with download_lock:
+                                    download_progress[model_key] = min(int((downloaded_size / total_size) * 100), 99)
+                                last_log = _time.time()
+
+        if download_state.get(model_key) == "cancelled":
+            raise Exception("Download cancelled by user")
 
         with download_lock:
             download_progress[model_key] = 100
             download_state[model_key] = "completed"
-        logger.info("model download completed", extra={"model": model_key, "path": download_path})
 
     except Exception as exc:
         with download_lock:
-            download_state[model_key] = "failed"
-            download_progress[model_key] = -1
-        logger.exception("model download failed", extra={"model": model_key, "error": str(exc)})
+            if download_state.get(model_key) == "cancelled":
+                download_progress[model_key] = -2
+            else:
+                download_state[model_key] = "failed"
+                download_progress[model_key] = -1
+            download_state[model_key] = "failed" if download_state.get(model_key) != "cancelled" else "cancelled"
 
 
 @router.post("/model/download")
