@@ -247,6 +247,7 @@ export default function SettingsPanel() {
     try {
       await SettingsAPI.pauseDownload(modelKey);
       if (intervalRefs.current[modelKey]) { clearInterval(intervalRefs.current[modelKey]); delete intervalRefs.current[modelKey]; }
+      setDownloadStates((prev) => ({ ...prev, [modelKey]: { ...(prev[modelKey] || { progress: 0, status: '' }), status: 'paused' } }));
     } catch { /* ignore */ }
   }, []);
 
