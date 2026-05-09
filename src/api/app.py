@@ -455,6 +455,7 @@ def get_events(after: int = 0, limit: int = 50) -> EventListResponse:
 @app.get("/v1/session/knowledge/page", response_model=PageKnowledgeResponse, tags=["session", "knowledge"])
 def get_page_knowledge(topic_id: str, page: int = 1) -> PageKnowledgeResponse:
     backend = get_backend()
+    runtime = get_runtime() # 🌟 新增：引入 runtime 以便操作状态
     topic = backend.get_topic(topic_id)
     if topic is None:
         raise HTTPException(status_code=404, detail=f"topic_id not found: {topic_id}")
@@ -462,6 +463,20 @@ def get_page_knowledge(topic_id: str, page: int = 1) -> PageKnowledgeResponse:
     page_number = max(1, page)
     fallback_segment = None
     fallback_resource = None
+    
+    # 🌟 核心修复：定义一个内部函数，专门用来把当前页的问题写入后端记忆
+    def _update_pending_question(seg):
+        if seg and seg.guiding_question:
+            from src.core.models import PendingQuestion
+            with runtime._lock:
+                state = runtime.load_state()
+                state.learning.pending_question = PendingQuestion(
+                    question_id=seg.segment_id,
+                    stem=seg.guiding_question,
+                    expected_format="open"
+                )
+                backend.save_app_state(state)
+
     for resource in backend.list_resources_related_to_topic(topic_id):
         for segment in resource.segments:
             if segment.status != "classified" or segment.topic_id != topic_id:
@@ -475,9 +490,11 @@ def get_page_knowledge(topic_id: str, page: int = 1) -> PageKnowledgeResponse:
             page_start = int(locator.get("page_start") or page_number)
             page_end = int(locator.get("page_end") or page_start)
             if page_start <= page_number <= page_end:
+                _update_pending_question(segment) # 🌟 记住当前页问题
                 return _page_knowledge_response(topic_id=topic_id, page=page_number, resource=resource, segment=segment)
 
     if fallback_segment is not None and fallback_resource is not None:
+        _update_pending_question(fallback_segment) # 🌟 记住当前页问题
         return _page_knowledge_response(topic_id=topic_id, page=page_number, resource=fallback_resource, segment=fallback_segment)
 
     return PageKnowledgeResponse(
