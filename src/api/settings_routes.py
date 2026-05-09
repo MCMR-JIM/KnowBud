@@ -26,9 +26,9 @@ def scan_existing_models():
 
     found: dict[str, str] = {}
     try:
-        hf_cache_info = scan_cache_dir()
-        for repo in hf_cache_info.repos:
-            for model_key, model_def in LLM_MODELS.items():
+    hf_cache_info = scan_cache_dir()
+    for repo in hf_cache_info.repos:
+        for model_key, model_def in {**LLM_MODELS, **PARSER_MODELS}.items():
                 if model_def["repo_id"] in repo.repo_id:
                     snapshots = list(repo.repo_path.glob("snapshots/*"))
                     if snapshots:
@@ -102,6 +102,27 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "temperature": 0.1,
         "timeout_sec": 15,
         "max_tokens": 2048,
+    },
+}
+
+PARSER_MODELS: dict[str, dict[str, str]] = {
+    "mineru-25": {
+        "key": "mineru-25",
+        "label": "MinerU2.5-Pro-1.2B",
+        "size": "~2.5 GB",
+        "vram": "~4 GB",
+        "gpu": "RTX 3060+",
+        "repo_id": "opendatalab/MinerU2.5-Pro-2604-1.2B",
+        "description": "文档结构识别模型，PDF/PPT/DOCX 解析前置依赖",
+    },
+    "pdf-extract": {
+        "key": "pdf-extract",
+        "label": "PDF-Extract-Kit-1.0",
+        "size": "~1.5 GB",
+        "vram": "~3 GB",
+        "gpu": "RTX 3060+",
+        "repo_id": "opendatalab/PDF-Extract-Kit-1.0",
+        "description": "PDF 内容提取模型，表格/公式/图片识别",
     },
 }
 
@@ -200,7 +221,7 @@ def save_settings(payload: Optional[dict[str, Any]] = None) -> dict[str, Any]:
 
 @router.get("/models")
 def list_models() -> dict[str, Any]:
-    return {"models": LLM_MODELS}
+    return {"models": LLM_MODELS, "parser_models": PARSER_MODELS}
 
 
 def _hf_download_worker(model_key: str, repo_id: str, download_path: str) -> None:
@@ -306,7 +327,7 @@ def _hf_download_worker(model_key: str, repo_id: str, download_path: str) -> Non
 
 @router.post("/model/download")
 def start_download(model: str = Form(...), path: str = Form(...)) -> dict[str, Any]:
-    model_info = LLM_MODELS.get(model)
+    model_info = LLM_MODELS.get(model) or PARSER_MODELS.get(model)
     if model_info is None:
         raise HTTPException(status_code=404, detail=f"unknown model: {model}")
 

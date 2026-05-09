@@ -65,6 +65,7 @@ export default function SettingsPanel() {
   const [temp, setTemp] = useState(0.7);
   const [timeoutSec, setTimeoutSec] = useState(120);
   const [models, setModels] = useState<ModelDef[]>([]);
+  const [parserModels, setParserModels] = useState<ModelDef[]>([]);
   const [modelPaths, setModelPaths] = useState<Record<string, string>>({});
   const [downloadStates, setDownloadStates] = useState<Record<string, DownloadState>>({});
   const [saving, setSaving] = useState(false);
@@ -186,6 +187,13 @@ export default function SettingsPanel() {
       });
       setModels(list);
       for (const def of list) void checkDownloadStatus(def.key);
+      // Parser models
+      const rawParser = res.data.parser_models || {};
+      setParserModels(Object.entries(rawParser).map(([key, info]: [string, unknown]) => {
+        const m = info as Record<string, string>;
+        return { key, label: m.label || key, size: m.size || '', vram: m.vram || '', gpu: m.gpu || '', repo_id: m.repo_id || '', description: m.description || '' };
+      }));
+      for (const def of parserModels) void checkDownloadStatus(def.key);
     } catch { /* ignore */ }
   }
 
@@ -291,8 +299,49 @@ export default function SettingsPanel() {
   const recommended = recommendedModel();
   const providerModels = PROVIDERS.find((p) => p.key === provider)?.models || [];
 
+  // Shared model card renderer for parser + LLM models
+  const renderCard = (m: ModelDef, isParser: boolean) => {
+    const ds = downloadStates[m.key];
+    const isDownloading = ds?.status === 'downloading';
+    const isDone = ds?.status === 'done';
+    const progress = ds?.progress || 0;
+
+    return (
+      <div key={m.key} className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <div>
+            <h4 className="text-base font-black text-gray-800">{m.label}</h4>
+            <p className="mt-1 text-xs text-gray-400">{m.description}</p>
+          </div>
+          {isDownloading && <span className="rounded-full bg-blue-50 px-2 py-0.5 text-xs font-black text-blue-600">下载中</span>}
+          {ds?.status === 'paused' && <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-black text-amber-600">已暂停</span>}
+          {isDone && <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-black text-emerald-600">已下载</span>}
+        </div>
+        <div className="mb-3 grid grid-cols-2 gap-1 text-xs text-gray-400">
+          <span>大小: <strong className="text-gray-700">{m.size}</strong></span>
+          {!isParser && <span>显存: <strong className="text-gray-700">{m.vram}</strong></span>}
+          <span className={isParser ? 'col-span-2' : ''}>推荐: <strong className="text-gray-700">{m.gpu}</strong></span>
+        </div>
+        <div className="w-full h-3 bg-gray-200 rounded-full overflow-hidden mb-1">
+          <div className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 transition-all duration-500 ease-out" style={{ width: `${progress}%` }}/>
+        </div>
+        <span className="text-sm text-gray-500">
+          {isDownloading ? `${Math.round(progress)}%` + (ds?.speed ? ` · ${ds.speed.toFixed(1)} MB/s` : '') : isDone ? '已完成 ✓' : isError(ds) ? '下载失败 ✗' : ds?.status === 'paused' ? '已暂停' : '等待下载'}
+        </span>
+        <div className="mt-3 flex flex-wrap justify-end gap-2">
+          {isDone ? (
+            <button onClick={() => { const p = modelPaths[m.key]||''; setConfirmModal({open:true,title:'确认删除',message:`删除: ${p}`,confirmText:'确认删除',onConfirm:()=>{setConfirmModal(null);handleDelete(m.key);}});}} className="rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100">删除</button>
+          ) : isDownloading ? (<><button onClick={()=>handlePause(m.key)} className="rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-bold text-gray-600 hover:bg-gray-200">暂停</button><button onClick={()=>handleCancel(m.key)} className="rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100">取消</button></>) : ds?.status==='paused' ? (<><button onClick={()=>handleResume(m.key)} className="rounded-lg bg-blue-500 px-3 py-1.5 text-xs font-bold text-gray-900 hover:bg-blue-600">继续</button><button onClick={()=>handleCancel(m.key)} className="rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100">取消</button></>) : (
+            <button onClick={async()=>{try{const r=await SettingsAPI.browseFolder();if(!r.data?.path)return;const path=r.data.path;setModelPaths(prev=>({...prev,[m.key]:path}));const v=await SettingsAPI.validatePath(m.key,path);if(v.data?.files?.length){const ok=await new Promise(r=>{setConfirmModal({open:true,title:'文件夹不为空',message:`${path}\n此文件夹已有文件，是否继续？`,confirmText:'仍然下载',onConfirm:()=>{setConfirmModal(null);r(true)}})});if(!ok)return}await SettingsAPI.downloadModel(m.key,path);setDownloadStates(prev=>({...prev,[m.key]:{progress:0,status:'downloading'}}))}catch{}}} className="rounded-lg bg-blue-500 px-4 py-1.5 text-xs font-bold text-gray-900 hover:bg-blue-600">下载</button>
+          )}
+          <button onClick={async()=>{try{const r=await SettingsAPI.browseFolder();if(!r.data?.path)return;const path=r.data.path;setModelPaths(prev=>({...prev,[m.key]:path}));const v=await SettingsAPI.validatePath(m.key,path);if(v.data?.valid)setDownloadStates(prev=>({...prev,[m.key]:{progress:100,status:'done'}}))}catch{}}} className="rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-bold text-gray-600 hover:bg-gray-200">浏览</button>
+        </div>
+      </div>
+    );
+  };
+
   return (
-    <div className="bg-white/80 rounded-[32px] p-8 shadow-sm space-y-8">
+    <div className="bg-white/80 rounded-[32px] p-8 shadow-sm">
       <div>
         <h2 className="text-2xl font-black text-gray-800">系统设置</h2>
         <p className="mt-1 text-sm text-gray-400">配置 LLM 模型服务，管理本地模型下载。</p>
@@ -504,10 +553,20 @@ export default function SettingsPanel() {
             </div>
           </div>
 
-          {/* ===== Model Download Cards (local only) ===== */}
-          <div>
-            <h3 className="mb-5 mt-6 text-sm font-black uppercase tracking-[0.14em] text-gray-500">模型下载</h3>
+          {/* ===== Model Download Cards ===== */}
+          <div className="mb-6">
+            {/* Parser models section */}
+            {parserModels.length > 0 && (
+              <>
+                <h3 className="mb-3 text-sm font-black uppercase tracking-[0.14em] text-gray-500">文档解析前置依赖</h3>
+                <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2">
+                  {parserModels.map((m) => renderModelCard(m))}
+                </div>
+                <h3 className="mb-3 text-sm font-black uppercase tracking-[0.14em] text-gray-500">可选模型</h3>
+              </>
+            )}
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              {parserModels.length === 0 && <h3 className="mb-3 text-sm font-black uppercase tracking-[0.14em] text-gray-500">模型下载</h3>}
               {models.map((m) => {
                 const ds = downloadStates[m.key];
                 const isDownloading = ds?.status === 'downloading';
