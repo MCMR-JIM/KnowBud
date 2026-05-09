@@ -21,6 +21,7 @@ type ModelDef = {
 type DownloadState = {
   progress: number;
   status: string;
+  speed?: number;
 };
 
 type Provider = {
@@ -206,7 +207,7 @@ export default function SettingsPanel() {
       else if (res.data.status === 'completed' || prog >= 100) status = 'done';
       else if (res.data.status === 'failed' || prog === -1) status = 'error';
       else if (res.data.status === 'cancelled') status = 'cancelled';
-      setDownloadStates((prev) => ({ ...prev, [modelKey]: { progress: prog, status } }));
+      setDownloadStates((prev) => ({ ...prev, [modelKey]: { progress: prog, status, speed: res.data?.speed_mbps } }));
     } catch { /* ignore */ }
   }
 
@@ -238,7 +239,7 @@ export default function SettingsPanel() {
       if (res.data.status === 'completed' || prog >= 100) status = 'done';
       else if (res.data.status === 'failed' || prog === -1) status = 'error';
       else if (res.data.status === 'cancelled') status = 'cancelled';
-      setDownloadStates((prev) => ({ ...prev, [modelKey]: { progress: prog, status } }));
+      setDownloadStates((prev) => ({ ...prev, [modelKey]: { progress: prog, status, speed: res.data?.speed_mbps } }));
       if (['done', 'error', 'cancelled'].includes(status) && intervalRefs.current[modelKey]) {
         clearInterval(intervalRefs.current[modelKey]);
         delete intervalRefs.current[modelKey];
@@ -265,13 +266,27 @@ export default function SettingsPanel() {
 
   const handlePause = useCallback(async (modelKey: string) => {
     try {
+      await SettingsAPI.pauseDownload(modelKey);
+      if (intervalRefs.current[modelKey]) { clearInterval(intervalRefs.current[modelKey]); delete intervalRefs.current[modelKey]; }
+    } catch { /* ignore */ }
+  }, []);
+
+  const handleResume = useCallback(async (modelKey: string) => {
+    try {
+      const path = modelPaths[modelKey]?.trim();
+      if (!path) return;
+      await SettingsAPI.downloadModel(modelKey, path);
+      setDownloadStates((prev) => ({ ...prev, [modelKey]: { ...(prev[modelKey] || { progress: 0, status: '' }), status: 'downloading' } }));
+    } catch { /* ignore */ }
+  }, [modelPaths]);
+
+  const handleCancel = useCallback(async (modelKey: string) => {
+    try {
       await SettingsAPI.cancelDownload(modelKey);
       if (intervalRefs.current[modelKey]) { clearInterval(intervalRefs.current[modelKey]); delete intervalRefs.current[modelKey]; }
       setDownloadStates((prev) => ({ ...prev, [modelKey]: { ...(prev[modelKey] || { progress: 0, status: '' }), status: 'cancelled' } }));
     } catch { /* ignore */ }
   }, []);
-
-  const handleCancel = useCallback(async (modelKey: string) => { await handlePause(modelKey); }, [handlePause]);
 
   const handleDelete = useCallback(async (modelKey: string) => {
     const path = modelPaths[modelKey]?.trim();
@@ -534,6 +549,7 @@ export default function SettingsPanel() {
                         <p className="mt-1 text-xs text-gray-400">{m.description}</p>
                       </div>
                       {isDownloading && <span className="rounded-full bg-blue-50 px-2.5 py-0.5 text-xs font-black text-blue-600">下载中</span>}
+                      {ds?.status === 'paused' && <span className="rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-black text-amber-600">已暂停</span>}
                       {isDone && <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-black text-emerald-600">已下载</span>}
                       {isError && <span className="rounded-full bg-rose-50 px-2.5 py-0.5 text-xs font-black text-rose-600">失败</span>}
                       {!isDownloading && !isDone && !isError && !gpuVramOK && gpu && <span className="rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-black text-amber-600">显存不足</span>}
@@ -579,13 +595,18 @@ export default function SettingsPanel() {
                       />
                     </div>
                     <span className="text-sm text-gray-500">
-                      {isDownloading ? `${Math.round(progress)}%` : isDone ? '已完成 ✓' : isError ? '下载失败 ✗' : ds?.status === 'cancelled' ? '已取消' : '等待下载'}
+                      {isDownloading ? `${Math.round(progress)}%` + (ds?.speed ? ` · ${ds.speed.toFixed(1)} MB/s` : '') : isDone ? '已完成 ✓' : isError ? '下载失败 ✗' : ds?.status === 'paused' ? '已暂停 ⏸' : ds?.status === 'cancelled' ? '已取消' : '等待下载'}
                     </span>
 
                     <div className="mt-3 flex flex-wrap justify-end gap-2">
                       {isDownloading ? (
                         <>
                           <button onClick={() => handlePause(m.key)} className="rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-bold text-gray-600 hover:bg-gray-200">暂停</button>
+                          <button onClick={() => handleCancel(m.key)} className="rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100">取消</button>
+                        </>
+                      ) : ds?.status === 'paused' ? (
+                        <>
+                          <button onClick={() => handleResume(m.key)} className="rounded-lg bg-blue-500 px-3 py-1.5 text-xs font-bold text-gray-900 hover:bg-blue-600">继续</button>
                           <button onClick={() => handleCancel(m.key)} className="rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100">取消</button>
                         </>
                       ) : isDone ? (

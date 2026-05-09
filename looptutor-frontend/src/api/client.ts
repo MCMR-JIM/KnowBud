@@ -98,6 +98,11 @@ export const SettingsAPI = {
     fd.append('model', model);
     return apiClient.post('/settings/model/download/cancel', fd);
   },
+  pauseDownload: (model: string) => {
+    const fd = new FormData();
+    fd.append('model', model);
+    return apiClient.post('/settings/model/download/pause', fd);
+  },
   deleteModel: (model: string) => apiClient.delete('/settings/model/download', { params: { model } }),
   validatePath: (model: string, path: string) => apiClient.post('/settings/model/validate', new URLSearchParams({ model, path }).toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }),
   browseFolder: () => apiClient.get('/settings/browse-folder'),

@@ -107,6 +107,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 
 download_progress: dict[str, float] = {}
 download_state: dict[str, str] = {}
+download_speed: dict[str, float] = {}
 download_lock = threading.Lock()
 
 
@@ -263,6 +264,7 @@ def _hf_download_worker(model_key: str, repo_id: str, download_path: str) -> Non
                     if resp.status_code == 416:
                         continue
                     last_log = _time.time()
+                    last_bytes = 0
                     with open(target_path, mode) as f:
                         for chunk in resp.iter_bytes(chunk_size=65536):
                             if download_state.get(model_key) == "cancelled":
@@ -273,10 +275,16 @@ def _hf_download_worker(model_key: str, repo_id: str, download_path: str) -> Non
                                     raise Exception("Download cancelled by user")
                             f.write(chunk)
                             downloaded_size += len(chunk)
-                            if _time.time() - last_log > 0.5 and total_size > 0:
+                            now = _time.time()
+                            delta = now - last_log
+                            if delta > 0.5 and total_size > 0:
                                 with download_lock:
                                     download_progress[model_key] = min(int((downloaded_size / total_size) * 100), 99)
-                                last_log = _time.time()
+                                speed_bytes = (downloaded_size - last_bytes) / delta if delta > 0 else 0
+                                with download_lock:
+                                    download_speed[model_key] = speed_bytes / (1024 * 1024)  # MB/s
+                                last_log = now
+                                last_bytes = downloaded_size
 
         if download_state.get(model_key) == "cancelled":
             raise Exception("Download cancelled by user")
@@ -328,11 +336,12 @@ def get_download_status(model: str = Query(...)) -> dict[str, Any]:
     with download_lock:
         progress = download_progress.get(model)
         state = download_state.get(model)
+        speed = download_speed.get(model, 0)
 
     if progress is None and state is None:
-        return {"model": model, "progress": None, "status": "not_started"}
+        return {"model": model, "progress": None, "status": "not_started", "speed_mbps": 0}
 
-    return {"model": model, "progress": progress, "status": state or "unknown"}
+    return {"model": model, "progress": progress, "status": state or "unknown", "speed_mbps": round(speed, 1)}
 
 
 @router.post("/model/download/cancel")
@@ -340,15 +349,27 @@ def cancel_download(model: str = Form(...)) -> dict[str, Any]:
     with download_lock:
         current_state = download_state.get(model)
 
-    if current_state != "downloading":
+    if current_state not in ("downloading", "paused"):
         raise HTTPException(status_code=404, detail=f"no active download for model: {model}")
 
     with download_lock:
         download_state[model] = "cancelled"
-        if download_progress.get(model, 0) > 0:
-            download_progress[model] = -1  # signal cancelled
 
     return {"model": model, "status": "cancelled"}
+
+
+@router.post("/model/download/pause")
+def pause_download(model: str = Form(...)) -> dict[str, Any]:
+    with download_lock:
+        current_state = download_state.get(model)
+
+    if current_state != "downloading":
+        raise HTTPException(status_code=404, detail=f"no downloading model: {model}")
+
+    with download_lock:
+        download_state[model] = "paused"
+
+    return {"model": model, "status": "paused"}
 
 
 @router.delete("/model/download")
@@ -367,6 +388,7 @@ def delete_model(model: str = Query(...), path: str = Query(...)) -> dict[str, A
     with download_lock:
         download_progress.pop(model, None)
         download_state.pop(model, None)
+        download_speed.pop(model, None)
 
     return {"model": model, "deleted": True}
 
