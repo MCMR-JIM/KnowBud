@@ -33,7 +33,6 @@ type Provider = {
 
 const PROVIDERS: Provider[] = [
   { key: 'deepseek', label: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', models: ['deepseek-v4-flash', 'deepseek-v4-pro'], helpUrl: 'https://platform.deepseek.com/api_keys' },
-  { key: 'openai', label: 'OpenAI', baseUrl: '', models: [], helpUrl: 'https://platform.openai.com/api-keys' },
   { key: 'custom', label: '自定义', baseUrl: '', models: [], helpUrl: '' },
 ];
 
@@ -276,7 +275,7 @@ export default function SettingsPanel() {
               <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">供应商选择</span>
               <InfoTooltip text="选择已预设的 API 供应商，或使用自定义 Base URL" />
             </div>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 gap-3">
               {PROVIDERS.map((p) => (
                 <button
                   key={p.key}
@@ -352,7 +351,7 @@ export default function SettingsPanel() {
           <button
             type="button"
             onClick={testConnection}
-            className="rounded-xl bg-blue-500 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-blue-200 transition-colors hover:bg-blue-600"
+            className="rounded-xl bg-blue-500 px-5 py-2.5 text-sm font-bold text-gray-900 shadow-lg shadow-blue-200 transition-colors hover:bg-blue-600"
           >
             {testResult || '测试连接'}
           </button>
@@ -364,9 +363,17 @@ export default function SettingsPanel() {
         <div className="space-y-5">
           {/* GPU Info */}
           <div className="rounded-2xl border border-gray-200 bg-white p-5">
-            <div className="mb-2 flex items-center gap-1">
-              <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">GPU 检测结果</span>
-              <InfoTooltip text="检测到的显卡设备。模型加载使用普通 GPU 内存，非专用显存" />
+            <div className="mb-2 flex items-center justify-between">
+              <div className="flex items-center gap-1">
+                <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">GPU 检测结果</span>
+                <InfoTooltip text="检测到的显卡设备。模型加载使用普通 GPU 内存，非专用显存" />
+              </div>
+              <button
+                type="button" onClick={detectGPU} disabled={gpuLoading}
+                className="rounded-lg bg-gray-100 px-3 py-1 text-xs font-bold text-gray-600 hover:bg-gray-200 disabled:opacity-50"
+              >
+                重新检测
+              </button>
             </div>
             {gpu && gpu.cuda_available ? (
               <div className="mt-3 grid grid-cols-3 gap-3 text-sm">
@@ -379,12 +386,6 @@ export default function SettingsPanel() {
             ) : (
               <p className="mt-3 text-sm text-gray-400">未检测到可用 GPU</p>
             )}
-            <button
-              type="button" onClick={detectGPU} disabled={gpuLoading}
-              className="mt-4 rounded-lg bg-gray-100 px-3 py-1 text-xs font-bold text-gray-600 hover:bg-gray-200 disabled:opacity-50"
-            >
-              重新检测
-            </button>
           </div>
 
           {/* Recommended */}
@@ -408,27 +409,16 @@ export default function SettingsPanel() {
                 className="flex-1 rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold outline-none transition-all focus:border-blue-300 focus:ring-4 focus:ring-blue-50"
               />
               <button
-                onClick={() => document.getElementById('local-model-folder-picker')?.click()}
+                onClick={async () => {
+                  try {
+                    const dirHandle = await (window as any).showDirectoryPicker();
+                    setLocalPath(dirHandle.name);
+                  } catch { /* user cancelled */ }
+                }}
                 className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm font-semibold text-gray-600 transition-all hover:bg-gray-100"
               >
                 浏览
               </button>
-              <input
-                type="file"
-                id="local-model-folder-picker"
-                // @ts-expect-error webkitdirectory is not in React types
-                webkitdirectory=""
-                directory=""
-                className="hidden"
-                onChange={(e) => {
-                  const files = e.target.files;
-                  if (files && files.length > 0) {
-                    const relativePath = (files[0] as any).webkitRelativePath;
-                    const folderName = relativePath.split('/')[0];
-                    setLocalPath((files[0] as any).path?.replace(`\\${relativePath}`, '') || folderName);
-                  }
-                }}
-              />
             </div>
           </div>
 
@@ -531,7 +521,12 @@ export default function SettingsPanel() {
                       />
                       <button
                         type="button"
-                        onClick={() => document.getElementById(`folder-picker-${m.key}`)?.click()}
+                        onClick={async () => {
+                          try {
+                            const dirHandle = await (window as any).showDirectoryPicker();
+                            setModelPaths((prev) => ({ ...prev, [m.key]: dirHandle.name }));
+                          } catch { /* user cancelled */ }
+                        }}
                         className="shrink-0 rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-bold text-gray-600 hover:bg-gray-100"
                       >
                         浏览
@@ -562,7 +557,7 @@ export default function SettingsPanel() {
                       ) : isDone ? (
                         <button onClick={() => handleDelete(m.key)} className="rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100">删除</button>
                       ) : (
-                        <button onClick={() => handleDownload(m.key)} className="rounded-lg bg-blue-500 px-4 py-1.5 text-xs font-bold text-white hover:bg-blue-600">下载</button>
+                        <button onClick={() => handleDownload(m.key)} className="rounded-lg bg-blue-500 px-4 py-1.5 text-xs font-bold text-gray-900 hover:bg-blue-600">下载</button>
                       )}
                     </div>
                   </div>
