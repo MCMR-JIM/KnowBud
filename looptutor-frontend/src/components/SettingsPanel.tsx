@@ -66,12 +66,36 @@ export default function SettingsPanel() {
   const [modelPaths, setModelPaths] = useState<Record<string, string>>({});
   const [downloadStates, setDownloadStates] = useState<Record<string, DownloadState>>({});
   const [saving, setSaving] = useState(false);
+  const [pathValid, setPathValid] = useState<boolean | null>(null);
+  const [pathError, setPathError] = useState('');
   const intervalRefs = useRef<Record<string, ReturnType<typeof setInterval>>>({});
 
   useEffect(() => {
     void loadSettings();
     void loadModels();
     void detectGPU();
+  }, []);
+
+  // Auto-save on any config change (debounced 500ms)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setSaving(true);
+      SettingsAPI.saveSettings({
+        mode, provider,
+        remote: { api_key: apiKey, base_url: baseUrl, model },
+        local: { model_path: localPath, precision: dtype, max_tokens: maxTokens, temperature: temp },
+      }).finally(() => setSaving(false));
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [mode, provider, apiKey, baseUrl, model, localPath, dtype, maxTokens, temp]);
+
+  const validateLocalPath = useCallback(async (path: string) => {
+    if (!path.trim()) { setPathValid(null); setPathError(''); return; }
+    try {
+      const res = await SettingsAPI.validatePath('local', path);
+      if (res.data?.valid) { setPathValid(true); setPathError(''); }
+      else { setPathValid(false); setPathError(res.data?.error || '路径无效'); }
+    } catch { setPathValid(false); setPathError('无法验证路径'); }
   }, []);
 
   useEffect(() => {
@@ -230,17 +254,6 @@ export default function SettingsPanel() {
       alert('删除失败: ' + (err instanceof Error ? err.message : String(err)));
     }
   }, [modelPaths]);
-
-  const handleSave = useCallback(async () => {
-    setSaving(true);
-    try {
-      await SettingsAPI.saveSettings({
-        mode, provider,
-        remote: { api_key: apiKey, base_url: baseUrl, model },
-        local: { model_path: localPath, precision: dtype, max_tokens: maxTokens, temperature: temp, timeout_sec: timeoutSec },
-      });
-    } catch { /* ignore */ } finally { setSaving(false); }
-  }, [mode, provider, apiKey, baseUrl, model, localPath, dtype, maxTokens, temp, timeoutSec]);
 
   const recommended = recommendedModel();
   const providerModels = PROVIDERS.find((p) => p.key === provider)?.models || [];
@@ -403,16 +416,21 @@ export default function SettingsPanel() {
               <InfoTooltip text="本地模型的文件夹绝对路径，首次使用需下载" />
             </div>
             <div className="flex gap-2">
-              <input
-                type="text" value={localPath} onChange={(e) => setLocalPath(e.target.value)}
-                placeholder="D:\Models\gemma-3-4b"
-                className="flex-1 rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold outline-none transition-all focus:border-blue-300 focus:ring-4 focus:ring-blue-50"
-              />
+              <div className="relative flex-1">
+                <input
+                  type="text" value={localPath} onChange={(e) => { setLocalPath(e.target.value); }}
+                  onBlur={(e) => validateLocalPath(e.target.value)}
+                  placeholder="D:\Models\gemma-3-4b"
+                  className={`w-full rounded-2xl border-2 bg-white px-4 py-3 pr-10 text-sm font-semibold outline-none transition-all focus:ring-4 ${pathValid === true ? 'border-emerald-400 focus:ring-emerald-50' : pathValid === false ? 'border-rose-400 focus:ring-rose-50' : 'border-gray-200 focus:border-blue-300 focus:ring-blue-50'}`}
+                />
+                {pathValid === true && <span className="absolute right-3 top-1/2 -translate-y-1/2 text-emerald-500 text-lg">✓</span>}
+                {pathValid === false && <span className="absolute right-3 top-1/2 -translate-y-1/2 text-rose-500 text-lg">✗</span>}
+              </div>
               <button
                 onClick={async () => {
                   try {
                     const res = await SettingsAPI.browseFolder();
-                    if (res.data?.path) setLocalPath(res.data.path);
+                    if (res.data?.path) { setLocalPath(res.data.path); validateLocalPath(res.data.path); }
                   } catch { /* user cancelled */ }
                 }}
                 className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm font-semibold text-gray-600 transition-all hover:bg-gray-100"
@@ -420,6 +438,7 @@ export default function SettingsPanel() {
                 浏览
               </button>
             </div>
+            {pathError && <p className="mt-1 text-xs text-rose-500">{pathError}</p>}
           </div>
 
           <div className="grid grid-cols-2 gap-4">
@@ -560,13 +579,9 @@ export default function SettingsPanel() {
       )}
 
       {/* ===== Save Button ===== */}
-      <div className="sticky bottom-0 border-t border-gray-100 bg-white/90 pt-6 backdrop-blur">
-        <button
-          type="button" onClick={handleSave} disabled={saving}
-          className="w-full rounded-2xl bg-gray-900 py-3.5 text-base font-black text-white shadow-lg shadow-gray-200 transition-colors hover:bg-pink-600 disabled:opacity-50"
-        >
-          {saving ? '保存中...' : '保存设置'}
-        </button>
+      <div className="sticky bottom-0 border-t border-gray-100 bg-white/90 pt-6 backdrop-blur flex items-center gap-2">
+        <span className="text-xs text-gray-400">{saving ? '保存中...' : '已自动保存'}</span>
+        <span className="text-xs text-emerald-500">{saving ? '' : '✓'}</span>
       </div>
     </div>
   );
