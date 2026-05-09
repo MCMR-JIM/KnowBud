@@ -623,18 +623,56 @@ export default function SettingsPanel() {
       
       {/* ===== Confirmation Modal ===== */}
       {confirmModal?.open && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-sm" onClick={() => setConfirmModal(null)}>
-          <div className="w-full max-w-md overflow-hidden rounded-[28px] border border-white/70 bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
-            <div className="relative overflow-hidden p-6">
-              <div className="absolute -right-10 -top-12 h-32 w-32 rounded-full bg-pink-200/40 blur-3xl"></div>
-              <div className="relative">
-                <h2 className="text-lg font-black text-gray-900">{confirmModal.title}</h2>
-                <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-gray-600">{confirmModal.message}</p>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-gray-950/45 p-4 backdrop-blur-sm"
+          onClick={() => setConfirmModal(null)}
+        >
+          <div
+            className="w-full max-w-md overflow-hidden rounded-[32px] border border-white/70 bg-white shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="relative overflow-hidden bg-gradient-to-br from-pink-500 via-rose-400 to-orange-300 p-6 text-white">
+              <div className="absolute -right-12 -top-16 h-44 w-44 rounded-full bg-white/20 blur-2xl"></div>
+              <div className="relative flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-[0.28em] text-white/75">
+                    操作确认
+                  </p>
+                  <h2 className="mt-2 text-2xl font-black">{confirmModal.title}</h2>
+                  <p className="mt-1 text-sm text-white/80">确认继续当前操作。</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setConfirmModal(null)}
+                  className="rounded-full bg-white/15 p-2 text-white transition-colors hover:bg-white/25"
+                  aria-label="关闭弹窗"
+                >
+                  <span className="text-base font-bold">×</span>
+                </button>
               </div>
             </div>
+
+            <div className="space-y-4 p-6">
+              <div className="rounded-2xl border border-gray-100 bg-gray-50/80 p-4">
+                <p className="whitespace-pre-wrap text-sm leading-6 text-gray-600">
+                  {confirmModal.message}
+                </p>
+              </div>
+            </div>
+
             <div className="flex justify-end gap-3 border-t border-gray-100 bg-gray-50 px-6 py-4">
-              <button onClick={() => setConfirmModal(null)} className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-bold text-gray-600 transition-colors hover:bg-gray-100">取消</button>
-              <button onClick={confirmModal.onConfirm} className="rounded-xl bg-slate-900 px-5 py-2 text-sm font-black text-white shadow-lg shadow-gray-200 transition-colors hover:bg-pink-600">{confirmModal.confirmText}</button>
+              <button
+                onClick={() => setConfirmModal(null)}
+                className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-bold text-gray-600 transition-colors hover:bg-gray-100"
+              >
+                取消
+              </button>
+              <button
+                onClick={confirmModal.onConfirm}
+                className="rounded-xl bg-gray-900 px-5 py-2 text-sm font-black text-white shadow-lg shadow-gray-200 transition-colors hover:bg-pink-600"
+              >
+                {confirmModal.confirmText}
+              </button>
             </div>
           </div>
         </div>
