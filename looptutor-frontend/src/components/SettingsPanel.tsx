@@ -400,13 +400,26 @@ export default function SettingsPanel() {
           <div>
             <div className="mb-2 flex items-center gap-1">
               <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">模型路径</span>
-              <InfoTooltip text="本地模型的文件夹绝对路径（如 D:\Models\gemma-3-4b），首次使用需下载" />
+              <InfoTooltip text="本地模型的文件夹绝对路径，首次使用需下载" />
             </div>
-            <input
-              type="text" value={localPath} onChange={(e) => setLocalPath(e.target.value)}
-              placeholder="D:\Models\gemma-3-4b"
-              className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold outline-none transition-all focus:border-blue-300 focus:ring-4 focus:ring-blue-50"
-            />
+            <div className="flex gap-2">
+              <input
+                type="text" value={localPath} onChange={(e) => setLocalPath(e.target.value)}
+                placeholder="D:\Models\gemma-3-4b"
+                className="flex-1 rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold outline-none transition-all focus:border-blue-300 focus:ring-4 focus:ring-blue-50"
+              />
+              <button
+                onClick={async () => {
+                  try {
+                    const res = await SettingsAPI.browseFolder();
+                    if (res.data?.path) setLocalPath(res.data.path);
+                  } catch { /* user cancelled */ }
+                }}
+                className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm font-semibold text-gray-600 transition-all hover:bg-gray-100"
+              >
+                浏览
+              </button>
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-4">
@@ -485,13 +498,25 @@ export default function SettingsPanel() {
                     </div>
 
                     {/* Download path */}
-                    <div className="mb-3">
+                    <div className="mb-3 flex items-center gap-2">
                       <input
                         type="text" value={modelPaths[m.key] || ''}
                         onChange={(e) => setModelPaths((prev) => ({ ...prev, [m.key]: e.target.value }))}
                         placeholder="D:\Models\gemma-3-4b"
-                        className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-xs font-semibold outline-none transition-all focus:border-blue-300 focus:bg-white"
+                        className="flex-1 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-xs font-semibold outline-none transition-all focus:border-blue-300 focus:bg-white"
                       />
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            const res = await SettingsAPI.browseFolder();
+                            if (res.data?.path) setModelPaths((prev) => ({ ...prev, [m.key]: res.data.path }));
+                          } catch { /* cancelled */ }
+                        }}
+                        className="shrink-0 rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-bold text-gray-600 hover:bg-gray-100"
+                      >
+                        浏览
+                      </button>
                     </div>
                     <div className="mb-2 flex items-center gap-1">
                       <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">下载路径</span>

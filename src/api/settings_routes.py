@@ -7,6 +7,8 @@ import logging
 import os
 import subprocess
 import threading
+import tkinter.filedialog
+import tkinter as tk
 from pathlib import Path
 from typing import Any, Optional
 
@@ -15,6 +17,20 @@ from fastapi import APIRouter, Form, HTTPException, Query
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/settings", tags=["settings"])
+
+
+@router.get("/browse-folder")
+def browse_folder():
+    """Open native file dialog and return absolute path of selected folder."""
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes('-topmost', True)
+    path = tkinter.filedialog.askdirectory(title="选择模型文件夹")
+    root.destroy()
+    if not path:
+        raise HTTPException(status_code=400, detail="未选择文件夹")
+    return {"path": os.path.normpath(path)}
+
 
 LLM_MODELS: dict[str, dict[str, str]] = {
     "gemma-4b": {
