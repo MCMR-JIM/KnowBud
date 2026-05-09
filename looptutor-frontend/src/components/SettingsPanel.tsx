@@ -74,7 +74,17 @@ export default function SettingsPanel() {
     void loadSettings();
     void loadModels();
     void detectGPU();
+    void scanExistingModelsFromCache();
   }, []);
+
+  async function scanExistingModelsFromCache() {
+    try {
+      const res = await SettingsAPI.scanModels();
+      if (res.data?.models) {
+        setModelPaths((prev) => ({ ...prev, ...res.data.models }));
+      }
+    } catch { /* ignore */ }
+  }
 
   // Auto-save on any config change (debounced 500ms)
   useEffect(() => {

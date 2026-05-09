@@ -92,4 +92,5 @@ export const SettingsAPI = {
   deleteModel: (model: string) => apiClient.delete('/settings/model/download', { params: { model } }),
   validatePath: (model: string, path: string) => apiClient.post('/settings/model/validate', new URLSearchParams({ model, path }).toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }),
   browseFolder: () => apiClient.get('/settings/browse-folder'),
+  scanModels: () => apiClient.get('/settings/scan-models'),
 };

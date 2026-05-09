@@ -19,6 +19,27 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/settings", tags=["settings"])
 
 
+@router.get("/scan-models")
+def scan_existing_models():
+    """Scan HF cache and return which models are already downloaded."""
+    from huggingface_hub import scan_cache_dir
+
+    found: dict[str, str] = {}
+    try:
+        hf_cache_info = scan_cache_dir()
+        for repo in hf_cache_info.repos:
+            for model_key, model_def in LLM_MODELS.items():
+                if model_def["repo_id"] in repo.repo_id:
+                    snapshots = list(repo.repo_path.glob("snapshots/*"))
+                    if snapshots:
+                        found[model_key] = str(snapshots[0])
+                        break
+    except Exception:
+        pass
+
+    return {"models": found}
+
+
 @router.get("/browse-folder")
 def browse_folder():
     """Open native file dialog and return absolute path of selected folder."""
