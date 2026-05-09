@@ -67,8 +67,6 @@ export default function SettingsPanel() {
   const [modelPaths, setModelPaths] = useState<Record<string, string>>({});
   const [downloadStates, setDownloadStates] = useState<Record<string, DownloadState>>({});
   const [saving, setSaving] = useState(false);
-  const [pathValid, setPathValid] = useState<boolean | null>(null);
-  const [pathError, setPathError] = useState('');
   const intervalRefs = useRef<Record<string, ReturnType<typeof setInterval>>>({});
 
   useEffect(() => {
@@ -100,15 +98,7 @@ export default function SettingsPanel() {
     return () => clearTimeout(timer);
   }, [mode, provider, apiKey, baseUrl, model, localPath, dtype, maxTokens, temp]);
 
-  const validateLocalPath = useCallback(async (path: string) => {
-    if (!path.trim()) { setPathValid(null); setPathError(''); return; }
-    try {
-      const res = await SettingsAPI.validatePath('local', path);
-      if (res.data?.valid) { setPathValid(true); setPathError(''); }
-      else { setPathValid(false); setPathError(res.data?.error || '路径无效'); }
-    } catch { setPathValid(false); setPathError('无法验证路径'); }
-  }, []);
-
+  // Auto-save on any config change (debounced 500ms)
   useEffect(() => {
     const active = Object.entries(intervalRefs.current);
     for (const [, id] of active) clearInterval(id);
@@ -252,17 +242,6 @@ export default function SettingsPanel() {
     setBaseUrl(p.baseUrl);
     setModel(p.models.length > 0 ? p.models[0] : '');
   }, []);
-
-  const handleDownload = useCallback(async (modelKey: string) => {
-    const path = modelPaths[modelKey]?.trim();
-    if (!path) return alert('请填写下载路径');
-    try {
-      await SettingsAPI.downloadModel(modelKey, path);
-      setDownloadStates((prev) => ({ ...prev, [modelKey]: { progress: 0, status: 'downloading' } }));
-    } catch (err: unknown) {
-      alert('下载失败: ' + (err instanceof Error ? err.message : String(err)));
-    }
-  }, [modelPaths]);
 
   const handlePause = useCallback(async (modelKey: string) => {
     try {
@@ -453,36 +432,23 @@ export default function SettingsPanel() {
             </div>
           )}
 
-          {/* Local Settings Fields */}
+          {/* Select downloaded model to use */}
           <div>
             <div className="mb-2 flex items-center gap-1">
-              <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">模型路径</span>
-              <InfoTooltip text="本地模型的文件夹绝对路径，首次使用需下载" />
+              <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">选择使用模型</span>
+              <InfoTooltip text="从已下载的模型中选择一个作为当前推理引擎" />
             </div>
-            <div className="flex gap-2">
-              <div className="relative flex-1">
-                <input
-                  type="text" value={localPath} onChange={(e) => { setLocalPath(e.target.value); }}
-                  onBlur={(e) => validateLocalPath(e.target.value)}
-                  placeholder="D:\Models\gemma-3-4b"
-                  className={`w-full rounded-2xl border-2 bg-white px-4 py-3 pr-10 text-sm font-semibold outline-none transition-all focus:ring-4 ${pathValid === true ? 'border-emerald-400 focus:ring-emerald-50' : pathValid === false ? 'border-rose-400 focus:ring-rose-50' : 'border-gray-200 focus:border-blue-300 focus:ring-blue-50'}`}
-                />
-                {pathValid === true && <span className="absolute right-3 top-1/2 -translate-y-1/2 text-emerald-500 text-lg">✓</span>}
-                {pathValid === false && <span className="absolute right-3 top-1/2 -translate-y-1/2 text-rose-500 text-lg">✗</span>}
-              </div>
-              <button
-                onClick={async () => {
-                  try {
-                    const res = await SettingsAPI.browseFolder();
-                    if (res.data?.path) { setLocalPath(res.data.path); validateLocalPath(res.data.path); }
-                  } catch { /* user cancelled */ }
-                }}
-                className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm font-semibold text-gray-600 transition-all hover:bg-gray-100"
-              >
-                浏览
-              </button>
-            </div>
-            {pathError && <p className="mt-1 text-xs text-rose-500">{pathError}</p>}
+            <select
+              value={localPath}
+              onChange={(e) => setLocalPath(e.target.value)}
+              className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold outline-none transition-all focus:border-blue-300 focus:ring-4 focus:ring-blue-50"
+            >
+              <option value="">未选择</option>
+              {Object.entries(downloadStates).filter(([, ds]) => ds.status === 'done').map(([key]) => {
+                const m = models.find((mod) => mod.key === key);
+                return <option key={key} value={modelPaths[key] || ''}>{m?.label || key} ({modelPaths[key] || ''})</option>;
+              })}
+            </select>
           </div>
 
           <div className="grid grid-cols-2 gap-4">
@@ -562,29 +528,9 @@ export default function SettingsPanel() {
                     </div>
 
                     {/* Download path */}
-                    <div className="mb-3 flex items-center gap-2">
-                      <input
-                        type="text" value={modelPaths[m.key] || ''}
-                        onChange={(e) => setModelPaths((prev) => ({ ...prev, [m.key]: e.target.value }))}
-                        placeholder="D:\Models\gemma-3-4b"
-                        className="flex-1 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-xs font-semibold outline-none transition-all focus:border-blue-300 focus:bg-white"
-                      />
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          try {
-                            const res = await SettingsAPI.browseFolder();
-                            if (res.data?.path) setModelPaths((prev) => ({ ...prev, [m.key]: res.data.path }));
-                          } catch { /* cancelled */ }
-                        }}
-                        className="shrink-0 rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-bold text-gray-600 hover:bg-gray-100"
-                      >
-                        浏览
-                      </button>
-                    </div>
                     <div className="mb-2 flex items-center gap-1">
-                      <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">下载路径</span>
-                      <InfoTooltip text="模型文件存放位置。已下载的模型可通过选择已有文件夹直接使用" />
+                      <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">路径</span>
+                      {isDone && <span className="text-xs text-emerald-500">✓ 已验证</span>}
                     </div>
 
                     {/* Progress bar */}
@@ -612,8 +558,29 @@ export default function SettingsPanel() {
                       ) : isDone ? (
                         <button onClick={() => handleDelete(m.key)} className="rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100">删除</button>
                       ) : (
-                        <button onClick={() => handleDownload(m.key)} className="rounded-lg bg-blue-500 px-4 py-1.5 text-xs font-bold text-gray-900 hover:bg-blue-600">下载</button>
+                        <button onClick={async () => {
+                          try {
+                            const res = await SettingsAPI.browseFolder();
+                            if (!res.data?.path) return;
+                            const path = res.data.path;
+                            setModelPaths((prev) => ({ ...prev, [m.key]: path }));
+                            await SettingsAPI.downloadModel(m.key, path);
+                            setDownloadStates((prev) => ({ ...prev, [m.key]: { progress: 0, status: 'downloading' } }));
+                          } catch { /* cancelled */ }
+                        }} className="rounded-lg bg-blue-500 px-4 py-1.5 text-xs font-bold text-gray-900 hover:bg-blue-600">下载</button>
                       )}
+                      <button onClick={async () => {
+                        try {
+                          const res = await SettingsAPI.browseFolder();
+                          if (!res.data?.path) return;
+                          const path = res.data.path;
+                          setModelPaths((prev) => ({ ...prev, [m.key]: path }));
+                          const validation = await SettingsAPI.validatePath(m.key, path);
+                          if (validation.data?.valid) {
+                            setDownloadStates((prev) => ({ ...prev, [m.key]: { progress: 100, status: 'done' } }));
+                          }
+                        } catch { /* cancelled */ }
+                      }} className="rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-bold text-gray-600 hover:bg-gray-200">浏览</button>
                     </div>
                   </div>
                 );

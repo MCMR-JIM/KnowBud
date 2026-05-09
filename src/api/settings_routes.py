@@ -403,8 +403,11 @@ def validate_model_path(model: str = Form(...), path: str = Form(...)):
         return {"valid": False, "error": "路径不存在"}
     if not model_path.is_dir():
         return {"valid": False, "error": "路径不是文件夹"}
-    required = ["config.json"]
+    required = ["config.json", "tokenizer_config.json"]
     missing = [f for f in required if not (model_path / f).exists()]
     if missing:
-        return {"valid": False, "error": f"缺少必要文件: {', '.join(missing)}。请确认路径指向模型快照目录（含 config.json）。"}
+        return {"valid": False, "error": f"缺少必要文件: {', '.join(missing)}。请确认路径指向模型快照目录。"}
+    has_weights = (model_path / "model.safetensors.index.json").exists() or any(p.suffix == ".safetensors" for p in model_path.iterdir())
+    if not has_weights:
+        return {"valid": False, "error": "未找到模型权重文件 (.safetensors 或 model.safetensors.index.json)"}
     return {"valid": True, "files": sorted(p.name for p in model_path.iterdir() if p.is_file())[:20]}
