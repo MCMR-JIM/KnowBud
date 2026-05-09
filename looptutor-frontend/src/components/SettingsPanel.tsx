@@ -67,6 +67,7 @@ export default function SettingsPanel() {
   const [modelPaths, setModelPaths] = useState<Record<string, string>>({});
   const [downloadStates, setDownloadStates] = useState<Record<string, DownloadState>>({});
   const [saving, setSaving] = useState(false);
+  const [confirmModal, setConfirmModal] = useState<{open: boolean, title: string, message: string, onConfirm: () => void, confirmText: string} | null>(null);
   const intervalRefs = useRef<Record<string, ReturnType<typeof setInterval>>>({});
 
   useEffect(() => {
@@ -514,7 +515,20 @@ export default function SettingsPanel() {
                       <div>
                         <h4 className="text-base font-black text-gray-800">{m.label}</h4>
                         <p className="mt-1 text-xs text-gray-400">{m.description}</p>
-                      </div>
+      {/* ===== Confirmation Modal ===== */}
+      {confirmModal?.open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => setConfirmModal(null)}>
+          <div className="max-w-md w-full rounded-2xl bg-white p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-black text-gray-800">{confirmModal.title}</h3>
+            <pre className="mt-3 whitespace-pre-wrap text-sm text-gray-500 bg-gray-50 p-3 rounded-xl">{confirmModal.message}</pre>
+            <div className="mt-5 flex justify-end gap-3">
+              <button onClick={() => setConfirmModal(null)} className="rounded-xl border border-gray-200 px-4 py-2 text-sm font-bold text-gray-600 hover:bg-gray-100">取消</button>
+              <button onClick={confirmModal.onConfirm} className="rounded-xl bg-rose-500 px-4 py-2 text-sm font-bold text-white hover:bg-rose-600">{confirmModal.confirmText}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
                       {isDownloading && <span className="rounded-full bg-blue-50 px-2.5 py-0.5 text-xs font-black text-blue-600">下载中</span>}
                       {ds?.status === 'paused' && <span className="rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-black text-amber-600">已暂停</span>}
                       {isDone && <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-black text-emerald-600">已下载</span>}
@@ -557,7 +571,18 @@ export default function SettingsPanel() {
                           <button onClick={() => handleCancel(m.key)} className="rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100">取消</button>
                         </>
                       ) : isDone ? (
-                        <button onClick={() => handleDelete(m.key)} className="rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100">删除</button>
+                        <button onClick={() => {
+                          const p = modelPaths[m.key] || '';
+                          setConfirmModal({
+                            open: true, title: '确认删除',
+                            message: `将删除以下路径的模型文件：\n${p}\n\n此操作不可撤销。`,
+                            confirmText: '确认删除',
+                            onConfirm: () => {
+                              setConfirmModal(null);
+                              handleDelete(m.key);
+                            }
+                          });
+                        }} className="rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100">删除</button>
                       ) : (
                         <button onClick={async () => {
                           try {
@@ -565,8 +590,24 @@ export default function SettingsPanel() {
                             if (!res.data?.path) return;
                             const path = res.data.path;
                             setModelPaths((prev) => ({ ...prev, [m.key]: path }));
-                            await SettingsAPI.downloadModel(m.key, path);
-                            setDownloadStates((prev) => ({ ...prev, [m.key]: { progress: 0, status: 'downloading' } }));
+                            // Check if folder is empty
+                            const validation = await SettingsAPI.validatePath(m.key, path);
+                            const hasFiles = validation.data?.files && validation.data.files.length > 0;
+                            if (hasFiles) {
+                              setConfirmModal({
+                                open: true, title: '文件夹不为空',
+                                message: `${path}\n此文件夹已有文件，建议选择空文件夹开始下载。是否继续？`,
+                                confirmText: '仍然下载',
+                                onConfirm: async () => {
+                                  setConfirmModal(null);
+                                  await SettingsAPI.downloadModel(m.key, path);
+                                  setDownloadStates((prev) => ({ ...prev, [m.key]: { progress: 0, status: 'downloading' } }));
+                                }
+                              });
+                            } else {
+                              await SettingsAPI.downloadModel(m.key, path);
+                              setDownloadStates((prev) => ({ ...prev, [m.key]: { progress: 0, status: 'downloading' } }));
+                            }
                           } catch { /* cancelled */ }
                         }} className="rounded-lg bg-blue-500 px-4 py-1.5 text-xs font-bold text-gray-900 hover:bg-blue-600">下载</button>
                       )}
