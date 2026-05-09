@@ -363,8 +363,10 @@ def pause_download(model: str = Form(...)) -> dict[str, Any]:
     with download_lock:
         current_state = download_state.get(model)
 
+    if current_state == "paused":
+        return {"model": model, "status": "paused"}
     if current_state != "downloading":
-        raise HTTPException(status_code=404, detail=f"no downloading model: {model}")
+        return {"model": model, "status": current_state or "not_started"}
 
     with download_lock:
         download_state[model] = "paused"
