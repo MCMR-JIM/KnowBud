@@ -108,6 +108,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 download_progress: dict[str, float] = {}
 download_state: dict[str, str] = {}
 download_speed: dict[str, float] = {}
+download_paths: dict[str, str] = {}
 download_lock = threading.Lock()
 
 
@@ -327,6 +328,7 @@ def start_download(model: str = Form(...), path: str = Form(...)) -> dict[str, A
     with download_lock:
         download_state[model] = "downloading"
         download_progress[model] = 0
+        download_paths[model] = download_path
 
     return {"model": model, "status": "downloading", "path": download_path}
 
@@ -375,14 +377,14 @@ def pause_download(model: str = Form(...)) -> dict[str, Any]:
 
 
 @router.delete("/model/download")
-def delete_model(model: str = Query(...), path: str = Query(...)) -> dict[str, Any]:
-    target_path = Path(path.strip())
+def delete_model(model: str = Query(...)) -> dict[str, Any]:
+    path = download_paths.get(model, "")
+    target_path = Path(path)
     if not target_path.exists():
-        raise HTTPException(status_code=404, detail=f"path not found: {path}")
+        return {"model": model, "deleted": False, "reason": "path not found"}
 
     try:
         import shutil
-
         shutil.rmtree(target_path, ignore_errors=True)
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"delete failed: {str(exc)}") from exc
@@ -390,6 +392,8 @@ def delete_model(model: str = Query(...), path: str = Query(...)) -> dict[str, A
     with download_lock:
         download_progress.pop(model, None)
         download_state.pop(model, None)
+        download_speed.pop(model, None)
+        download_paths.pop(model, None)
         download_speed.pop(model, None)
 
     return {"model": model, "deleted": True}

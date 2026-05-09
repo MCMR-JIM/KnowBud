@@ -262,12 +262,19 @@ export default function SettingsPanel() {
   }, [modelPaths]);
 
   const handleCancel = useCallback(async (modelKey: string) => {
-    try {
-      await SettingsAPI.cancelDownload(modelKey);
-      if (intervalRefs.current[modelKey]) { clearInterval(intervalRefs.current[modelKey]); delete intervalRefs.current[modelKey]; }
-      setDownloadStates((prev) => ({ ...prev, [modelKey]: { ...(prev[modelKey] || { progress: 0, status: '' }), status: 'cancelled' } }));
-    } catch { /* ignore */ }
-  }, []);
+    const p = modelPaths[modelKey] || '';
+    setConfirmModal({
+      open: true, title: '确认取消',
+      message: `将取消下载。\n路径: ${p}\n\n是否同时清理已下载的部分文件？`,
+      confirmText: '取消并清理', onConfirm: async () => {
+        setConfirmModal(null);
+        await SettingsAPI.cancelDownload(modelKey);
+        if (p) await SettingsAPI.deleteModel(modelKey).catch(() => {});
+        if (intervalRefs.current[modelKey]) { clearInterval(intervalRefs.current[modelKey]); delete intervalRefs.current[modelKey]; }
+        setDownloadStates((prev) => ({ ...prev, [modelKey]: { progress: 0, status: 'cancelled' } }));
+      }
+    });
+  }, [modelPaths]);
 
   const handleDelete = useCallback(async (modelKey: string) => {
     const path = modelPaths[modelKey]?.trim();
