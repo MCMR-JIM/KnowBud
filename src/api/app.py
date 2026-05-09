@@ -58,6 +58,7 @@ from src.api.schemas import (
     TurnResponse,
 )
 from src.services.document_ingestion import ingest_document_resource
+from src.api.settings_routes import router as settings_router
 
 if TYPE_CHECKING:
     from src.services.session_backend import SessionBackend
@@ -81,6 +82,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(settings_router)
 
 @dataclass
 class StreamJob:
