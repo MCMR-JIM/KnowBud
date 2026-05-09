@@ -50,3 +50,8 @@ htmlcov/
 
 # 前端依赖与产物 (Frontend)
 node_modules/
+
+# RAG-Anything test output
+rag_test_storage/
+rag_test_output/
+rag_storage/
