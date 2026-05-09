@@ -399,15 +399,28 @@ def delete_model(model: str = Query(...), path: str = Query("")) -> dict[str, An
     if not is_model_dir:
         return {"model": model, "deleted": False, "reason": "路径不包含模型文件，拒绝删除以保护数据"}
 
-    # 3. Never delete project-critical directories
+    # 3. Find actual cache root (walk up to find blobs/snapshots/refs)
+    delete_paths = [target_path]
+    check_root = target_path
+    for _ in range(3):
+        parent = check_root.parent
+        if (parent / "blobs").is_dir() and (parent / "snapshots").is_dir() and (parent / "refs").is_dir():
+            delete_paths = [parent / "blobs", parent / "snapshots", parent / "refs"]
+            break
+        check_root = parent
+
+    # Safety: never delete directories with project files
     dangerous = {".git", ".env", ".gitignore", "package.json", "pyproject.toml", "Cargo.toml", "setup.py", "Makefile"}
-    for item in dangerous:
-        if (target_path / item).exists() and (target_path / item).is_file():
-            return {"model": model, "deleted": False, "reason": f"路径包含项目文件 ({item})，拒绝删除以保护项目"}
+    for p in delete_paths:
+        for item in dangerous:
+            if (p / item).exists():
+                return {"model": model, "deleted": False, "reason": f"路径包含项目文件 ({item})，拒绝删除以保护项目"}
 
     try:
         import shutil
-        shutil.rmtree(target_path, ignore_errors=False)
+        for p in delete_paths:
+            if p.exists():
+                shutil.rmtree(p, ignore_errors=False)
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"delete failed: {str(exc)}") from exc
 
