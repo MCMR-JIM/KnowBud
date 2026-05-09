@@ -291,7 +291,7 @@ export default function SettingsPanel() {
   const providerModels = PROVIDERS.find((p) => p.key === provider)?.models || [];
 
   return (
-    <div className="bg-white/80 backdrop-blur rounded-[32px] p-8 shadow-sm space-y-10">
+    <div className="bg-white/80 rounded-[32px] p-8 shadow-sm space-y-10">
       <div>
         <h2 className="text-2xl font-black text-gray-800">系统设置</h2>
         <p className="mt-1 text-sm text-gray-400">配置 LLM 模型服务，管理本地模型下载。</p>
