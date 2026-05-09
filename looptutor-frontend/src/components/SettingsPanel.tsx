@@ -80,6 +80,16 @@ export default function SettingsPanel() {
     void scanExistingModelsFromCache();
   }, []);
 
+  // Save modelPaths to backend whenever they change
+  useEffect(() => {
+    if (Object.keys(modelPaths).length > 0) {
+      const timer = setTimeout(() => {
+        SettingsAPI.saveSettings({ model_paths: modelPaths }).catch(() => {});
+      }, 300);
+      return () => clearTimeout(timer);
+    }
+  }, [modelPaths]);
+
   async function scanExistingModelsFromCache() {
     try {
       const res = await SettingsAPI.scanModels();
@@ -139,6 +149,9 @@ export default function SettingsPanel() {
         setMaxTokens(data.local.max_tokens || 500);
         setTemp(data.local.temperature != null ? data.local.temperature : 0.7);
         setTimeoutSec(data.local.timeout_sec || 120);
+      }
+      if (data.model_paths && typeof data.model_paths === 'object') {
+        setModelPaths(data.model_paths);
       }
     } catch { /* ignore */ }
   }

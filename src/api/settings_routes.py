@@ -21,14 +21,25 @@ router = APIRouter(prefix="/v1/settings", tags=["settings"])
 
 @router.get("/scan-models")
 def scan_existing_models():
-    """Scan HF cache and return which models are already downloaded."""
+    """Scan user-specified paths and HF cache for already-downloaded models."""
     from huggingface_hub import scan_cache_dir
 
     found: dict[str, str] = {}
+    
+    # 1. Check user-specified paths first (persisted in settings)
+    settings = load_raw_settings()
+    saved_paths = settings.get("model_paths", {})
+    for model_key, path in saved_paths.items():
+        if path and Path(path).exists():
+            found[model_key] = path
+
+    # 2. Fallback: scan HF cache for repos matching known models
     try:
         hf_cache_info = scan_cache_dir()
         for repo in hf_cache_info.repos:
             for model_key, model_def in LLM_MODELS.items():
+                if model_key in found:
+                    continue  # already found via user path
                 if model_def["repo_id"] in repo.repo_id:
                     snapshots = list(repo.repo_path.glob("snapshots/*"))
                     if snapshots:
@@ -136,6 +147,10 @@ def _save_settings(data: dict[str, Any]) -> None:
         json.dump(data, file, ensure_ascii=False, indent=2)
 
 
+def load_raw_settings() -> dict[str, Any]:
+    return _load_settings()
+
+
 def _detect_gpu() -> dict[str, Any]:
     info: dict[str, Any] = {"cuda_available": False, "gpu_name": "", "vram_total_gb": 0, "vram_free_gb": 0}
 
@@ -193,6 +208,8 @@ def save_settings(payload: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         settings["remote"].update(payload["remote"] or {})
     if "local" in payload:
         settings["local"].update(payload["local"] or {})
+    if "model_paths" in payload:
+        settings["model_paths"] = payload["model_paths"]
     _save_settings(settings)
     logger.info("settings saved", extra={"mode": settings["mode"]})
     return settings
