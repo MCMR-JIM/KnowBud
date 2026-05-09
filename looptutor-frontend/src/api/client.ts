@@ -29,8 +29,6 @@ export const SessionAPI = {
     });
   },
 
-  
-
   // ================= 3. 魔法舱互动 (流式极速响应) =================
   // 获取流式播报的 stream_id
   sendTextRealtime: (text: string) => apiClient.post('/session/input/text/realtime', { text }),
@@ -52,11 +50,6 @@ export const SessionAPI = {
     apiClient.get('/session/knowledge/page', {
       params: { topic_id: topicId, page: pageNumber }
     }),
-    synthesizeSpeech: (text: string, voice?: string) => {
-    // 指向你 docker-compose 里映射的本地 5501 端口
-    const ttsUrl = 'http://127.0.0.1:5501/tts'; 
-    return axios.post(ttsUrl, { text, voice }, { responseType: 'blob' });
-  },
 };
 
 export const ResourceAPI = {
@@ -65,16 +58,12 @@ export const ResourceAPI = {
     topicId: string;
     resourceName: string;
     category?: 'learn' | 'review';
-    subject?: string;
-    languageId?: string | null;
   }) => {
     const formData = new FormData();
     formData.append('file', payload.file);
     formData.append('topic_id', payload.topicId);
     formData.append('resource_name', payload.resourceName);
     formData.append('category', payload.category || 'learn');
-    if (payload.subject) formData.append('subject', payload.subject);
-    if (payload.languageId) formData.append('language_id', payload.languageId);
     return apiClient.post('/resource/upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     });
@@ -82,29 +71,40 @@ export const ResourceAPI = {
   getTopicResources: (topicId: string) => apiClient.get(`/resource/topics/${topicId}`),
   getTopicTeachingCues: (topicId: string) => apiClient.get(`/resource/topics/${topicId}/teaching-cues`),
   getResourceSegments: (resourceId: string) => apiClient.get(`/resource/${resourceId}/segments`),
-  getResourceIngestionStatus: (resourceId: string) => apiClient.get(`/resource/${resourceId}/ingestion-status`),
-  deleteResource: (resourceId: string) => apiClient.delete(`/resource/${resourceId}`),
 };
 
 export const KnowledgeAPI = {
-  createSubject: (title: string) => {
-    const formData = new FormData();
-    formData.append('title', title);
-    return apiClient.post('/knowledge/subject', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
-    });
-  },
-  updateSubject: (topicId: string, title: string) => {
-    const formData = new FormData();
-    formData.append('title', title);
-    return apiClient.patch(`/knowledge/subject/${topicId}`, formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
-    });
-  },
-  deleteSubject: (topicId: string) => apiClient.delete(`/knowledge/subject/${topicId}`),
   getProposals: (params?: { status?: string; trigger?: string }) => apiClient.get('/knowledge/proposals', { params }),
   approveProposal: (proposalId: string, payload: Record<string, unknown> = {}) =>
     apiClient.post(`/knowledge/proposals/${proposalId}/approve`, payload),
   rejectProposal: (proposalId: string, reason?: string) =>
     apiClient.post(`/knowledge/proposals/${proposalId}/reject`, { reason }),
+};
+
+export const SettingsAPI = {
+  getGPU: () => apiClient.get('/settings/gpu'),
+  getSettings: () => apiClient.get('/settings'),
+  saveSettings: (data: Record<string, unknown>) => apiClient.post('/settings', data),
+  getModels: () => apiClient.get('/settings/models'),
+  downloadModel: (model: string, path: string) => {
+    const fd = new FormData();
+    fd.append('model', model);
+    fd.append('path', path);
+    return apiClient.post('/settings/model/download', fd);
+  },
+  getDownloadStatus: (model: string) => apiClient.get(`/settings/model/download/status`, { params: { model } }),
+  cancelDownload: (model: string) => {
+    const fd = new FormData();
+    fd.append('model', model);
+    return apiClient.post('/settings/model/download/cancel', fd);
+  },
+  pauseDownload: (model: string) => {
+    const fd = new FormData();
+    fd.append('model', model);
+    return apiClient.post('/settings/model/download/pause', fd);
+  },
+  deleteModel: (model: string) => apiClient.delete('/settings/model/download', { params: { model } }),
+  validatePath: (model: string, path: string) => apiClient.post('/settings/model/validate', new URLSearchParams({ model, path }).toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }),
+  browseFolder: () => apiClient.get('/settings/browse-folder'),
+  scanModels: () => apiClient.get('/settings/scan-models'),
 };

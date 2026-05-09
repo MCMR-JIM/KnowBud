@@ -58,6 +58,7 @@ from src.api.schemas import (
     TurnResponse,
 )
 from src.services.document_ingestion import ingest_document_resource
+from src.api.settings_routes import router as settings_router
 
 if TYPE_CHECKING:
     from src.services.session_backend import SessionBackend
@@ -81,6 +82,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(settings_router)
 
 @dataclass
 class StreamJob:
@@ -801,22 +804,6 @@ def get_resource_file(resource_id: str):
     return FileResponse(path=file_path, media_type=record.mime_type, filename=record.original_filename)
 
 
-@app.delete("/v1/resource/{resource_id}", tags=["resource"])
-def delete_resource(resource_id: str) -> dict[str, Any]:
-    backend = get_backend()
-    record = backend.get_resource(resource_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail=f"resource_id not found: {resource_id}")
-
-    deleted = backend.delete_resource(resource_id)
-    if deleted:
-        backend.append_learning_event(
-            kind="resource_deleted",
-            payload={"resource_id": resource_id, "topic_id": record.topic_id, "resource_name": record.resource_name},
-        )
-    return {"resource_id": resource_id, "deleted": deleted}
-
-
 @app.get("/v1/knowledge/graph", response_model=KnowledgeGraphResponse, tags=["knowledge"])
 def get_knowledge_graph() -> KnowledgeGraphResponse:
     runtime = get_runtime()
@@ -883,39 +870,6 @@ def create_subject_root(
         difficulty=1,
     )
     return {"topic_id": topic.topic_id, "title": topic.title, "tags": topic.tags}
-
-
-@app.patch("/v1/knowledge/subject/{topic_id}", tags=["knowledge"])
-def update_subject_root(topic_id: str, title: str = Form(...)) -> dict[str, Any]:
-    backend = get_backend()
-    try:
-        subject, language_id = _classify_subject_by_title(backend, title.strip())
-        topic = backend.update_subject_root(topic_id, title, subject=subject, language_id=language_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    if topic is None:
-        raise HTTPException(status_code=404, detail=f"topic_id not found: {topic_id}")
-
-    backend.append_learning_event(
-        kind="subject_updated",
-        payload={"topic_id": topic.topic_id, "title": topic.title},
-    )
-    return {"topic_id": topic.topic_id, "title": topic.title, "tags": topic.tags}
-
-
-@app.delete("/v1/knowledge/subject/{topic_id}", tags=["knowledge"])
-def delete_subject_root(topic_id: str) -> dict[str, Any]:
-    backend = get_backend()
-    result = backend.delete_topic_subtree(topic_id)
-    if result is None:
-        raise HTTPException(status_code=404, detail=f"topic_id not found: {topic_id}")
-
-    backend.append_learning_event(
-        kind="subject_deleted",
-        payload={"topic_id": topic_id, **result},
-    )
-    return {"topic_id": topic_id, "deleted": True, **result}
 
 
 @app.get("/v1/knowledge/graph/report", tags=["knowledge"])

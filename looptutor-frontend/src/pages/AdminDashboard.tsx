@@ -10,6 +10,7 @@ import { AlertCircle, BookOpen, Clock, FileText, Info, Network, Pencil, Plus, Tr
 import { API_BASE } from '../api/config';
 import { KnowledgeAPI, ResourceAPI } from '../api/client';
 import { useAppDialog } from '../components/AppDialog';
+import SettingsPanel from '../components/SettingsPanel';
 
 echarts.use([BarChart, LineChart, RadarChart, GridComponent, LegendComponent, RadarComponent, TooltipComponent, CanvasRenderer]);
 
@@ -1250,6 +1251,12 @@ export default function AdminDashboard() {
           >
             ⚙️ 系统调试
           </button>
+          <button
+            onClick={() => setActiveTab('settings')}
+            className={`px-6 py-3 text-sm font-medium cursor-pointer transition-all ${activeTab === 'settings' ? 'text-pink-600 border-b-2 border-pink-500' : 'text-gray-500 hover:text-gray-700'}`}
+          >
+            🔧 设置
+          </button>
         </div>
       </div>
 
@@ -1723,6 +1730,7 @@ export default function AdminDashboard() {
             </div>
           </div>
         )}
+        {activeTab === 'settings' && <SettingsPanel />}
       </div>
 
       {subjectModalOpen && (
