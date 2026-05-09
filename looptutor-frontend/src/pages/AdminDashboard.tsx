@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { BookOpen, AlertCircle, Clock, Video, Info } from 'lucide-react';
 import { API_BASE } from '../api/config';
 import { KnowledgeAPI, ResourceAPI } from '../api/client';
+import SettingsPanel from '../components/SettingsPanel';
 
 export default function AdminDashboard() {
   const navigate = useNavigate();
@@ -507,6 +508,12 @@ export default function AdminDashboard() {
           >
             ⚙️ 系统调试
           </button>
+          <button
+            onClick={() => setActiveTab('settings')}
+            className={`px-6 py-3 text-sm font-medium cursor-pointer transition-all ${activeTab === 'settings' ? 'text-pink-600 border-b-2 border-pink-500' : 'text-gray-500 hover:text-gray-700'}`}
+          >
+            🔧 设置
+          </button>
         </div>
       </div>
 
@@ -957,6 +964,8 @@ export default function AdminDashboard() {
             </div>
           </div>
         )}
+        {/* 5. 设置 */}
+        {activeTab === 'settings' && <SettingsPanel />}
       </div>
     </div>
   );

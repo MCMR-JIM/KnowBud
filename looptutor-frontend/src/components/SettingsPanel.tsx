@@ -225,7 +225,7 @@ export default function SettingsPanel() {
     const path = modelPaths[modelKey]?.trim();
     if (!path) return alert('请填写路径');
     try {
-      await SettingsAPI.deleteModel(modelKey, path);
+      await SettingsAPI.deleteModel(modelKey);
       setDownloadStates((prev) => { const copy = { ...prev }; delete copy[modelKey]; return copy; });
     } catch (err: unknown) {
       alert('删除失败: ' + (err instanceof Error ? err.message : String(err)));
