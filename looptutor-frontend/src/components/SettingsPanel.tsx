@@ -200,6 +200,25 @@ export default function SettingsPanel() {
     } catch { /* ignore */ }
   }
 
+  // Scan existing model paths to detect already-downloaded models
+  async function scanExistingModels() {
+    for (const m of models) {
+      const path = modelPaths[m.key]?.trim();
+      if (!path) continue;
+      try {
+        const res = await SettingsAPI.validatePath(m.key, path);
+        if (res.data?.valid) {
+          setDownloadStates((prev) => ({ ...prev, [m.key]: { progress: 100, status: 'done' } }));
+        }
+      } catch { /* ignore */ }
+    }
+  }
+
+  // Scan when models or paths change
+  useEffect(() => {
+    if (models.length > 0) void scanExistingModels();
+  }, [models, modelPaths]);
+
   async function pollDownload(modelKey: string) {
     try {
       const res = await SettingsAPI.getDownloadStatus(modelKey);
