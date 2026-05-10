@@ -81,30 +81,3 @@ export const KnowledgeAPI = {
     apiClient.post(`/knowledge/proposals/${proposalId}/reject`, { reason }),
 };
 
-export const SettingsAPI = {
-  getGPU: () => apiClient.get('/settings/gpu'),
-  getSettings: () => apiClient.get('/settings'),
-  saveSettings: (data: Record<string, unknown>) => apiClient.post('/settings', data),
-  getModels: () => apiClient.get('/settings/models'),
-  downloadModel: (model: string, path: string) => {
-    const fd = new FormData();
-    fd.append('model', model);
-    fd.append('path', path);
-    return apiClient.post('/settings/model/download', fd);
-  },
-  getDownloadStatus: (model: string) => apiClient.get(`/settings/model/download/status`, { params: { model } }),
-  cancelDownload: (model: string) => {
-    const fd = new FormData();
-    fd.append('model', model);
-    return apiClient.post('/settings/model/download/cancel', fd);
-  },
-  pauseDownload: (model: string) => {
-    const fd = new FormData();
-    fd.append('model', model);
-    return apiClient.post('/settings/model/download/pause', fd);
-  },
-  deleteModel: (model: string) => apiClient.delete('/settings/model/download', { params: { model } }),
-  validatePath: (model: string, path: string) => apiClient.post('/settings/model/validate', new URLSearchParams({ model, path }).toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }),
-  browseFolder: () => apiClient.get('/settings/browse-folder'),
-  scanModels: () => apiClient.get('/settings/scan-models'),
-};
