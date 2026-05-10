@@ -23,6 +23,40 @@ from src.agent.policy import AgentPolicyConfig
 from src.agent.mastery_engine import MasteryEngine
 from src.services.env_loader import load_project_env
 
+
+def _load_llm_config() -> tuple[str, str, str]:
+    data_root = os.getenv("DATA_ROOT", "./data")
+    settings_path = Path(data_root) / "llm_settings.json"
+    if not settings_path.exists():
+        return (
+            os.getenv("OPENAI_API_KEY", ""),
+            os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+            os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        )
+    try:
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    except Exception:
+        return (
+            os.getenv("OPENAI_API_KEY", ""),
+            os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+            os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        )
+    mode = settings.get("mode", "remote")
+    if mode == "local":
+        local = settings.get("local", {})
+        return (
+            "not-needed",
+            "http://127.0.0.1:8000/v1",
+            "gemma-3-4b-it",
+        )
+    remote = settings.get("remote", {})
+    return (
+        remote.get("api_key") or os.getenv("OPENAI_API_KEY", ""),
+        remote.get("base_url") or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+        remote.get("model") or os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+    )
+
+
 @dataclass
 class UIRenderBundle:
     play_path: Path | None = None
@@ -62,11 +96,12 @@ class SessionBackend:
         self.engine = DecisionEngine(fail_threshold=fail_th, master_streak=master_st)
 
         self.voice_skill = VoiceIOSkill(self.ctx, whisper_model_size=os.getenv("WHISPER_MODEL_SIZE", "tiny"))
+        _api_key, _base_url, _model = _load_llm_config()
         self.llm_skill = LLMTutorSkill(
             self.ctx,
-            api_key=os.getenv("OPENAI_API_KEY", ""),
-            base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-            model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            api_key=_api_key,
+            base_url=_base_url,
+            model=_model,
         )
         self.agent_orchestrator = (
             AgentOrchestrator(policy=self.agent_policy)
