@@ -40,8 +40,11 @@ def _load_llm_config() -> tuple[str, str, str]:
     if mode == "local":
         return ("not-needed", "http://127.0.0.1:8000/v1", "gemma-3-4b-it")
     remote = settings.get("remote", {})
+    api_key = remote.get("api_key", "") or ""
+    if not api_key:
+        api_key = "not-needed"
     return (
-        remote.get("api_key", "") or "",
+        api_key,
         remote.get("base_url", "https://api.openai.com/v1") or "",
         remote.get("model", "gpt-4o-mini") or "",
     )
