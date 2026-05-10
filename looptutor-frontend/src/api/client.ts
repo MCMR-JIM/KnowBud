@@ -79,6 +79,17 @@ export const KnowledgeAPI = {
     apiClient.post(`/knowledge/proposals/${proposalId}/approve`, payload),
   rejectProposal: (proposalId: string, reason?: string) =>
     apiClient.post(`/knowledge/proposals/${proposalId}/reject`, { reason }),
+  createSubject: (title: string) => {
+    const fd = new FormData();
+    fd.append('title', title);
+    return apiClient.post('/knowledge/subject', fd);
+  },
+  updateSubject: (topicId: string, title: string) => {
+    const fd = new FormData();
+    fd.append('title', title);
+    return apiClient.put(`/knowledge/subject/${topicId}`, fd);
+  },
+  deleteSubject: (topicId: string) => apiClient.delete(`/knowledge/subject/${topicId}`),
 };
 
 export const SettingsAPI = {

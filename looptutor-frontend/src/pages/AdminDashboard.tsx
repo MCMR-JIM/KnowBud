@@ -1776,13 +1776,7 @@ export default function AdminDashboard() {
                 />
               </div>
 
-              <div
-                onDragEnter={handleModalDragEnter}
-                onDragOver={handleModalDragOver}
-                onDragLeave={handleModalDragLeave}
-                onDrop={handleModalDrop}
-                className="relative rounded-[24px] border border-gray-200 bg-gray-50/80 p-4"
-              >
+              <div className="rounded-[24px] border border-gray-200 bg-gray-50/80 p-4">
                 <input
                   ref={modalFileInputRef}
                   type="file"
@@ -1807,11 +1801,18 @@ export default function AdminDashboard() {
                   </button>
                 </div>
 
-                <div className={`max-h-72 space-y-2 overflow-y-auto pr-1 transition-all ${modalDragging ? 'blur-[2px]' : ''}`}>
-                  {modalResourceLoading && (
-                    <div className="rounded-2xl border border-dashed border-gray-200 bg-white p-5 text-center text-sm text-gray-400">
-                      正在读取已有资源...
-                    </div>
+                <div
+                  onDragEnter={handleModalDragEnter}
+                  onDragOver={handleModalDragOver}
+                  onDragLeave={handleModalDragLeave}
+                  onDrop={handleModalDrop}
+                  className="relative min-h-[180px]"
+                >
+                  <div className={`max-h-72 space-y-2 overflow-y-auto pr-1 transition-all ${modalDragging ? 'blur-[2px]' : ''}`}>
+                    {modalResourceLoading && (
+                      <div className="rounded-2xl border border-dashed border-gray-200 bg-white p-5 text-center text-sm text-gray-400">
+                        正在读取已有资源...
+                      </div>
                   )}
 
                   {!modalResourceLoading && existingSubjectResources.map((resource) => (
@@ -1871,12 +1872,13 @@ export default function AdminDashboard() {
                 </div>
 
                 {modalDragging && (
-                  <div className="absolute inset-4 z-10 flex flex-col items-center justify-center rounded-[22px] border-2 border-dashed border-pink-300 bg-white/80 text-pink-600 shadow-2xl backdrop-blur-md">
+                  <div className="absolute inset-0 z-10 flex flex-col items-center justify-center rounded-[20px] border-2 border-dashed border-pink-300 bg-white/80 text-pink-600 shadow-2xl backdrop-blur-md">
                     <UploadCloud size={58} strokeWidth={1.8} />
                     <p className="mt-3 text-lg font-black">松开导入资源</p>
                     <p className="mt-1 text-xs text-pink-400">支持视频、音频、图片、PDF、Word、PPT、TXT</p>
                   </div>
                 )}
+                </div>
               </div>
             </div>
 
