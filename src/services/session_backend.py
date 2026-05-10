@@ -28,32 +28,22 @@ def _load_llm_config() -> tuple[str, str, str]:
     data_root = os.getenv("DATA_ROOT", "./data")
     settings_path = Path(data_root) / "llm_settings.json"
     if not settings_path.exists():
-        return (
-            os.getenv("OPENAI_API_KEY", ""),
-            os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-            os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-        )
-    try:
-        settings = json.loads(settings_path.read_text(encoding="utf-8"))
-    except Exception:
-        return (
-            os.getenv("OPENAI_API_KEY", ""),
-            os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-            os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-        )
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        settings_path.write_text(json.dumps({
+            "mode": "remote",
+            "remote": {"api_key": "", "base_url": "https://api.openai.com/v1", "model": ""},
+            "local": {"model_path": "", "precision": "bf16", "temperature": 0.6, "timeout_sec": 15, "max_tokens": 2048},
+            "model_paths": {},
+        }, indent=2, ensure_ascii=False), encoding="utf-8")
+    settings = json.loads(settings_path.read_text(encoding="utf-8"))
     mode = settings.get("mode", "remote")
     if mode == "local":
-        local = settings.get("local", {})
-        return (
-            "not-needed",
-            "http://127.0.0.1:8000/v1",
-            "gemma-3-4b-it",
-        )
+        return ("not-needed", "http://127.0.0.1:8000/v1", "gemma-3-4b-it")
     remote = settings.get("remote", {})
     return (
-        remote.get("api_key") or os.getenv("OPENAI_API_KEY", ""),
-        remote.get("base_url") or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-        remote.get("model") or os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        remote.get("api_key", "") or "",
+        remote.get("base_url", "https://api.openai.com/v1") or "",
+        remote.get("model", "gpt-4o-mini") or "",
     )
 
 
@@ -96,6 +86,32 @@ class SessionBackend:
         self.engine = DecisionEngine(fail_threshold=fail_th, master_streak=master_st)
 
         self.voice_skill = VoiceIOSkill(self.ctx, whisper_model_size=os.getenv("WHISPER_MODEL_SIZE", "tiny"))
+
+        _data_root = os.getenv("DATA_ROOT", "./data")
+        _settings_path = Path(_data_root) / "llm_settings.json"
+        _settings: dict = {}
+        if _settings_path.exists():
+            try:
+                _settings = json.loads(_settings_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        if _settings.get("mode") == "local":
+            from src.services.local_llm_server import start_local_llm_server, LOCAL_LLM_PORT
+            import time as _time, httpx as _httpx
+            start_local_llm_server(_settings)
+            logger.info("Waiting for local LLM server to load model...")
+            for _attempt in range(120):
+                try:
+                    r = _httpx.get(f"http://127.0.0.1:{LOCAL_LLM_PORT}/health", timeout=2)
+                    if r.json().get("status") == "ready":
+                        logger.info("Local LLM server is ready")
+                        break
+                except Exception:
+                    pass
+                _time.sleep(1)
+            else:
+                logger.warning("Local LLM server did not become ready within 120s, proceeding anyway")
+
         _api_key, _base_url, _model = _load_llm_config()
         self.llm_skill = LLMTutorSkill(
             self.ctx,
