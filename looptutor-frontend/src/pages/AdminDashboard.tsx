@@ -6,7 +6,7 @@ import * as echarts from 'echarts/core';
 import { BarChart, LineChart, RadarChart } from 'echarts/charts';
 import { GridComponent, LegendComponent, RadarComponent, TooltipComponent } from 'echarts/components';
 import { CanvasRenderer } from 'echarts/renderers';
-import { AlertCircle, BookOpen, Clock, FileText, Info, Loader2, Network, Pencil, Plus, Trash2, UploadCloud, Video, X } from 'lucide-react';
+import { AlertCircle, BookOpen, CheckCircle2, Clock, FileText, Info, Loader2, Network, Pencil, Plus, Trash2, UploadCloud, Video, X } from 'lucide-react';
 import { API_BASE } from '../api/config';
 import { KnowledgeAPI, ResourceAPI } from '../api/client';
 import { useAppDialog } from '../components/AppDialog';
@@ -669,7 +669,7 @@ export default function AdminDashboard() {
   const [modalResourceLoading, setModalResourceLoading] = useState(false);
   const [deletingSubjectId, setDeletingSubjectId] = useState('');
   const [deletingResourceId, setDeletingResourceId] = useState('');
-  const [processingResources, setProcessingResources] = useState<TopicResource[]>([]);
+  const [allResources, setAllResources] = useState<TopicResource[]>([]);
   const modalFileInputRef = useRef<HTMLInputElement>(null);
 
   // 后端真实数据
@@ -739,7 +739,7 @@ export default function AdminDashboard() {
 
       try {
         const resRes = await ResourceAPI.listResources();
-        setProcessingResources((resRes.data || []).filter((r: TopicResource) => r.ingestion_status === 'processing' || r.ingestion_status === 'pending'));
+        setAllResources(resRes.data || []);
       } catch { /* listResources pre-existing */ }
 
       // ================= 真实计算开始 =================
@@ -1357,35 +1357,58 @@ export default function AdminDashboard() {
               </div>
             </div>
 
-            {processingResources.length > 0 && (
+            {allResources.length > 0 && (
               <div className="rounded-[24px] border border-gray-100 bg-white/70 p-5">
                 <h2 className="text-sm font-black text-gray-700 mb-4">资源解析状态</h2>
-                <div className="space-y-2">
-                  {processingResources.map((res) => (
-                    <div key={res.resource_id} className="flex items-center gap-3 rounded-2xl border border-amber-100 bg-amber-50/50 px-4 py-3">
-                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-amber-100">
-                        {res.ingestion_status === 'processing' ? (
+                <div className="space-y-2 max-h-80 overflow-y-auto">
+                  {allResources.map((res) => {
+                    const status = res.ingestion_status || 'unknown';
+                    const isProcessing = status === 'processing';
+                    const isCompleted = status === 'completed';
+                    const isFailed = status === 'failed';
+                    return (
+                    <div key={res.resource_id} className={[
+                      'flex items-center gap-3 rounded-2xl border px-4 py-3',
+                      isProcessing ? 'border-amber-100 bg-amber-50/50' :
+                      isCompleted ? 'border-green-100 bg-green-50/40' :
+                      isFailed ? 'border-red-100 bg-red-50/40' :
+                      'border-gray-100 bg-white'
+                    ].join(' ')}>
+                      <div className={[
+                        'flex h-9 w-9 shrink-0 items-center justify-center rounded-xl',
+                        isProcessing ? 'bg-amber-100' :
+                        isCompleted ? 'bg-green-100' :
+                        isFailed ? 'bg-red-100' :
+                        'bg-gray-100'
+                      ].join(' ')}>
+                        {isProcessing ? (
                           <Loader2 size={18} className="animate-spin text-amber-600" />
+                        ) : isCompleted ? (
+                          <CheckCircle2 size={18} className="text-green-600" />
+                        ) : isFailed ? (
+                          <AlertCircle size={18} className="text-red-500" />
                         ) : (
-                          <Clock size={18} className="text-amber-500" />
+                          <Clock size={18} className="text-gray-400" />
                         )}
                       </div>
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-bold text-gray-800">{res.resource_name}</p>
-                        <p className="text-xs text-amber-700">
-                          {res.ingestion_status === 'processing' ? '解析中...' : '等待解析'}
-                          {res.media_type && ` · ${res.media_type}`}
-                          {res.size_bytes && ` · ${(res.size_bytes / 1024 / 1024).toFixed(2)} MB`}
+                        <p className="text-xs text-gray-400">
+                          {res.media_type && `${res.media_type} `}
+                          {res.size_bytes && ` ${(res.size_bytes / 1024 / 1024).toFixed(2)} MB`}
                         </p>
                       </div>
-                      {res.ingestion_status === 'processing' && (
-                        <span className="shrink-0 rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-semibold text-amber-700">解析中</span>
-                      )}
-                      {res.ingestion_status === 'pending' && (
-                        <span className="shrink-0 rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-semibold text-gray-500">等待</span>
-                      )}
+                      <span className={[
+                        'shrink-0 rounded-full px-2.5 py-1 text-[11px] font-semibold',
+                        isProcessing ? 'bg-amber-100 text-amber-700' :
+                        isCompleted ? 'bg-green-100 text-green-700' :
+                        isFailed ? 'bg-red-100 text-red-700' :
+                        'bg-gray-100 text-gray-500'
+                      ].join(' ')}>
+                        {isProcessing ? '解析中' : isCompleted ? '已完成' : isFailed ? '失败' : '等待'}
+                      </span>
                     </div>
-                  ))}
+                  )})}
                 </div>
               </div>
             )}
