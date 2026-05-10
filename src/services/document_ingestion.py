@@ -61,8 +61,7 @@ def ingest_document_resource(
             print(f"\n⚠ MinerU 调用异常，回退到原有解析器: {_mineru_exc}\n")
         finally:
             if _mineru_result and _mineru_result.get("images_dir"):
-                import shutil as _shutil
-                _shutil.rmtree(_mineru_result["images_dir"], ignore_errors=True)
+                _cleanup_mineru_temp(_mineru_result["images_dir"])
 
     if units is None:
         parser = _select_parser(record)
@@ -322,6 +321,11 @@ def _parse_pptx(path: Path) -> list[TextUnit]:
     return units
 
 
+def _cleanup_mineru_temp(dir_path: str) -> None:
+    from src.core.safe_delete import SafeDelete
+    SafeDelete(dir_path).require_in_temp_dir().require_name_starts_with("mineru_").execute(ignore_errors=True)
+
+
 def _mineru_lang_code(language_id: str | None) -> str:
     if not language_id:
         return "ch"
@@ -388,11 +392,8 @@ def _mineru_parse_office(file_bytes: bytes, suffix: str) -> dict:
             "error": None,
         }
     except Exception:
-        import shutil
-        try:
-            shutil.rmtree(images_dir, ignore_errors=True)
-        except Exception:
-            pass
+        from src.core.safe_delete import SafeDelete
+        SafeDelete(images_dir).require_in_temp_dir().require_name_starts_with("mineru_").execute(ignore_errors=True)
         raise
 
 
@@ -444,11 +445,8 @@ def _mineru_parse_pdf_image(file_bytes: bytes, suffix: str, stem: str, lang: str
             "error": None,
         }
     except Exception:
-        import shutil
-        try:
-            shutil.rmtree(output_dir, ignore_errors=True)
-        except Exception:
-            pass
+        from src.core.safe_delete import SafeDelete
+        SafeDelete(output_dir).require_in_temp_dir().require_name_starts_with("mineru_").execute(ignore_errors=True)
         raise
 
 

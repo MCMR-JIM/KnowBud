@@ -441,10 +441,10 @@ def delete_model(model: str = Query(...), path: str = Query("")) -> dict[str, An
                 return {"model": model, "deleted": False, "reason": f"路径包含项目文件 ({item})，拒绝删除以保护项目"}
 
     try:
-        import shutil
+        from src.core.safe_delete import SafeDelete
         for p in delete_paths:
             if p.exists():
-                shutil.rmtree(p, ignore_errors=False)
+                SafeDelete(p).forbid_project_files().execute()
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"delete failed: {str(exc)}") from exc
 

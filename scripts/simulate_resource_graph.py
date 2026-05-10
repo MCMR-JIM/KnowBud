@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import random
-import shutil
 import sys
 import time
 from collections import Counter, defaultdict
@@ -112,7 +111,8 @@ def main() -> None:
 
 def prepare_output_dir(output_dir: Path, *, keep_existing: bool) -> None:
     if output_dir.exists() and not keep_existing:
-        shutil.rmtree(output_dir)
+        from src.core.safe_delete import SafeDelete
+        SafeDelete(output_dir).forbid_project_files().execute()
     output_dir.mkdir(parents=True, exist_ok=True)
 
 
