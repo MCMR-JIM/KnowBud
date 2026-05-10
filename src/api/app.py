@@ -821,6 +821,35 @@ def get_resource_file(resource_id: str):
     return FileResponse(path=file_path, media_type=record.mime_type, filename=record.original_filename)
 
 
+@app.delete("/v1/resource/{resource_id}", tags=["resource"])
+def delete_resource(resource_id: str) -> dict[str, Any]:
+    backend = get_backend()
+    deleted = backend.delete_resource(resource_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"resource_id not found: {resource_id}")
+    return {"resource_id": resource_id, "deleted": True}
+
+
+@app.get("/v1/resources", tags=["resource"])
+def list_resources() -> list[dict[str, Any]]:
+    backend = get_backend()
+    records = backend.list_all_resources()
+    result: list[dict[str, Any]] = []
+    for record in records:
+        counts = _resource_segment_counts(record)
+        result.append({
+            "resource_id": record.resource_id,
+            "resource_name": record.resource_name,
+            "original_filename": record.original_filename,
+            "media_type": record.media_type,
+            "size_bytes": record.size_bytes,
+            "ingestion_status": record.ingestion_status,
+            "segment_count": counts["segment_count"],
+            "error": record.ingestion_error,
+        })
+    return result
+
+
 @app.get("/v1/knowledge/graph", response_model=KnowledgeGraphResponse, tags=["knowledge"])
 def get_knowledge_graph() -> KnowledgeGraphResponse:
     runtime = get_runtime()
