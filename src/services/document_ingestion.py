@@ -30,6 +30,7 @@ CLASSIFY_BATCH_SIZE = 1
 class TextUnit:
     text: str
     locator: dict[str, object]
+    mineru_block: dict | None = None
 
 
 def ingest_document_resource(
@@ -43,35 +44,55 @@ def ingest_document_resource(
     subject: str | None = None,
     language_id: str | None = None,
 ) -> list[ResourceSegment]:
-    parser = _select_parser(record)
-    if parser is None:
-        segments = [
-            _status_segment(
-                resource_id=record.resource_id,
-                sequence_index=0,
-                status="unsupported",
-                reason=f"暂不支持解析 {record.media_type} 文件",
-                locator={"kind": record.media_type or "binary"},
-            )
-        ]
-        backend.replace_resource_segments(record.resource_id, segments)
-        return segments
+    import os as _os
 
-    try:
-        units = parser(Path(record.stored_path))
-    except Exception as exc:
-        print(f"\n❌ 抓到 OCR 崩溃的真凶了: {exc}\n")  # <--- 就是加这一行！！！
-        segments = [
-            _status_segment(
-                resource_id=record.resource_id,
-                sequence_index=0,
-                status="parse_failed",
-                reason=f"文档解析失败: {str(exc)[:60]}",
-                locator={"kind": record.media_type or "unknown"},
-            )
-        ]
-        backend.replace_resource_segments(record.resource_id, segments)
-        return segments
+    units: list[TextUnit] | None = None
+
+    if _os.getenv("MINERU_ENABLED", "true").strip().lower() != "false":
+        _mineru_result: dict | None = None
+        try:
+            _lang = _mineru_lang_code(language_id)
+            _mineru_result = _parse_with_mineru(str(record.stored_path), lang=_lang)
+            if _mineru_result["error"] is None:
+                units = _convert_mineru_to_textunits(_mineru_result)
+            else:
+                print(f"\n⚠ MinerU 解析失败，回退到原有解析器: {_mineru_result['error']}\n")
+        except Exception as _mineru_exc:
+            print(f"\n⚠ MinerU 调用异常，回退到原有解析器: {_mineru_exc}\n")
+        finally:
+            if _mineru_result and _mineru_result.get("images_dir"):
+                import shutil as _shutil
+                _shutil.rmtree(_mineru_result["images_dir"], ignore_errors=True)
+
+    if units is None:
+        parser = _select_parser(record)
+        if parser is None:
+            segments = [
+                _status_segment(
+                    resource_id=record.resource_id,
+                    sequence_index=0,
+                    status="unsupported",
+                    reason=f"暂不支持解析 {record.media_type} 文件",
+                    locator={"kind": record.media_type or "binary"},
+                )
+            ]
+            backend.replace_resource_segments(record.resource_id, segments)
+            return segments
+
+        try:
+            units = parser(Path(record.stored_path))
+        except Exception as exc:
+            segments = [
+                _status_segment(
+                    resource_id=record.resource_id,
+                    sequence_index=0,
+                    status="parse_failed",
+                    reason=f"文档解析失败: {str(exc)[:60]}",
+                    locator={"kind": record.media_type or "unknown"},
+                )
+            ]
+            backend.replace_resource_segments(record.resource_id, segments)
+            return segments
 
     chunks = _units_to_chunks(units)
     if progress_callback is not None:
@@ -299,6 +320,363 @@ def _parse_pptx(path: Path) -> list[TextUnit]:
             )
         )
     return units
+
+
+def _mineru_lang_code(language_id: str | None) -> str:
+    if not language_id:
+        return "ch"
+    lid = language_id.strip().lower()
+    if lid in ("en", "english", "eng"):
+        return "en"
+    if lid in ("zh", "chinese", "chi", "ch", "cn"):
+        return "ch"
+    return "ch"
+
+
+def _parse_with_mineru(file_path: str, lang: str = "ch") -> dict:
+    result: dict = {
+        "markdown": "",
+        "content_list": [],
+        "images_dir": None,
+        "error": None,
+    }
+    try:
+        path = Path(file_path)
+        suffix = path.suffix.lower()
+        file_bytes = path.read_bytes()
+
+        if suffix == ".docx":
+            result = _mineru_parse_office(file_bytes, suffix)
+        elif suffix == ".pptx":
+            result = _mineru_parse_office(file_bytes, suffix)
+        elif suffix in (".pdf", ".png", ".jpg", ".jpeg"):
+            result = _mineru_parse_pdf_image(file_bytes, suffix, path.stem, lang)
+        else:
+            result["error"] = f"Unsupported file type: {suffix}"
+    except Exception as exc:
+        result["error"] = str(exc)
+    return result
+
+
+def _mineru_parse_office(file_bytes: bytes, suffix: str) -> dict:
+    import tempfile
+    from mineru.data.data_reader_writer import FileBasedDataWriter
+    from mineru.backend.office.office_middle_json_mkcontent import union_make as office_union_make
+    from mineru.utils.enum_class import MakeMode
+
+    if suffix == ".docx":
+        from mineru.backend.office.docx_analyze import office_docx_analyze
+        analyze = office_docx_analyze
+    else:
+        from mineru.backend.office.pptx_analyze import office_pptx_analyze
+        analyze = office_pptx_analyze
+
+    images_dir = tempfile.mkdtemp(prefix="mineru_office_")
+    try:
+        image_writer = FileBasedDataWriter(images_dir)
+        middle_json, _infer_result = analyze(file_bytes, image_writer=image_writer)
+        pdf_info = middle_json["pdf_info"]
+        image_dir_name = Path(images_dir).name
+
+        markdown = office_union_make(pdf_info, MakeMode.MM_MD, image_dir_name)
+        content_list = office_union_make(pdf_info, MakeMode.CONTENT_LIST_V2, image_dir_name)
+
+        return {
+            "markdown": markdown if isinstance(markdown, str) else str(markdown),
+            "content_list": content_list if isinstance(content_list, list) else [],
+            "images_dir": images_dir,
+            "error": None,
+        }
+    except Exception:
+        import shutil
+        try:
+            shutil.rmtree(images_dir, ignore_errors=True)
+        except Exception:
+            pass
+        raise
+
+
+def _mineru_parse_pdf_image(file_bytes: bytes, suffix: str, stem: str, lang: str = "ch") -> dict:
+    import tempfile
+    from mineru.cli.common import do_parse
+    from mineru.utils.enum_class import MakeMode
+
+    if suffix in (".png", ".jpg", ".jpeg"):
+        from mineru.utils.pdf_image_tools import images_bytes_to_pdf_bytes
+        file_bytes = images_bytes_to_pdf_bytes(file_bytes)
+
+    output_dir = tempfile.mkdtemp(prefix="mineru_pdf_")
+    try:
+        pdf_file_name = stem or "document"
+        do_parse(
+            output_dir=output_dir,
+            pdf_file_names=[pdf_file_name],
+            pdf_bytes_list=[file_bytes],
+            p_lang_list=[lang],
+            backend="pipeline",
+            f_dump_md=True,
+            f_dump_content_list=True,
+            f_dump_middle_json=False,
+            f_dump_model_output=False,
+            f_dump_orig_pdf=False,
+            f_make_md_mode=MakeMode.MM_MD,
+            f_draw_layout_bbox=False,
+            f_draw_span_bbox=False,
+        )
+
+        md_files = list(Path(output_dir).rglob(f"*/{pdf_file_name}.md"))
+        content_list_files = list(Path(output_dir).rglob(f"*/{pdf_file_name}_content_list_v2.json"))
+
+        markdown = ""
+        content_list: list = []
+
+        if md_files:
+            markdown = md_files[0].read_text(encoding="utf-8", errors="ignore")
+        if content_list_files:
+            content_list = json.loads(content_list_files[0].read_text(encoding="utf-8", errors="ignore"))
+            if not isinstance(content_list, list):
+                content_list = []
+
+        return {
+            "markdown": markdown,
+            "content_list": content_list,
+            "images_dir": output_dir,
+            "error": None,
+        }
+    except Exception:
+        import shutil
+        try:
+            shutil.rmtree(output_dir, ignore_errors=True)
+        except Exception:
+            pass
+        raise
+
+
+def _convert_mineru_to_textunits(mineru_result: dict) -> list[TextUnit]:
+    content_list = mineru_result.get("content_list") or []
+    if not isinstance(content_list, list):
+        return []
+
+    units: list[TextUnit] = []
+    heading_stack: list[str] = []
+
+    for page_idx, page_blocks in enumerate(content_list):
+        if not isinstance(page_blocks, list):
+            continue
+        for block in page_blocks:
+            if not isinstance(block, dict):
+                continue
+            block_type = (block.get("type") or "").lower()
+            content = block.get("content") or {}
+
+            if block_type in ("page_header", "page_footer", "page_number", "page_aside_text", "page_footnote"):
+                continue
+
+            if block_type == "image":
+                continue
+
+            if block_type == "title":
+                text = _mineru_extract_text((content.get("title_content") or content.get("content") or []))
+                if not text:
+                    continue
+                level = content.get("level")
+                if isinstance(level, (int, float)):
+                    level = int(level)
+                else:
+                    level = 1
+                while len(heading_stack) >= level:
+                    heading_stack.pop()
+                heading_stack.append(text)
+                units.append(TextUnit(
+                    text=text,
+                    locator={
+                        "kind": "mineru",
+                        "page_idx": page_idx,
+                        "block_type": "title",
+                        "heading_path": list(heading_stack[:-1]),
+                    },
+                    mineru_block=block,
+                ))
+
+            elif block_type == "paragraph":
+                text = _mineru_extract_text((content.get("paragraph_content") or content.get("content") or []))
+                if not text:
+                    continue
+                units.append(TextUnit(
+                    text=text,
+                    locator={
+                        "kind": "mineru",
+                        "page_idx": page_idx,
+                        "block_type": "paragraph",
+                        "heading_path": list(heading_stack),
+                    },
+                    mineru_block=block,
+                ))
+
+            elif block_type == "table":
+                html = content.get("html") or ""
+                md_table = _html_table_to_markdown(html) if html else ""
+                if not md_table:
+                    caption_spans = content.get("table_caption") or []
+                    caption_text = _mineru_extract_text(caption_spans)
+                    md_table = caption_text or "[Table]"
+                units.append(TextUnit(
+                    text=md_table,
+                    locator={
+                        "kind": "mineru",
+                        "page_idx": page_idx,
+                        "block_type": "table",
+                        "heading_path": list(heading_stack),
+                    },
+                    mineru_block=block,
+                ))
+
+            elif block_type == "code":
+                code_spans = content.get("code_content") or []
+                text = _mineru_extract_text(code_spans)
+                caption_spans = content.get("code_caption") or []
+                caption = _mineru_extract_text(caption_spans)
+                full_text = f"```\n{text}\n```" + (f"\n{caption}" if caption else "")
+                if not text:
+                    continue
+                units.append(TextUnit(
+                    text=full_text,
+                    locator={
+                        "kind": "mineru",
+                        "page_idx": page_idx,
+                        "block_type": "code",
+                        "heading_path": list(heading_stack),
+                    },
+                    mineru_block=block,
+                ))
+
+            elif block_type == "equation_interline":
+                math_text = content.get("math_content") or content.get("content") or ""
+                if not math_text:
+                    continue
+                units.append(TextUnit(
+                    text=str(math_text),
+                    locator={
+                        "kind": "mineru",
+                        "page_idx": page_idx,
+                        "block_type": "equation_interline",
+                        "heading_path": list(heading_stack),
+                    },
+                    mineru_block=block,
+                ))
+
+            elif block_type == "list":
+                list_items = content.get("list_items") or []
+                parts: list[str] = []
+                for item in list_items:
+                    if not isinstance(item, dict):
+                        continue
+                    item_spans = item.get("item_content") or []
+                    item_text = _mineru_extract_text(item_spans)
+                    if item_text:
+                        parts.append(f"- {item_text}")
+                if not parts:
+                    continue
+                units.append(TextUnit(
+                    text="\n".join(parts),
+                    locator={
+                        "kind": "mineru",
+                        "page_idx": page_idx,
+                        "block_type": "list",
+                        "heading_path": list(heading_stack),
+                    },
+                    mineru_block=block,
+                ))
+
+            elif block_type in ("algorithm", "chart", "index", "seal"):
+                continue
+
+    return units
+
+
+def _mineru_extract_text(spans: list) -> str:
+    parts: list[str] = []
+    for span in spans:
+        if not isinstance(span, dict):
+            continue
+        span_type = span.get("type", "")
+        span_text = span.get("content", "")
+        if not isinstance(span_text, str):
+            continue
+        if span_type in ("text", "md", ""):
+            parts.append(span_text)
+        elif span_type == "equation_inline":
+            parts.append(f"${span_text}$")
+        elif span_type == "code_inline":
+            parts.append(f"`{span_text}`")
+        elif span_type == "phonetic":
+            parts.append(f"[{span_text}]")
+    return "".join(parts).strip()
+
+
+def _html_table_to_markdown(html: str) -> str:
+    from html.parser import HTMLParser
+
+    class _TableParser(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.rows: list[list[str]] = []
+            self._current_row: list[str] = []
+            self._current_cell: str = ""
+            self._in_cell = False
+            self._colspan = 1
+
+        def handle_starttag(self, tag: str, attrs: list):
+            tag_lower = tag.lower()
+            if tag_lower in ("td", "th"):
+                self._in_cell = True
+                self._current_cell = ""
+                for k, v in attrs:
+                    if k.lower() == "colspan":
+                        try:
+                            self._colspan = int(v)
+                        except ValueError:
+                            self._colspan = 1
+
+        def handle_endtag(self, tag: str):
+            tag_lower = tag.lower()
+            if tag_lower in ("td", "th"):
+                self._in_cell = False
+                cell = self._current_cell.strip().replace("|", "\\|").replace("\n", " ")
+                for _ in range(self._colspan):
+                    self._current_row.append(cell)
+                self._colspan = 1
+            elif tag_lower == "tr":
+                if self._current_row:
+                    self.rows.append(self._current_row)
+                self._current_row = []
+
+        def handle_data(self, data: str):
+            if self._in_cell:
+                self._current_cell += data
+
+    parser = _TableParser()
+    try:
+        parser.feed(html)
+    except Exception:
+        return ""
+
+    rows = parser.rows
+    if not rows:
+        return ""
+
+    col_count = max((len(r) for r in rows), default=0)
+    if col_count == 0:
+        return ""
+
+    lines: list[str] = []
+    for ri, row in enumerate(rows):
+        padded = row + [""] * (col_count - len(row))
+        lines.append("| " + " | ".join(padded) + " |")
+        if ri == 0:
+            lines.append("| " + " | ".join(["---"] * col_count) + " |")
+
+    return "\n".join(lines)
 
 
 def _split_text_blocks(text: str) -> list[str]:
