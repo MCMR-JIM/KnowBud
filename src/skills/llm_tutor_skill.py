@@ -64,6 +64,14 @@ class LLMTutorSkill(BaseSkill):
                 "LLM not configured: please configure remote API or local model in Settings"
             )
 
+    def reconfigure(self, *, api_key: str, base_url: str, model: str) -> None:
+        self.api_key = api_key.strip()
+        self.base_url = base_url.strip()
+        self.model_name = model.strip()
+        self.is_configured = all([self.api_key, self.base_url, self.model_name])
+        if self.is_configured:
+            self.client = OpenAI(api_key=self.api_key, base_url=self.base_url, http_client=self._build_http_client())
+
     @staticmethod
     def _build_http_client() -> httpx.Client:
         timeout = httpx.Timeout(connect=10.0, read=60.0, write=60.0, pool=10.0)

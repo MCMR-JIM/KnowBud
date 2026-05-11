@@ -688,6 +688,9 @@ def _run_resource_ingestion(
     _set_ingestion_stage(resource_id, "文档解析中")
 
     try:
+        from src.services.session_backend import _load_llm_config as _reload_config
+        _api_key, _base_url, _model = _reload_config()
+        backend.llm_skill.reconfigure(api_key=_api_key, base_url=_base_url, model=_model)
         backend.llm_skill.ensure_configured()
     except LLMNotConfiguredError as exc:
         error = str(exc)
