@@ -177,27 +177,13 @@ class SessionBackend:
                     precision = str(local.get("precision", "bf16"))
                     temp = str(local.get("temperature", 0.6))
                     max_t = str(local.get("max_tokens", 2048))
-                    logger.info("[llm] starting local LLM subprocess on port {}", port)
+                    logger.info("[llm] starting local LLM subprocess on port {} (async)", port)
                     subprocess.Popen(
                         [sys.executable, str(server_script),
                          "--model-path", model_path, "--port", str(port),
                          "--precision", precision, "--temperature", temp, "--max-tokens", max_t],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     )
-                    import httpx
-                    _health_url = f"http://127.0.0.1:{port}/health"
-                    logger.info("[llm] waiting for local LLM on port {}...", port)
-                    for _i in range(120):
-                        try:
-                            r = httpx.get(_health_url, timeout=2)
-                            if r.status_code == 200:
-                                logger.info("[llm] local LLM ready")
-                                break
-                        except Exception:
-                            pass
-                        time.sleep(1)
-                    else:
-                        logger.warning("[llm] local LLM not ready within 120s")
 
         _api_key, _base_url, _model = _load_llm_config()
         self.llm_skill = LLMTutorSkill(
