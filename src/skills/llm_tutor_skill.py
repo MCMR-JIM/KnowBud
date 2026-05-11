@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-import httpx  # 🚀 新增这一行：用于配置底层网络
+import httpx
 from typing import Optional
 
 from pydantic import BaseModel, Field, ValidationError
@@ -34,6 +34,10 @@ class ResourceChunkProposalDecision(BaseModel):
     guiding_question: str = ""
     teaching_hint: str = ""
 
+
+class LLMNotConfiguredError(RuntimeError):
+    pass
+
 class LLMTutorSkill(BaseSkill):
     """大模型导师技能：负责根据知识点出题，以及批改儿童的答案"""
     
@@ -42,14 +46,23 @@ class LLMTutorSkill(BaseSkill):
 
     def __init__(self, ctx: SkillContext, *, api_key: str, base_url: str, model: str) -> None:
         self.ctx = ctx
-        self.model_name = model
+        self.api_key = api_key.strip()
+        self.base_url = base_url.strip()
+        self.model_name = model.strip()
+        self.is_configured = all([self.api_key, self.base_url, self.model_name])
+        self.client: OpenAI | None = None
+        if self.is_configured:
+            self.client = OpenAI(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                http_client=self._build_http_client(),
+            )
 
-        # 在不同 httpx 版本下统一关闭环境代理，避免本机代理影响请求。
-        self.client = OpenAI(
-            api_key=api_key, 
-            base_url=base_url,
-            http_client=self._build_http_client()
-        )
+    def ensure_configured(self) -> None:
+        if self.client is None or not self.is_configured:
+            raise LLMNotConfiguredError(
+                "LLM not configured: please configure remote API or local model in Settings"
+            )
 
     @staticmethod
     def _build_http_client() -> httpx.Client:
@@ -280,6 +293,8 @@ class LLMTutorSkill(BaseSkill):
         
         for attempt in range(2):
             try:
+                self.ensure_configured()
+                assert self.client is not None
                 response = self.client.chat.completions.create(
                     model=self.model_name,
                     messages=messages,
@@ -306,3 +321,7 @@ class LLMTutorSkill(BaseSkill):
                     if fallback_obj is not None:
                         return fallback_obj
                     raise e
+            except Exception:
+                if fallback_obj is not None:
+                    return fallback_obj
+                raise

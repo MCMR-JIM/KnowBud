@@ -186,6 +186,7 @@ class ResourceInfo(BaseModel):
     size_bytes: int
     created_ts: str
     ingestion_status: str = "pending"
+    ingestion_stage: Optional[str] = None
     ingestion_error: Optional[str] = None
     segments: list[ResourceSegmentInfo] = Field(default_factory=list)
 
@@ -232,6 +233,7 @@ class ResourceSegmentListResponse(BaseModel):
 class ResourceIngestionStatusResponse(BaseModel):
     resource_id: str
     status: str
+    stage: str = ""
     segment_count: int = 0
     classified_count: int = 0
     proposed_count: int = 0

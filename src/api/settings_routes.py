@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from __future__ import annotations
-
 import json
 import logging
 import os
@@ -25,13 +23,15 @@ def scan_existing_models():
     from huggingface_hub import scan_cache_dir
 
     found: dict[str, str] = {}
+    llm_models, parser_models = _model_catalogs()
     try:
         hf_cache_info = scan_cache_dir()
         for repo in hf_cache_info.repos:
-            for model_key, model_def in {**LLM_MODELS, **PARSER_MODELS}.items():
+            for model_key, model_def in {**llm_models, **parser_models}.items():
                 if model_key in found:
                     continue
-                if model_def["repo_id"] in repo.repo_id:
+                repo_id = model_def.get("repo_id") if isinstance(model_def, dict) else None
+                if repo_id and repo_id in repo.repo_id:
                     snapshots = list(repo.repo_path.glob("snapshots/*"))
                     if snapshots:
                         found[model_key] = str(snapshots[0])
@@ -55,7 +55,63 @@ def browse_folder():
     return {"path": os.path.normpath(path)}
 
 
-LLM_MODELS: dict[str, dict[str, str]] = {
+SETTINGS_FILE = Path(os.getenv("DATA_ROOT", "./data")) / "llm_settings.json"
+DEFAULT_SETTINGS: dict[str, Any] = {
+    "mode": "remote",
+    "provider": "deepseek",
+    "remote": {
+        "api_key": "",
+        "base_url": "https://api.openai.com/v1",
+        "model": "",
+    },
+    "local": {
+        "model_path": "",
+        "model": "",
+        "port": 8000,
+        "precision": "bf16",
+        "temperature": 0.1,
+        "timeout_sec": 15,
+        "max_tokens": 2048,
+    },
+    "model_paths": {},
+    "llm_models": {},
+    "parser_models": {},
+}
+
+download_progress: dict[str, float] = {}
+download_state: dict[str, str] = {}
+download_speed: dict[str, float] = {}
+download_paths: dict[str, str] = {}
+download_lock = threading.Lock()
+
+
+def _ensure_settings_dir() -> None:
+    SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _load_settings() -> dict[str, Any]:
+    _ensure_settings_dir()
+    if not SETTINGS_FILE.exists():
+        return json.loads(json.dumps(DEFAULT_SETTINGS))
+    try:
+        with open(SETTINGS_FILE, "r", encoding="utf-8") as file:
+            data = json.load(file)
+    except (json.JSONDecodeError, OSError):
+        return json.loads(json.dumps(DEFAULT_SETTINGS))
+    merged = json.loads(json.dumps(DEFAULT_SETTINGS))
+    if "mode" in data:
+        merged["mode"] = data["mode"]
+    for key, value in data.items():
+        if key not in {"mode", "remote", "local"}:
+            merged[key] = value
+    if isinstance(data.get("remote"), dict):
+        merged["remote"].update(data["remote"])
+    if isinstance(data.get("local"), dict):
+        merged["local"].update(data["local"])
+    return merged
+
+
+DEFAULT_LLM_MODELS: dict[str, dict[str, str]] = {
     "gemma-4b": {
         "label": "Gemma-3-4B",
         "size": "~8 GB",
@@ -70,7 +126,7 @@ LLM_MODELS: dict[str, dict[str, str]] = {
         "vram": "~14 GB (bf16)",
         "gpu": "RTX 4080+",
         "repo_id": "Qwen/Qwen2.5-VL-7B-Instruct",
-        "description": "阿里多模态模型，7B 参数，中英双语",
+        "description": "阿里多模态模型，7B 参数，中英双通",
     },
     "gemma-12b": {
         "label": "Gemma-3-12B",
@@ -78,7 +134,7 @@ LLM_MODELS: dict[str, dict[str, str]] = {
         "vram": "~24 GB (bf16)",
         "gpu": "RTX 4090 / 2x RTX 3090",
         "repo_id": "google/gemma-3-12b-it",
-        "description": "Google 多模态模型，12B 参数，更强推理",
+        "description": "Google 多模态模型，12B 参数",
     },
     "qwen-27b": {
         "label": "Qwen3.6-27B",
@@ -90,24 +146,7 @@ LLM_MODELS: dict[str, dict[str, str]] = {
     },
 }
 
-SETTINGS_FILE = Path(os.getenv("DATA_ROOT", "./data")) / "llm_settings.json"
-DEFAULT_SETTINGS: dict[str, Any] = {
-    "mode": "remote",
-    "remote": {
-        "api_key": "",
-        "base_url": "https://api.openai.com/v1",
-        "model": "",
-    },
-    "local": {
-        "model_path": "",
-        "precision": "bf16",
-        "temperature": 0.1,
-        "timeout_sec": 15,
-        "max_tokens": 2048,
-    },
-}
-
-PARSER_MODELS: dict[str, dict[str, str]] = {
+DEFAULT_PARSER_MODELS: dict[str, dict[str, str]] = {
     "mineru-25": {
         "key": "mineru-25",
         "label": "MinerU2.5-Pro-1.2B",
@@ -128,29 +167,16 @@ PARSER_MODELS: dict[str, dict[str, str]] = {
     },
 }
 
-download_progress: dict[str, float] = {}
-download_state: dict[str, str] = {}
-download_speed: dict[str, float] = {}
-download_paths: dict[str, str] = {}
-download_lock = threading.Lock()
 
-
-def _ensure_settings_dir() -> None:
-    SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-
-
-def _load_settings() -> dict[str, Any]:
-    _ensure_settings_dir()
-    if not SETTINGS_FILE.exists():
-        return DEFAULT_SETTINGS.copy()
-    try:
-        with open(SETTINGS_FILE, "r", encoding="utf-8") as file:
-            data = json.load(file)
-    except (json.JSONDecodeError, OSError):
-        return DEFAULT_SETTINGS.copy()
-    merged = DEFAULT_SETTINGS.copy()
-    merged.update(data)
-    return merged
+def _model_catalogs() -> tuple[dict[str, Any], dict[str, Any]]:
+    settings = _load_settings()
+    llm = settings.get("llm_models")
+    parser = settings.get("parser_models")
+    if not isinstance(llm, dict) or not llm:
+        llm = DEFAULT_LLM_MODELS
+    if not isinstance(parser, dict) or not parser:
+        parser = DEFAULT_PARSER_MODELS
+    return llm, parser
 
 
 def _save_settings(data: dict[str, Any]) -> None:
@@ -216,15 +242,22 @@ def save_settings(payload: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         settings["remote"].update(payload["remote"] or {})
     if "local" in payload:
         settings["local"].update(payload["local"] or {})
+    if "provider" in payload:
+        settings["provider"] = payload["provider"]
     if "model_paths" in payload:
         settings["model_paths"] = payload["model_paths"]
+    if "llm_models" in payload:
+        settings["llm_models"] = payload["llm_models"]
+    if "parser_models" in payload:
+        settings["parser_models"] = payload["parser_models"]
     _save_settings(settings)
     return settings
 
 
 @router.get("/models")
 def list_models() -> dict[str, Any]:
-    return {"models": LLM_MODELS, "parser_models": PARSER_MODELS}
+    llm_models, parser_models = _model_catalogs()
+    return {"models": llm_models, "parser_models": parser_models}
 
 
 def _hf_download_worker(model_key: str, repo_id: str, download_path: str) -> None:
@@ -330,8 +363,9 @@ def _hf_download_worker(model_key: str, repo_id: str, download_path: str) -> Non
 
 @router.post("/model/download")
 def start_download(model: str = Form(...), path: str = Form(...)) -> dict[str, Any]:
-    model_info = LLM_MODELS.get(model) or PARSER_MODELS.get(model)
-    if model_info is None:
+    llm_models, parser_models = _model_catalogs()
+    model_info = llm_models.get(model) or parser_models.get(model)
+    if not isinstance(model_info, dict) or not model_info.get("repo_id"):
         raise HTTPException(status_code=404, detail=f"unknown model: {model}")
 
     existing_state = download_state.get(model)

@@ -59,6 +59,7 @@ from src.api.schemas import (
 )
 from src.services.document_ingestion import ingest_document_resource
 from src.api.settings_routes import router as settings_router
+from src.skills.llm_tutor_skill import LLMNotConfiguredError
 
 if TYPE_CHECKING:
     from src.services.session_backend import SessionBackend
@@ -247,10 +248,26 @@ class SingleSessionRuntime:
         return f"turn_{next_turn:06d}"
 
 
-@lru_cache(maxsize=1)
+_backend_instance: "SessionBackend | None" = None
+
+
 def get_backend() -> "SessionBackend":
-    from src.services.session_backend import SessionBackend
-    return SessionBackend()
+    global _backend_instance
+    if _backend_instance is None:
+        from src.services.session_backend import SessionBackend
+        _backend_instance = SessionBackend()
+    return _backend_instance
+
+
+_ingestion_stages: dict[str, str] = {}
+
+
+def _set_ingestion_stage(resource_id: str, stage: str) -> None:
+    _ingestion_stages[resource_id] = stage
+
+
+def _get_ingestion_stage(resource_id: str) -> str:
+    return _ingestion_stages.get(resource_id, "")
 
 
 @lru_cache(maxsize=1)
@@ -668,11 +685,27 @@ def _run_resource_ingestion(
         return
 
     logger.info("ingestion started", extra={"resource_id": resource_id, "media_type": record.media_type})
+    _set_ingestion_stage(resource_id, "文档解析中")
+
+    try:
+        backend.llm_skill.ensure_configured()
+    except LLMNotConfiguredError as exc:
+        error = str(exc)
+        _set_ingestion_stage(resource_id, "解析失败")
+        failure_segments = [_build_ingestion_failed_segment(resource_id, record.media_type, error)]
+        try:
+            backend.replace_resource_segments(resource_id, failure_segments)
+        except Exception:
+            logger.exception("failed to persist llm configuration failure segment", extra={"resource_id": resource_id})
+        backend.update_resource_ingestion(resource_id, status="failed", error=error)
+        return
 
     def progress(event: str, payload: dict[str, object]) -> None:
         if event == "document_parsed":
+            _set_ingestion_stage(resource_id, "知识点总结中")
             logger.info("document parsed chunk count", extra=payload)
         elif event == "chunk_classification_progress":
+            _set_ingestion_stage(resource_id, "知识图谱插入中")
             logger.info("chunk classification progress", extra=payload)
 
     try:
@@ -687,6 +720,7 @@ def _run_resource_ingestion(
             enable_graph_search=not bool(subject),
             enable_new_pipeline=bool(subject),
         )
+        _set_ingestion_stage(resource_id, "")
         backend.update_resource_ingestion(resource_id, status="completed", error=None)
         updated = backend.get_resource(resource_id)
         if updated is None:
@@ -712,6 +746,7 @@ def _run_resource_ingestion(
         )
     except Exception as exc:
         error = str(exc)[:500]
+        _set_ingestion_stage(resource_id, "解析失败")
         failure_segments = [_build_ingestion_failed_segment(resource_id, record.media_type, error)]
         try:
             backend.replace_resource_segments(resource_id, failure_segments)
@@ -745,9 +780,15 @@ def get_resource_ingestion_status(resource_id: str) -> ResourceIngestionStatusRe
         raise HTTPException(status_code=404, detail=f"resource_id not found: {resource_id}")
 
     counts = _resource_segment_counts(record)
+    stage = _get_ingestion_stage(resource_id)
+    if record.ingestion_status == "completed":
+        stage = "已完成"
+    elif record.ingestion_status == "failed" and not stage:
+        stage = "解析失败"
     return ResourceIngestionStatusResponse(
         resource_id=resource_id,
         status=record.ingestion_status,
+        stage=stage,
         segment_count=counts["segment_count"],
         classified_count=counts["classified_count"],
         proposed_count=counts["proposed_count"],
@@ -844,6 +885,7 @@ def list_resources() -> list[dict[str, Any]]:
             "media_type": record.media_type,
             "size_bytes": record.size_bytes,
             "ingestion_status": record.ingestion_status,
+            "ingestion_stage": record.ingestion_status == "completed" and "已完成" or _get_ingestion_stage(record.resource_id),
             "segment_count": counts["segment_count"],
             "error": record.ingestion_error,
         })
@@ -873,7 +915,12 @@ def _classify_subject_by_title(backend: "SessionBackend", title: str) -> tuple[s
         )
         user = f"学科名: {title}"
         try:
+            backend.llm_skill.ensure_configured()
             client = backend.llm_skill.client
+            if client is None:
+                raise LLMNotConfiguredError(
+                    "LLM not configured: please configure remote API or local model in Settings"
+                )
             response = client.chat.completions.create(
                 model=backend.llm_skill.model_name,
                 messages=[{"role":"system","content":system},{"role":"user","content":user}],
@@ -1419,6 +1466,11 @@ def _mastery_info(topic_id: str, mastery) -> MasteryInfo:
 
 
 def _resource_info(record, topic_title: str) -> ResourceInfo:
+    stage = _get_ingestion_stage(record.resource_id)
+    if record.ingestion_status == "completed":
+        stage = "已完成"
+    elif record.ingestion_status == "failed" and not stage:
+        stage = "解析失败"
     return ResourceInfo(
         resource_id=record.resource_id,
         topic_id=record.topic_id,
@@ -1432,6 +1484,7 @@ def _resource_info(record, topic_title: str) -> ResourceInfo:
         size_bytes=record.size_bytes,
         created_ts=record.created_ts,
         ingestion_status=record.ingestion_status,
+        ingestion_stage=stage,
         ingestion_error=record.ingestion_error,
         segments=[_resource_segment_info(segment) for segment in record.segments],
     )

@@ -60,7 +60,9 @@ export default function SettingsPanel() {
   const [gpu, setGpu] = useState<GPUInfo | null>(null);
   const [gpuLoading, setGpuLoading] = useState(false);
   const [localPath, setLocalPath] = useState('');
-  const [dtype, setDtype] = useState('bfloat16');
+  const [localModel, setLocalModel] = useState('');
+  const [localPort, setLocalPort] = useState(8000);
+  const [dtype, setDtype] = useState('bf16');
   const [maxTokens, setMaxTokens] = useState(500);
   const [temp, setTemp] = useState(0.7);
   const [timeoutSec, setTimeoutSec] = useState(120);
@@ -71,6 +73,7 @@ export default function SettingsPanel() {
   const [saving, setSaving] = useState(false);
   const [confirmModal, setConfirmModal] = useState<{open: boolean, title: string, message: string, onConfirm: () => void, confirmText: string} | null>(null);
   const intervalRefs = useRef<Record<string, ReturnType<typeof setInterval>>>({});
+  const settingsLoadedRef = useRef(false);
 
   useEffect(() => {
     void loadSettings();
@@ -82,13 +85,20 @@ export default function SettingsPanel() {
     try {
       const res = await SettingsAPI.getSettings();
       const data = res.data;
-      if (data.mode) setMode(data.mode);
+      if (data.mode) setMode(data.mode === 'local' ? 'local' : 'api');
       if (data.provider) setProvider(data.provider);
       if (data.remote) { setApiKey(data.remote.api_key||''); setBaseUrl(data.remote.base_url||''); setModel(data.remote.model||''); }
-      if (data.local) { setLocalPath(data.local.model_path||''); setDtype(data.local.precision||'bfloat16'); setMaxTokens(data.local.max_tokens||500); setTemp(data.local.temperature!=null?data.local.temperature:0.7); setTimeoutSec(data.local.timeout_sec||120); }
+      if (data.local) { setLocalPath(data.local.model_path||''); setLocalModel(data.local.model||''); setLocalPort(data.local.port||8000); setDtype(data.local.precision||'bf16'); setMaxTokens(data.local.max_tokens||500); setTemp(data.local.temperature!=null?data.local.temperature:0.7); setTimeoutSec(data.local.timeout_sec||120); }
       if (data.model_paths) setModelPaths(data.model_paths);
-    } catch { /* ignore */ }
+      settingsLoadedRef.current = true;
+    } catch { settingsLoadedRef.current = true; }
   }
+
+  useEffect(() => {
+    if (localModel || !localPath) return;
+    const matchedEntry = Object.entries(modelPaths).find(([, path]) => path === localPath);
+    if (matchedEntry) setLocalModel(matchedEntry[0]);
+  }, [localModel, localPath, modelPaths]);
 
   async function detectGPU() {
     setGpuLoading(true);
@@ -107,12 +117,13 @@ export default function SettingsPanel() {
         return { key, label: m.label || key, size: m.size || '', vram: m.vram || '', gpu: m.gpu || '', repo_id: m.repo_id || '', description: m.description || '' };
       });
       setModels(list);
-      for (const def of list) void checkDownloadStatus(def.key);
       const rawParser = res.data.parser_models || {};
-      setParserModels(Object.entries(rawParser).map(([key, info]: [string, unknown]) => {
+      const parserList = Object.entries(rawParser).map(([key, info]: [string, unknown]) => {
         const m = info as Record<string, string>;
         return { key, label: m.label || key, size: m.size || '', vram: m.vram || '', gpu: m.gpu || '', repo_id: m.repo_id || '', description: m.description || '' };
-      }));
+      });
+      setParserModels(parserList);
+      for (const def of [...list, ...parserList]) void checkDownloadStatus(def.key);
     } catch { /* ignore */ }
   }
 
@@ -138,6 +149,7 @@ export default function SettingsPanel() {
 
   // Save modelPaths to backend on change
   useEffect(() => {
+    if (!settingsLoadedRef.current) return;
     if (Object.keys(modelPaths).length === 0) return;
     const timer = setTimeout(() => {
       SettingsAPI.saveSettings({ model_paths: modelPaths }).catch(() => {});
@@ -145,10 +157,32 @@ export default function SettingsPanel() {
     return () => clearTimeout(timer);
   }, [modelPaths]);
 
+  useEffect(() => {
+    if (!settingsLoadedRef.current) return;
+    const timer = setTimeout(() => {
+      setSaving(true);
+      SettingsAPI.saveSettings({
+        mode: mode === 'local' ? 'local' : 'remote',
+        provider,
+        remote: { api_key: apiKey, base_url: baseUrl, model },
+        local: {
+          model_path: localPath,
+          model: localModel,
+          port: localPort,
+          precision: dtype,
+          temperature: temp,
+          timeout_sec: timeoutSec,
+          max_tokens: maxTokens,
+        },
+      }).finally(() => setSaving(false));
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [mode, provider, apiKey, baseUrl, model, localPath, localModel, localPort, dtype, temp, timeoutSec, maxTokens]);
+
   // Scan when models or paths change
   useEffect(() => {
-    if (models.length > 0) void scanExistingModels();
-  }, [models, modelPaths]);
+    if (models.length > 0 || parserModels.length > 0) void scanExistingModels();
+  }, [models, parserModels, modelPaths]);
 
   async function checkDownloadStatus(modelKey: string) {
     try {
@@ -161,23 +195,6 @@ export default function SettingsPanel() {
       else if (res.data.status === 'failed' || prog === -1) status = 'error';
       else if (res.data.status === 'cancelled') status = 'cancelled';
       setDownloadStates((prev) => ({ ...prev, [modelKey]: { progress: prog, status, speed: res.data?.speed_mbps } }));
-    } catch { /* ignore */ }
-  }
-
-  async function pollDownload(modelKey: string) {
-    try {
-      const res = await SettingsAPI.getDownloadStatus(modelKey);
-      if (!res.data) return;
-      const prog = res.data.progress;
-      let status = 'downloading';
-      if (res.data.status === 'completed' || prog >= 100) status = 'done';
-      else if (res.data.status === 'failed' || prog === -1) status = 'error';
-      else if (res.data.status === 'cancelled') status = 'cancelled';
-      setDownloadStates((prev) => ({ ...prev, [modelKey]: { progress: prog, status, speed: res.data?.speed_mbps } }));
-      if (['done', 'error', 'cancelled'].includes(status) && intervalRefs.current[modelKey]) {
-        clearInterval(intervalRefs.current[modelKey]);
-        delete intervalRefs.current[modelKey];
-      }
     } catch { /* ignore */ }
   }
 
@@ -231,13 +248,11 @@ export default function SettingsPanel() {
   }, [modelPaths]);
 
   function recommendedModel(): ModelDef | null {
-    if (!gpu || !gpu.cuda_available) return null;
+    if (!gpu || !gpu.cuda_available || models.length === 0) return null;
     const free = gpu.vram_free_gb || gpu.vram_total_gb;
-    if (free >= 54) return models.find((m) => m.key === 'qwen-27b') || null;
-    if (free >= 24) return models.find((m) => m.key === 'gemma-12b') || null;
-    if (free >= 14) return models.find((m) => m.key === 'qwen-7b') || null;
-    if (free >= 8) return models.find((m) => m.key === 'gemma-4b') || null;
-    return models.find((m) => m.key === 'gemma-4b') || null;
+    const withVram = models.map((m) => ({ model: m, vramGb: Number((m.vram.match(/[\d.]+/) || ['0'])[0]) }));
+    const affordable = withVram.filter((item) => item.vramGb > 0 && item.vramGb <= free).sort((a, b) => b.vramGb - a.vramGb);
+    return affordable[0]?.model || models[0];
   }
 
   const recommended = recommendedModel();
@@ -308,6 +323,11 @@ export default function SettingsPanel() {
       {/* ===== Remote API Settings ===== */}
       {mode === 'api' && (
         <div className="space-y-5">
+          {!apiKey.trim() && (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+              当前未填写 API Key。可以先保存配置，但使用依赖 LLM 的功能时会提示前往设置页完成配置。
+            </div>
+          )}
           {/* Provider Selection Cards */}
           <div>
             <div className="mb-3 flex items-center gap-1">
@@ -442,18 +462,18 @@ export default function SettingsPanel() {
               <InfoTooltip text="从已下载的模型中选择一个作为当前推理引擎" />
             </div>
             <select
-              value={localPath}
+              value={localModel}
               onChange={(e) => {
-                const path = e.target.value;
-                setLocalPath(path);
+                const selectedModel = e.target.value;
+                setLocalModel(selectedModel);
+                setLocalPath(modelPaths[selectedModel] || '');
               }}
               className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold outline-none transition-all focus:border-blue-300 focus:ring-4 focus:ring-blue-50"
             >
-              <option value="">末选择</option>
+              <option value="">未选择</option>
               {Object.entries(downloadStates).filter(([, ds]) => ds.status === 'done').map(([key]) => {
                 const m = models.find((mod) => mod.key === key) || parserModels.find((mod) => mod.key === key);
-                const p = modelPaths[key] || '';
-                return <option key={key} value={p}>{m?.label || key}</option>;
+                return <option key={key} value={key}>{m?.label || key}</option>;
               })}
             </select>
           </div>
@@ -462,14 +482,14 @@ export default function SettingsPanel() {
             <div>
               <div className="mb-2 flex items-center gap-1">
                 <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">精度</span>
-                <InfoTooltip text="bfloat16 推荐用于 RTX 30 系列及以上，8bit 可降低显存但可能影响输出质量" />
+                <InfoTooltip text="bf16 推荐用于 RTX 30 系列及以上；如模型不支持可切换 fp16、fp32 或 auto" />
               </div>
               <select value={dtype} onChange={(e) => setDtype(e.target.value)}
                 className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold outline-none transition-all focus:border-blue-300 focus:ring-4 focus:ring-blue-50">
-                <option value="bfloat16">bfloat16</option>
-                <option value="float16">float16</option>
-                <option value="8bit">8bit</option>
-                <option value="4bit">4bit</option>
+                <option value="bf16">bf16</option>
+                <option value="fp16">fp16</option>
+                <option value="fp32">fp32</option>
+                <option value="auto">auto</option>
               </select>
             </div>
             <div>
@@ -488,6 +508,16 @@ export default function SettingsPanel() {
                 <InfoTooltip text="0=确定性输出，1=更随机有创意，推荐 0.7" />
               </div>
               <input type="range" min="0" max="2" step="0.05" value={temp} onChange={(e) => setTemp(Number(e.target.value))} className="w-full accent-blue-500" />
+            </div>
+            <div>
+              <div className="mb-2 flex items-center gap-1">
+                <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">本地端口</span>
+                <InfoTooltip text="仅保存本地模型验证端口，不会由主后端自动拉起或接管。" />
+              </div>
+              <input
+                type="number" value={localPort} onChange={(e) => setLocalPort(Number(e.target.value) || 8000)}
+                className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold outline-none transition-all focus:border-blue-300 focus:ring-4 focus:ring-blue-50"
+              />
             </div>
             <div>
               <div className="mb-2 flex items-center gap-1">

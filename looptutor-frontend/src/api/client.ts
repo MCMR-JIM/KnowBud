@@ -58,12 +58,16 @@ export const ResourceAPI = {
     topicId: string;
     resourceName: string;
     category?: 'learn' | 'review';
+    subject?: string;
+    languageId?: string;
   }) => {
     const formData = new FormData();
     formData.append('file', payload.file);
     formData.append('topic_id', payload.topicId);
     formData.append('resource_name', payload.resourceName);
     formData.append('category', payload.category || 'learn');
+    if (payload.subject) formData.append('subject', payload.subject);
+    if (payload.languageId) formData.append('language_id', payload.languageId);
     return apiClient.post('/resource/upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     });

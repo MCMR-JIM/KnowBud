@@ -12,6 +12,24 @@ import { KnowledgeAPI, ResourceAPI } from '../api/client';
 import { useAppDialog } from '../components/AppDialog';
 import SettingsPanel from '../components/SettingsPanel';
 
+const LLM_NOT_CONFIGURED_MESSAGE = '尚未配置模型，请前往设置页面配置远程 API 或本地模型';
+
+function getErrorMessage(error: unknown): string {
+  if (typeof error === 'string') return error;
+  if (error && typeof error === 'object') {
+    const maybeError = error as {
+      message?: string;
+      response?: { data?: { detail?: string; error?: string } };
+    };
+    return maybeError.response?.data?.detail || maybeError.response?.data?.error || maybeError.message || '';
+  }
+  return '';
+}
+
+function isLlmNotConfiguredError(error: unknown): boolean {
+  return getErrorMessage(error).includes('LLM not configured');
+}
+
 echarts.use([BarChart, LineChart, RadarChart, GridComponent, LegendComponent, RadarComponent, TooltipComponent, CanvasRenderer]);
 
 type GraphTopic = {
@@ -31,6 +49,7 @@ type TopicResource = {
   original_filename: string;
   size_bytes: number;
   ingestion_status: string;
+  ingestion_stage?: string;
 };
 
 type SubjectModalMode = 'create' | 'edit';
@@ -987,6 +1006,12 @@ export default function AdminDashboard() {
       try {
         const statusRes = await ResourceAPI.getResourceIngestionStatus(resourceId);
         const status = statusRes.data?.status;
+        if (status === 'failed' && String(statusRes.data?.error || '').includes('LLM not configured')) {
+          window.clearInterval(intervalId);
+          await appDialog.alert(LLM_NOT_CONFIGURED_MESSAGE, { title: '模型未配置', intent: 'warning' });
+          void fetchAllData();
+          return;
+        }
         if (status === 'completed' || status === 'failed') {
           window.clearInterval(intervalId);
           void fetchAllData();
@@ -1007,8 +1032,8 @@ export default function AdminDashboard() {
         topicId,
         resourceName: stripFileExtension(file.name),
         category: 'learn',
-        subject,
-        languageId,
+        subject: subject || undefined,
+        languageId: languageId || undefined,
       });
       const resourceId = res.data?.resource?.resource_id;
       if (resourceId) pollResourceIngestion(resourceId);
@@ -1045,6 +1070,10 @@ export default function AdminDashboard() {
       await fetchAllData();
     } catch (error) {
       console.error('保存学科失败', error);
+      if (isLlmNotConfiguredError(error)) {
+        await appDialog.alert(LLM_NOT_CONFIGURED_MESSAGE, { title: '模型未配置', intent: 'warning' });
+        return;
+      }
       await appDialog.alert('保存失败，请检查后端服务', { title: '保存失败', intent: 'error' });
     } finally {
       setModalSaving(false);
@@ -1394,6 +1423,7 @@ export default function AdminDashboard() {
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-bold text-gray-800">{res.resource_name}</p>
                         <p className="text-xs text-gray-400">
+                          {isProcessing && res.ingestion_stage ? `${res.ingestion_stage} · ` : ''}
                           {res.media_type && `${res.media_type} `}
                           {res.size_bytes && ` ${(res.size_bytes / 1024 / 1024).toFixed(2)} MB`}
                         </p>
@@ -1405,7 +1435,7 @@ export default function AdminDashboard() {
                         isFailed ? 'bg-red-100 text-red-700' :
                         'bg-gray-100 text-gray-500'
                       ].join(' ')}>
-                        {isProcessing ? '解析中' : isCompleted ? '已完成' : isFailed ? '失败' : '等待'}
+                        {isProcessing ? (res.ingestion_stage || '解析中') : isCompleted ? '已完成' : isFailed ? '失败' : '等待'}
                       </span>
                     </div>
                   )})}
