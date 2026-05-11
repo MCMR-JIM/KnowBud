@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import argparse
 import time
 import uuid
@@ -70,7 +68,8 @@ def _build_app(
     model: Any,
 ) -> Any:
     import torch
-    from fastapi import FastAPI, HTTPException, Request
+    from fastapi import FastAPI, HTTPException
+    from starlette.requests import Request
 
     app = FastAPI(title="LoopTutor Local LLM")
     served_model_id = Path(model_path).resolve().name
@@ -99,8 +98,6 @@ def _build_app(
 
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request) -> dict[str, Any]:
-        import json as _json
-        from fastapi import Request
         body = await request.json()
         messages = body.get("messages", [])
         if not messages:
