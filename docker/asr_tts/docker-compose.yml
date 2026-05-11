@@ -1,20 +1,20 @@
 services:
   tts:
-    build: ./    # 🌟 新增这一行，告诉 Docker 本地构建镜像
+    build: ./
     image: looptutor/edge-tts-service:latest
     container_name: local-edge-tts
     ports:
       - "5501:5501"
     environment:
-      - EDGE_TTS_VOICE=${EDGE_TTS_VOICE:-zh-CN-XiaoxiaoNeural}
+      # 🌟 最优儿童真人音色（晓晓 = 温柔女童）
+      - EDGE_TTS_VOICE=zh-CN-XiaoxiaoNeural
     restart: unless-stopped
 
   asr:
-    # asr 服务是从公网拉取的，不用改
-    image: onerahmet/openai-whisper-asr-webservice:latest 
+    image: onerahmet/openai-whisper-asr-webservice:latest
     container_name: local-whisper-asr
     ports:
       - "9000:9000"
     environment:
-      - ASR_MODEL=${ASR_MODEL:-tiny}
+      - ASR_MODEL=base
     restart: unless-stopped
