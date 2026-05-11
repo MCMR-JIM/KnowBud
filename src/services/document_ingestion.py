@@ -26,6 +26,16 @@ CLASSIFIED_THRESHOLD = 0.55
 CLASSIFY_BATCH_SIZE = 1
 
 
+def _strip_images(text: str) -> str:
+    import re as _re
+    return _re.sub(r"!\[.*?\]\(.*?\)", "", text).strip()
+
+
+def _estimate_tokens(text: str) -> int:
+    cjk = sum(1 for c in text if '\u4e00' <= c <= '\u9fff' or '\u3400' <= c <= '\u4dbf')
+    return int(cjk * 1.5 + (len(text) - cjk) * 0.3)
+
+
 @dataclass
 class TextUnit:
     text: str
@@ -451,13 +461,60 @@ def _mineru_parse_pdf_image(file_bytes: bytes, suffix: str, stem: str, lang: str
 
 
 def _convert_mineru_to_textunits(mineru_result: dict) -> list[TextUnit]:
-    content_list = mineru_result.get("content_list") or []
-    if not isinstance(content_list, list):
+    markdown = mineru_result.get("markdown") or ""
+    if not markdown:
+        content_list = mineru_result.get("content_list") or []
+        if isinstance(content_list, list) and content_list:
+            return _convert_mineru_content_list_to_textunits(content_list)
         return []
 
+    # Split markdown by headings into sections, keeping image links intact
+    import re as _re
+    sections = _re.split(r"\n(?=#)", markdown)
     units: list[TextUnit] = []
     heading_stack: list[str] = []
 
+    for section in sections:
+        section = section.strip()
+        if not section:
+            continue
+        lines = section.split("\n")
+        title = lines[0].strip("# ").strip() if lines[0].startswith("#") else ""
+        body = "\n".join(lines[1:]).strip() if title else section
+
+        if title:
+            # Update heading stack
+            level = len(lines[0]) - len(lines[0].lstrip("#"))
+            while len(heading_stack) >= level:
+                heading_stack.pop()
+            heading_stack.append(title)
+
+        # Create one TextUnit per section with full markdown
+        text = section
+        if len(text) > MAX_CHARS * 3:
+            # Split very large sections on double newlines
+            for para in _re.split(r"\n\n+", body):
+                para = para.strip()
+                if not para:
+                    continue
+                units.append(TextUnit(
+                    text=para,
+                    locator={"kind": "mineru", "heading_path": list(heading_stack)},
+                    mineru_block={"section_title": title},
+                ))
+        else:
+            units.append(TextUnit(
+                text=text,
+                locator={"kind": "mineru", "heading_path": list(heading_stack)},
+                mineru_block={"section_title": title},
+            ))
+    return units
+
+
+def _convert_mineru_content_list_to_textunits(content_list: list) -> list[TextUnit]:
+    """Fallback: convert content_list_v2 to TextUnits (original logic)."""
+    units: list[TextUnit] = []
+    heading_stack: list[str] = []
     for page_idx, page_blocks in enumerate(content_list):
         if not isinstance(page_blocks, list):
             continue
@@ -466,18 +523,13 @@ def _convert_mineru_to_textunits(mineru_result: dict) -> list[TextUnit]:
                 continue
             block_type = (block.get("type") or "").lower()
             content = block.get("content") or {}
-
-            if block_type in ("page_header", "page_footer", "page_number", "page_aside_text", "page_footnote"):
+            if block_type in ("page_header", "page_footer", "page_number", "page_aside_text", "page_footnote", "image"):
                 continue
-
-            if block_type == "image":
-                continue
-
             if block_type == "title":
                 text = _mineru_extract_text((content.get("title_content") or content.get("content") or []))
                 if not text:
                     continue
-                level = content.get("level")
+                level = content.get("level", 1)
                 if isinstance(level, (int, float)):
                     level = int(level)
                 else:
@@ -485,110 +537,22 @@ def _convert_mineru_to_textunits(mineru_result: dict) -> list[TextUnit]:
                 while len(heading_stack) >= level:
                     heading_stack.pop()
                 heading_stack.append(text)
-                units.append(TextUnit(
-                    text=text,
-                    locator={
-                        "kind": "mineru",
-                        "page_idx": page_idx,
-                        "block_type": "title",
-                        "heading_path": list(heading_stack[:-1]),
-                    },
-                    mineru_block=block,
-                ))
-
+                units.append(TextUnit(text=text, locator={"kind": "mineru", "page_idx": page_idx, "block_type": "title", "heading_path": list(heading_stack[:-1])}, mineru_block=block))
             elif block_type == "paragraph":
                 text = _mineru_extract_text((content.get("paragraph_content") or content.get("content") or []))
-                if not text:
-                    continue
-                units.append(TextUnit(
-                    text=text,
-                    locator={
-                        "kind": "mineru",
-                        "page_idx": page_idx,
-                        "block_type": "paragraph",
-                        "heading_path": list(heading_stack),
-                    },
-                    mineru_block=block,
-                ))
-
+                if text:
+                    units.append(TextUnit(text=text, locator={"kind": "mineru", "page_idx": page_idx, "block_type": "paragraph", "heading_path": list(heading_stack)}, mineru_block=block))
             elif block_type == "table":
                 html = content.get("html") or ""
                 md_table = _html_table_to_markdown(html) if html else ""
-                if not md_table:
-                    caption_spans = content.get("table_caption") or []
-                    caption_text = _mineru_extract_text(caption_spans)
-                    md_table = caption_text or "[Table]"
-                units.append(TextUnit(
-                    text=md_table,
-                    locator={
-                        "kind": "mineru",
-                        "page_idx": page_idx,
-                        "block_type": "table",
-                        "heading_path": list(heading_stack),
-                    },
-                    mineru_block=block,
-                ))
-
-            elif block_type == "code":
-                code_spans = content.get("code_content") or []
-                text = _mineru_extract_text(code_spans)
-                caption_spans = content.get("code_caption") or []
-                caption = _mineru_extract_text(caption_spans)
-                full_text = f"```\n{text}\n```" + (f"\n{caption}" if caption else "")
-                if not text:
-                    continue
-                units.append(TextUnit(
-                    text=full_text,
-                    locator={
-                        "kind": "mineru",
-                        "page_idx": page_idx,
-                        "block_type": "code",
-                        "heading_path": list(heading_stack),
-                    },
-                    mineru_block=block,
-                ))
-
-            elif block_type == "equation_interline":
-                math_text = content.get("math_content") or content.get("content") or ""
-                if not math_text:
-                    continue
-                units.append(TextUnit(
-                    text=str(math_text),
-                    locator={
-                        "kind": "mineru",
-                        "page_idx": page_idx,
-                        "block_type": "equation_interline",
-                        "heading_path": list(heading_stack),
-                    },
-                    mineru_block=block,
-                ))
-
+                if md_table:
+                    units.append(TextUnit(text=md_table, locator={"kind": "mineru", "page_idx": page_idx, "block_type": "table", "heading_path": list(heading_stack)}, mineru_block=block))
             elif block_type == "list":
                 list_items = content.get("list_items") or []
-                parts: list[str] = []
-                for item in list_items:
-                    if not isinstance(item, dict):
-                        continue
-                    item_spans = item.get("item_content") or []
-                    item_text = _mineru_extract_text(item_spans)
-                    if item_text:
-                        parts.append(f"- {item_text}")
-                if not parts:
-                    continue
-                units.append(TextUnit(
-                    text="\n".join(parts),
-                    locator={
-                        "kind": "mineru",
-                        "page_idx": page_idx,
-                        "block_type": "list",
-                        "heading_path": list(heading_stack),
-                    },
-                    mineru_block=block,
-                ))
-
-            elif block_type in ("algorithm", "chart", "index", "seal"):
-                continue
-
+                parts = [item.get("item_content", []) for item in list_items if isinstance(item, dict)]
+                text = "\n".join(f"- {_mineru_extract_text(p)}" for p in parts if _mineru_extract_text(p))
+                if text:
+                    units.append(TextUnit(text=text, locator={"kind": "mineru", "page_idx": page_idx, "block_type": "list", "heading_path": list(heading_stack)}, mineru_block=block))
     return units
 
 
@@ -773,7 +737,7 @@ def _classify_chunk(
 
     try:
         result = backend.llm_skill.classify_or_propose_resource_chunk(
-            chunk_text=text,
+            chunk_text=_strip_images(text),
             topics=topics,
             default_parent_topic_id=default_topic_id,
         )
@@ -926,7 +890,7 @@ def _classify_chunks_batch(
 
     chunk_texts = []
     for i, chunk in enumerate(chunks):
-        chunk_texts.append(f"片段 {i}:\n```text\n{chunk.text.strip()[:2000]}\n```\n")
+        chunk_texts.append(f"片段 {i}:\n```text\n{_strip_images(chunk.text.strip())[:2000]}\n```\n")
     combined = "\n".join(chunk_texts)
 
     system = (
