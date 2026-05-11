@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 TARGET_CHARS = 1000
 MAX_CHARS = 1800
-CLASSIFIED_THRESHOLD = 0.55
+CLASSIFIED_THRESHOLD = 0.45
 CLASSIFY_BATCH_SIZE = 1
 
 
@@ -1137,7 +1137,7 @@ def _batch_organize_topic_tree(
         response = backend.llm_skill.client.chat.completions.create(
             model=backend.llm_skill.model_name,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-            temperature=0.3, timeout=180.0,
+            temperature=0.3, timeout=600.0,
         )
         raw = (response.choices[0].message.content or "").strip()
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
@@ -1487,7 +1487,7 @@ def _fast_document_scan_single(
         response = backend.llm_skill.client.chat.completions.create(
             model=backend.llm_skill.model_name,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-            temperature=0.3, timeout=300.0,
+            temperature=0.3, timeout=600.0,
         )
         raw = (response.choices[0].message.content or "").strip()
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
@@ -1558,7 +1558,7 @@ def _extract_topics_from_block_text(
         response = backend.llm_skill.client.chat.completions.create(
             model=backend.llm_skill.model_name,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-            temperature=0.3, timeout=180.0,
+            temperature=0.3, timeout=600.0,
         )
         raw = (response.choices[0].message.content or "").strip()
         raw = re.sub(r"^```(?:json)?\s*", "", raw)

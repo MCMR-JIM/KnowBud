@@ -1142,6 +1142,14 @@ export default function AdminDashboard() {
         walk(topic.topic_id);
       }
     };
+    walk(rootId);
+    return childIds.size;
+  };
+
+  const countChildTopics = (rootId: string) => {
+    const children = graphNodes.filter((t) => (t.parent_ids || []).includes(rootId));
+    return children.length;
+  };
 
     walk(rootId);
     return childIds.size;
@@ -1328,6 +1336,7 @@ export default function AdminDashboard() {
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 {subjectRoots.map((root) => {
                   const nodeCount = countNodesUnderRoot(root.topic_id);
+                  const childCount = countChildTopics(root.topic_id);
                   const isDeleting = deletingSubjectId === root.topic_id;
                   return (
                     <div
@@ -1368,12 +1377,16 @@ export default function AdminDashboard() {
                         </div>
                       </div>
 
-                      <div className="relative mt-8 grid grid-cols-2 gap-3 text-xs text-gray-500">
-                        <div className="rounded-2xl border border-white/80 bg-white/70 p-3">
+                      <div className="relative mt-8 grid grid-cols-3 gap-2 text-xs text-gray-500">
+                        <div className="rounded-2xl border border-white/80 bg-white/70 p-2">
                           <p className="font-bold text-gray-700">{nodeCount}</p>
                           <p>知识节点</p>
                         </div>
-                        <div className="rounded-2xl border border-white/80 bg-white/70 p-3">
+                        <div className="rounded-2xl border border-white/80 bg-white/70 p-2">
+                          <p className="font-bold text-gray-700">{childCount}</p>
+                          <p>提取节点</p>
+                        </div>
+                        <div className="rounded-2xl border border-white/80 bg-white/70 p-2">
                           <p className="font-bold text-gray-700">{getSubjectTag(root.tags || []) || 'custom'}</p>
                           <p>学科标识</p>
                         </div>
