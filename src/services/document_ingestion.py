@@ -1333,7 +1333,7 @@ def _run_structured_ingestion(
                         language_id=language_id,
                     ),
                     parent_node_ids=parents,
-                    prerequisite_node_ids=successors,
+                    prerequisite_node_ids=[],  # prerequisites go the other way
                     edge_type="part_of" if parents else "requires",
                     reason=pos.reason[:80],
                 )
@@ -1341,6 +1341,14 @@ def _run_structured_ingestion(
                     proposal_id=proposal.proposal_id, difficulty=1,
                 )
                 topic_map[title] = tpc.topic_id
+                # New topic is a prerequisite for its successors
+                if successors:
+                    _state = backend.load_app_state(include_history=False)
+                    for _sid in successors:
+                        _succ = next((t for t in _state.curriculum.topics if t.topic_id == _sid), None)
+                        if _succ and tpc.topic_id not in _succ.prerequisite_ids:
+                            _succ.prerequisite_ids.append(tpc.topic_id)
+                    backend.save_app_state(_state)
                 locator.refresh()
             except Exception:
                 pass
