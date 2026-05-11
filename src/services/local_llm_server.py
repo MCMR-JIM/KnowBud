@@ -193,7 +193,6 @@ def main() -> None:
         str(model_path),
         trust_remote_code=True,
         torch_dtype=dtype,
-        device_map="auto",
     )
     model.eval()
     print(f"[local-llm] model loaded; serving on 127.0.0.1:{args.port}", flush=True)
