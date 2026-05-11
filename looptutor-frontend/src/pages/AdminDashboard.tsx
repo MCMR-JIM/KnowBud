@@ -159,7 +159,7 @@ function KnowledgeGraphCanvas({
         const angle = index * Math.PI * (3 - Math.sqrt(5));
         const initialRadius = canvasSpan * (0.14 + 0.38 * Math.sqrt((index + 1) / topicCount));
         const labelWidth = Math.min(172, Math.max(64, topic.title.length * 11 + 22));
-        const nodeRadius = isRoot ? 18 : 9 + Math.min(edgeWeight * 2, 8);
+        const nodeRadius = isRoot ? 19 : 8 + edgeWeight * 1.6;
         return {
           id: topic.topic_id,
           title: topic.title,
@@ -168,7 +168,7 @@ function KnowledgeGraphCanvas({
           isMistake: mistakeSet.has(topic.topic_id),
           subject: getSubjectTag(topic.tags || []) || 'general',
           radius: nodeRadius,
-          collisionRadius: Math.max(nodeRadius + 30, labelWidth / 2 + 14),
+          collisionRadius: Math.max(nodeRadius + 34, labelWidth / 2 + 16),
           x: width / 2 + Math.cos(angle) * initialRadius,
           y: height / 2 + Math.sin(angle) * initialRadius,
         };
@@ -287,7 +287,11 @@ function KnowledgeGraphCanvas({
       const spread = Math.max(1, Math.min(1.8, Math.sqrt(topicCount / 22)));
       const simulation = d3.forceSimulation<GraphCanvasNode>(nodes)
         .force('link', d3.forceLink<GraphCanvasNode, GraphCanvasLink>(links).id((node) => node.id).distance((link) => (link.type === 'parent' ? 140 : link.type === 'both' ? 154 : 168) * spread).strength(0.26))
-        .force('charge', d3.forceManyBody<GraphCanvasNode>().strength((node) => node.isRoot ? -620 : -400).distanceMin(52).distanceMax(Math.max(width, height) * 0.82))
+        .force('charge', d3.forceManyBody<GraphCanvasNode>().strength((node) => {
+          if (node.isRoot) return -620;
+          const w = (node.topic.parent_ids?.length || 0) + (node.topic.prerequisite_ids?.length || 0);
+          return -(320 + w * 60);
+        }).distanceMin(52).distanceMax(Math.max(width, height) * 0.82))
         .force('center', d3.forceCenter(width / 2, height / 2))
         .force('x', d3.forceX<GraphCanvasNode>((node) => node.targetX ?? width / 2).strength((node) => node.isRoot ? 0.22 : 0.12))
         .force('y', d3.forceY<GraphCanvasNode>((node) => node.targetY ?? height / 2).strength((node) => node.isRoot ? 0.22 : 0.12))
@@ -397,7 +401,7 @@ function KnowledgeGraphCanvas({
           ctx.font = `800 ${node.isRoot ? 11 : 10}px Nunito, Segoe UI, sans-serif`;
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
-          ctx.fillText(node.isRoot ? 'ROOT' : String(Math.max(1, node.topic.difficulty || 1)), x, y);
+          ctx.fillText(node.isRoot ? 'ROOT' : String((node.topic.parent_ids?.length || 0) + (node.topic.prerequisite_ids?.length || 0)), x, y);
 
           const label = node.title.length > 18 ? `${node.title.slice(0, 18)}...` : node.title;
           ctx.font = '700 11px Nunito, Segoe UI, sans-serif';
