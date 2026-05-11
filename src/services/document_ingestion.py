@@ -1369,8 +1369,34 @@ def _fast_document_scan(
     language_id: str | None = None,
 ) -> dict:
     full_text = "\n\n".join(c.text for c in chunks if c.text)
-    if len(full_text) > 24000:
-        full_text = full_text[:12000] + "\n\n[...省略...]\n\n" + full_text[-12000:]
+    # For very large documents, split into overlapping windows to avoid context overflow
+    if len(full_text) > 100000:
+        window = 24000
+        overlap = 4000
+        blocks_all = []
+        start = 0
+        while start < len(full_text):
+            end = min(start + window, len(full_text))
+            part = full_text[start:end]
+            partial_scan = _fast_document_scan_single(backend, part, subject, language_id)
+            partial_blocks = partial_scan.get("blocks") or []
+            for b in partial_blocks:
+                b["_offset"] = start
+            blocks_all.extend(partial_blocks)
+            if end >= len(full_text):
+                break
+            start = end - overlap
+        return {"doc_type": "textbook", "blocks": blocks_all}
+
+    return _fast_document_scan_single(backend, full_text, subject, language_id)
+
+
+def _fast_document_scan_single(
+    backend: "SessionBackend",
+    full_text: str,
+    subject: str,
+    language_id: str | None = None,
+) -> dict:
 
     if subject == "language" and language_id == "english":
         system = (
