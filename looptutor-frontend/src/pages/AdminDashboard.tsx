@@ -286,18 +286,22 @@ function KnowledgeGraphCanvas({
       let transform: ZoomTransform = d3.zoomIdentity;
       const spread = Math.max(1, Math.min(1.8, Math.sqrt(topicCount / 22)));
       const simulation = d3.forceSimulation<GraphCanvasNode>(nodes)
-        .force('link', d3.forceLink<GraphCanvasNode, GraphCanvasLink>(links).id((node) => node.id).distance((link) => (link.type === 'parent' ? 140 : link.type === 'both' ? 154 : 168) * spread).strength(0.26))
+        .force('link', d3.forceLink<GraphCanvasNode, GraphCanvasLink>(links).id((node) => node.id).distance((link) => {
+          const srcW = ((link.source as GraphCanvasNode).topic.parent_ids?.length || 0) + ((link.source as GraphCanvasNode).topic.prerequisite_ids?.length || 0);
+          const tgtW = ((link.target as GraphCanvasNode).topic.parent_ids?.length || 0) + ((link.target as GraphCanvasNode).topic.prerequisite_ids?.length || 0);
+          return (140 + Math.min(srcW + tgtW, 20) * 12) * spread;
+        }).strength(0.18))
         .force('charge', d3.forceManyBody<GraphCanvasNode>().strength((node) => {
-          if (node.isRoot) return -620;
+          if (node.isRoot) return -720;
           const w = (node.topic.parent_ids?.length || 0) + (node.topic.prerequisite_ids?.length || 0);
-          return -(320 + w * 60);
-        }).distanceMin(52).distanceMax(Math.max(width, height) * 0.82))
+          return -(380 + w * 80);
+        }).distanceMin(48).distanceMax(Math.max(width, height) * 0.85))
         .force('center', d3.forceCenter(width / 2, height / 2))
-        .force('x', d3.forceX<GraphCanvasNode>((node) => node.targetX ?? width / 2).strength((node) => node.isRoot ? 0.22 : 0.12))
-        .force('y', d3.forceY<GraphCanvasNode>((node) => node.targetY ?? height / 2).strength((node) => node.isRoot ? 0.22 : 0.12))
-        .force('collide', d3.forceCollide<GraphCanvasNode>((node) => node.collisionRadius).strength(0.92).iterations(2))
-        .alpha(0.9)
-        .alphaDecay(0.018);
+        .force('x', d3.forceX<GraphCanvasNode>((node) => node.targetX ?? width / 2).strength((node) => node.isRoot ? 0.25 : 0.08))
+        .force('y', d3.forceY<GraphCanvasNode>((node) => node.targetY ?? height / 2).strength((node) => node.isRoot ? 0.25 : 0.08))
+        .force('collide', d3.forceCollide<GraphCanvasNode>((node) => node.collisionRadius).strength(1.0).iterations(3))
+        .alpha(0.95)
+        .alphaDecay(0.014);
 
       const drawPill = (x: number, y: number, pillWidth: number, pillHeight: number, radius: number) => {
         ctx.beginPath();
