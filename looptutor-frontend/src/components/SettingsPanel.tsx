@@ -17,6 +17,7 @@ type ModelDef = {
   gpu: string;
   repo_id: string;
   description: string;
+  context_limit?: string;
 };
 
 type DownloadState = {
@@ -31,10 +32,11 @@ type Provider = {
   baseUrl: string;
   models: string[];
   helpUrl: string;
+  contextLimit?: string;
 };
 
 const PROVIDERS: Provider[] = [
-  { key: 'deepseek', label: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', models: ['deepseek-v4-flash', 'deepseek-v4-pro'], helpUrl: 'https://platform.deepseek.com/api_keys' },
+  { key: 'deepseek', label: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', models: ['deepseek-v4-flash', 'deepseek-v4-pro'], helpUrl: 'https://platform.deepseek.com/api_keys', contextLimit: '1000000' },
   { key: 'custom', label: '自定义', baseUrl: '', models: [], helpUrl: '' },
 ];
 
@@ -114,7 +116,7 @@ export default function SettingsPanel() {
       const raw = res.data.models || {};
       const list: ModelDef[] = Object.entries(raw).map(([key, info]: [string, unknown]) => {
         const m = info as Record<string, string>;
-        return { key, label: m.label || key, size: m.size || '', vram: m.vram || '', gpu: m.gpu || '', repo_id: m.repo_id || '', description: m.description || '' };
+        return { key, label: m.label || key, size: m.size || '', vram: m.vram || '', gpu: m.gpu || '', repo_id: m.repo_id || '', description: m.description || '', context_limit: m.context_limit || '' };
       });
       setModels(list);
       const rawParser = res.data.parser_models || {};
@@ -279,7 +281,8 @@ export default function SettingsPanel() {
         <div className="mb-3 grid grid-cols-2 gap-1 text-xs text-gray-400">
           <span>大小: <strong className="text-gray-700">{m.size}</strong></span>
           {!isParser && <span>显存: <strong className="text-gray-700">{m.vram}</strong></span>}
-          <span className={isParser ? 'col-span-2' : ''}>推荐: <strong className="text-gray-700">{m.gpu}</strong></span>
+          {!isParser && m.context_limit && <span>上下文: <strong className="text-gray-700">{parseInt(m.context_limit) >= 1000 ? `${(parseInt(m.context_limit)/1000).toFixed(0)}K` : m.context_limit}</strong></span>}
+          <span className={isParser ? 'col-span-2' : !m.context_limit ? 'col-span-2' : ''}>推荐: <strong className="text-gray-700">{m.gpu}</strong></span>
         </div>
         <div className="w-full h-3 bg-gray-200 rounded-full overflow-hidden mb-1">
           <div className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 transition-all duration-500 ease-out" style={{ width: `${progress}%` }}/>
@@ -350,7 +353,7 @@ export default function SettingsPanel() {
                   onClick={() => handleProviderChange(p)}
                   className={`rounded-2xl border-2 p-4 text-left transition-all ${provider === p.key ? 'border-blue-400 bg-blue-50/50 shadow-md ring-4 ring-blue-100' : 'border-gray-200 bg-white hover:border-gray-300'}`}
                 >
-                  <div className="text-sm font-black text-gray-800">{p.label}</div>
+                  <div className="text-sm font-black text-gray-800">{p.label}{p.contextLimit ? <span className="ml-1 text-[10px] font-normal text-gray-400">{parseInt(p.contextLimit) >= 1000 ? `${(parseInt(p.contextLimit)/1000).toFixed(0)}K 上下文` : ''}</span> : ''}</div>
                   <div className="mt-1 text-xs text-gray-400">{p.key === 'custom' ? '手动填写配置' : '预设 API'}</div>
                 </button>
               ))}
@@ -481,7 +484,9 @@ export default function SettingsPanel() {
               <option value="">未选择</option>
               {Object.entries(downloadStates).filter(([, ds]) => ds.status === 'done').map(([key]) => {
                 const m = models.find((mod) => mod.key === key);
-                return m ? <option key={key} value={key}>{m.label}</option> : null;
+                if (!m) return null;
+                const ctx = m.context_limit ? ` (${parseInt(m.context_limit) >= 1000 ? `${(parseInt(m.context_limit)/1000).toFixed(0)}K` : m.context_limit})` : '';
+                return <option key={key} value={key}>{m.label}{ctx}</option>;
               })}
             </select>
           </div>

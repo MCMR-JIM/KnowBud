@@ -119,6 +119,7 @@ DEFAULT_LLM_MODELS: dict[str, dict[str, str]] = {
         "gpu": "RTX 3060+",
         "repo_id": "google/gemma-3-4b-it",
         "description": "Google 多模态模型，支持图文输入",
+        "context_limit": "32768",
     },
     "qwen-7b": {
         "label": "Qwen2.5-VL-7B",
@@ -127,6 +128,7 @@ DEFAULT_LLM_MODELS: dict[str, dict[str, str]] = {
         "gpu": "RTX 4080+",
         "repo_id": "Qwen/Qwen2.5-VL-7B-Instruct",
         "description": "阿里多模态模型，7B 参数，中英双通",
+        "context_limit": "131072",
     },
     "gemma-12b": {
         "label": "Gemma-3-12B",
@@ -135,6 +137,7 @@ DEFAULT_LLM_MODELS: dict[str, dict[str, str]] = {
         "gpu": "RTX 4090 / 2x RTX 3090",
         "repo_id": "google/gemma-3-12b-it",
         "description": "Google 多模态模型，12B 参数",
+        "context_limit": "32768",
     },
     "qwen-27b": {
         "label": "Qwen3.6-27B",
@@ -143,6 +146,7 @@ DEFAULT_LLM_MODELS: dict[str, dict[str, str]] = {
         "gpu": "2x RTX 4090 / A100",
         "repo_id": "Qwen/Qwen3-27B",
         "description": "阿里旗舰大模型，27B 参数",
+        "context_limit": "131072",
     },
 }
 
