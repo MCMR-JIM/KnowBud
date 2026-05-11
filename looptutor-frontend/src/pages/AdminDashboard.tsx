@@ -1039,7 +1039,12 @@ export default function AdminDashboard() {
       const graphRes = await fetch(`${apiBaseUrl}/knowledge/graph`);
       if (graphRes.ok) {
         const graphData = await graphRes.json();
-        setGraphNodes(graphData.topics || []);
+        const newTopics: GraphTopic[] = graphData.topics || [];
+        const oldIds = graphNodes.map(t => t.topic_id).sort().join(',');
+        const newIds = newTopics.map(t => t.topic_id).sort().join(',');
+        if (oldIds !== newIds) {
+          setGraphNodes(newTopics);
+        }
         setGraphProposals((graphData.proposals || []).filter((proposal: any) => proposal.trigger === 'resource_ingest' && proposal.status === 'proposed'));
       }
     } catch { /* ignore */ }
