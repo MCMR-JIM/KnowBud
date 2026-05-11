@@ -1311,7 +1311,8 @@ def _run_structured_ingestion(
                 )
                 locator.refresh()
 
-        # Step 2: per-topic locate (proven approach)
+        # Step 2: per-topic locate + collect successor relations for batch update
+        _pending_successors: dict[str, list[str]] = {}
         for title, desc in deduped:
             if title in topic_map:
                 continue
@@ -1333,7 +1334,7 @@ def _run_structured_ingestion(
                         language_id=language_id,
                     ),
                     parent_node_ids=parents,
-                    prerequisite_node_ids=[],  # prerequisites go the other way
+                    prerequisite_node_ids=[],
                     edge_type="part_of" if parents else "requires",
                     reason=pos.reason[:80],
                 )
@@ -1341,17 +1342,21 @@ def _run_structured_ingestion(
                     proposal_id=proposal.proposal_id, difficulty=1,
                 )
                 topic_map[title] = tpc.topic_id
-                # New topic is a prerequisite for its successors
                 if successors:
-                    _state = backend.load_app_state(include_history=False)
-                    for _sid in successors:
-                        _succ = next((t for t in _state.curriculum.topics if t.topic_id == _sid), None)
-                        if _succ and tpc.topic_id not in _succ.prerequisite_ids:
-                            _succ.prerequisite_ids.append(tpc.topic_id)
-                    backend.save_app_state(_state)
+                    _pending_successors[tpc.topic_id] = successors
                 locator.refresh()
             except Exception:
                 pass
+
+        # Batch-update successor prerequisites
+        if _pending_successors:
+            _state = backend.load_app_state(include_history=False)
+            for _tid, _sids in _pending_successors.items():
+                for _sid in _sids:
+                    _succ = next((t for t in _state.curriculum.topics if t.topic_id == _sid), None)
+                    if _succ and _tid not in _succ.prerequisite_ids:
+                        _succ.prerequisite_ids.append(_tid)
+            backend.save_app_state(_state)
 
     # ── Process exercises ──
     if exercise_blocks:
