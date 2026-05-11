@@ -1145,14 +1145,9 @@ export default function AdminDashboard() {
     walk(rootId);
     return childIds.size;
   };
-
   const countChildTopics = (rootId: string) => {
     const children = graphNodes.filter((t) => (t.parent_ids || []).includes(rootId));
     return children.length;
-  };
-
-    walk(rootId);
-    return childIds.size;
   };
 
   const collectSubgraphIds = (rootId: string, topics: GraphTopic[]) => {
