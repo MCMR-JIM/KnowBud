@@ -306,19 +306,27 @@ export default function SettingsPanel() {
         <p className="mt-1 text-sm text-gray-400">配置 LLM 模型服务，管理本地模型下载。</p>
       </div>
 
-      {/* ===== Mode Switch ===== */}
-      <div className="grid grid-cols-2 gap-3">
-        {(['api', 'local'] as const).map((m) => (
-          <label
-            key={m}
-            className={`relative cursor-pointer rounded-2xl border-2 p-5 transition-all ${mode === m ? 'border-blue-400 bg-blue-50/50 shadow-md ring-4 ring-blue-100' : 'border-gray-200 bg-white'}`}
-          >
-            <input type="radio" name="mode" checked={mode === m} onChange={() => setMode(m)} className="sr-only" />
-            <div className="text-sm font-black text-gray-800">{m === 'api' ? '远程 API' : '本地模型'}</div>
-            <div className="mt-1 text-xs text-gray-400">{m === 'api' ? '通过 API Key 连接到云端模型服务' : '在本地 GPU 上运行开源模型'}</div>
-          </label>
-        ))}
+      {/* ===== Parser Models: Required ===== */}
+      <div className="rounded-[24px] border border-rose-100 bg-gradient-to-br from-rose-50/60 to-amber-50/40 p-6">
+        <h3 className="mb-1 text-sm font-black uppercase tracking-[0.14em] text-rose-600">文档解析前置依赖（必需下载）</h3>
+        <p className="mb-4 text-xs text-gray-400">MinerU 解析 PDF/PPTX/DOCX 需要这些模型</p>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          {parserModels.map((m) => renderCard(m, true))}
+          {parserModels.length === 0 && <div className="col-span-2 rounded-2xl border border-dashed border-rose-200 bg-white/60 py-10 text-center text-sm text-gray-400">加载中...</div>}
+        </div>
       </div>
+
+      {/* ===== LLM Config ===== */}
+      <div className="rounded-[24px] border border-gray-200 bg-white p-6">
+        <h3 className="mb-4 text-sm font-black uppercase tracking-[0.14em] text-gray-500">LLM 模型配置</h3>
+        <div className="mb-5 flex rounded-2xl bg-gray-100 p-1">
+          {(['api', 'local'] as const).map((m) => (
+            <button key={m} type="button" onClick={() => setMode(m)}
+              className={`flex-1 rounded-xl px-4 py-2.5 text-sm font-bold transition-all ${mode === m ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
+              {m === 'api' ? '远程 API' : '本地模型'}
+            </button>
+          ))}
+        </div>
 
       {/* ===== Remote API Settings ===== */}
       {mode === 'api' && (
@@ -472,8 +480,8 @@ export default function SettingsPanel() {
             >
               <option value="">未选择</option>
               {Object.entries(downloadStates).filter(([, ds]) => ds.status === 'done').map(([key]) => {
-                const m = models.find((mod) => mod.key === key) || parserModels.find((mod) => mod.key === key);
-                return <option key={key} value={key}>{m?.label || key}</option>;
+                const m = models.find((mod) => mod.key === key);
+                return m ? <option key={key} value={key}>{m.label}</option> : null;
               })}
             </select>
           </div>
@@ -533,18 +541,8 @@ export default function SettingsPanel() {
 
           {/* ===== Model Download Cards ===== */}
           <div className="mb-6">
-            {/* Parser models section */}
-            {parserModels.length > 0 && (
-              <>
-                <h3 className="mb-3 text-sm font-black uppercase tracking-[0.14em] text-gray-500">文档解析前置依赖</h3>
-                <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2">
-                  {parserModels.map((m) => renderCard(m, true))}
-                </div>
-                <h3 className="mb-3 text-sm font-black uppercase tracking-[0.14em] text-gray-500">可选模型</h3>
-              </>
-            )}
+            <h3 className="mb-3 text-sm font-black uppercase tracking-[0.14em] text-gray-500">可选模型</h3>
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              {parserModels.length === 0 && <h3 className="mb-3 text-sm font-black uppercase tracking-[0.14em] text-gray-500">模型下载</h3>}
               {models.map((m) => renderCard(m, false))}
               {models.length === 0 && (
                 <div className="col-span-2 rounded-2xl border border-dashed border-gray-200 bg-gray-50 py-10 text-center text-sm text-gray-400">
@@ -555,6 +553,7 @@ export default function SettingsPanel() {
           </div>
         </div>
       )}
+      </div>
 
       {/* ===== Save Button ===== */}
       <div className="sticky bottom-0 border-t border-gray-100 bg-white/90 pt-6 backdrop-blur flex items-center gap-2">
