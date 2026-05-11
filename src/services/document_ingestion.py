@@ -1362,6 +1362,32 @@ def _run_structured_ingestion(
 
 # ── Phase 1 helpers ──
 
+def _get_model_context_limit(backend: "SessionBackend") -> int:
+    import os as _os, json as _json
+    from pathlib import Path as _Path
+    data_root = _os.getenv("DATA_ROOT", "./data")
+    settings_path = _Path(data_root) / "llm_settings.json"
+    settings: dict = {}
+    if settings_path.exists():
+        try:
+            settings = _json.loads(settings_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    mode = str(settings.get("mode") or "remote")
+    if mode == "local":
+        model_name = str((settings.get("local") or {}).get("model") or (settings.get("local") or {}).get("model_path") or "")
+    else:
+        model_name = str((settings.get("remote") or {}).get("model") or "")
+    model_lower = model_name.lower()
+    if "deepseek" in model_lower:
+        return 1000000
+    if "qwen" in model_lower:
+        return 131072
+    if "gemma" in model_lower:
+        return 32768
+    return 32768
+
+
 def _fast_document_scan(
     backend: "SessionBackend",
     chunks: list[TextUnit],
@@ -1369,26 +1395,29 @@ def _fast_document_scan(
     language_id: str | None = None,
 ) -> dict:
     full_text = "\n\n".join(c.text for c in chunks if c.text)
-    # For very large documents, split into overlapping windows to avoid context overflow
-    if len(full_text) > 100000:
-        window = 24000
-        overlap = 4000
-        blocks_all = []
-        start = 0
-        while start < len(full_text):
-            end = min(start + window, len(full_text))
-            part = full_text[start:end]
-            partial_scan = _fast_document_scan_single(backend, part, subject, language_id)
-            partial_blocks = partial_scan.get("blocks") or []
-            for b in partial_blocks:
-                b["_offset"] = start
-            blocks_all.extend(partial_blocks)
-            if end >= len(full_text):
-                break
-            start = end - overlap
-        return {"doc_type": "textbook", "blocks": blocks_all}
+    context_limit = _get_model_context_limit(backend)
+    max_tokens = int(context_limit * 0.8)
+    text_tokens = _estimate_tokens(full_text)
+    if text_tokens <= max_tokens:
+        return _fast_document_scan_single(backend, full_text, subject, language_id)
 
-    return _fast_document_scan_single(backend, full_text, subject, language_id)
+    # Split text into chunks fitting within token limit
+    window_chars = int(len(full_text) * max_tokens / max(text_tokens, 1))
+    overlap = window_chars // 6
+    blocks_all = []
+    start = 0
+    while start < len(full_text):
+        end = min(start + window_chars, len(full_text))
+        part = full_text[start:end]
+        partial_scan = _fast_document_scan_single(backend, part, subject, language_id)
+        blocks = partial_scan.get("blocks") or []
+        for b in blocks:
+            b["_offset"] = start
+        blocks_all.extend(blocks)
+        if end >= len(full_text):
+            break
+        start = end - overlap
+    return {"doc_type": "textbook", "blocks": blocks_all}
 
 
 def _fast_document_scan_single(
