@@ -182,7 +182,6 @@ class SessionBackend:
                         [sys.executable, str(server_script),
                          "--model-path", model_path, "--port", str(port),
                          "--precision", precision, "--temperature", temp, "--max-tokens", max_t],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     )
 
         _api_key, _base_url, _model = _load_llm_config()
