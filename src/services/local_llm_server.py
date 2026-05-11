@@ -70,20 +70,7 @@ def _build_app(
     model: Any,
 ) -> Any:
     import torch
-    from fastapi import FastAPI, HTTPException
-    from pydantic import BaseModel, Field
-
-    class ChatMessage(BaseModel):
-        role: str
-        content: Any
-
-    class ChatCompletionRequest(BaseModel):
-        model: str | None = None
-        messages: list[ChatMessage] = Field(default_factory=list)
-        temperature: float | None = None
-        max_tokens: int | None = None
-        top_p: float | None = 0.95
-        stream: bool | None = False
+    from fastapi import FastAPI, HTTPException, Request
 
     app = FastAPI(title="LoopTutor Local LLM")
     served_model_id = Path(model_path).resolve().name
@@ -111,20 +98,20 @@ def _build_app(
         }
 
     @app.post("/v1/chat/completions")
-    def chat_completions(req: ChatCompletionRequest) -> dict[str, Any]:
-        if req.stream:
-            raise HTTPException(status_code=400, detail="streaming responses are not supported")
-        if not req.messages:
+    async def chat_completions(request: Request) -> dict[str, Any]:
+        import json as _json
+        from fastapi import Request
+        body = await request.json()
+        messages = body.get("messages", [])
+        if not messages:
             raise HTTPException(status_code=400, detail="messages must not be empty")
+        temperature = body.get("temperature", default_temperature)
+        max_tokens = body.get("max_tokens", default_max_tokens)
 
-        prompt = _render_chat_prompt(tokenizer, req.messages)
+        prompt = _render_chat_prompt(tokenizer, [type('M',(),{'role':m.get('role',''),'content':m.get('content','')})() for m in messages])
         inputs = tokenizer(prompt, return_tensors="pt")
         input_device = _model_input_device(model)
         inputs = {key: value.to(input_device) for key, value in inputs.items()}
-
-        temperature = default_temperature if req.temperature is None else req.temperature
-        max_tokens = default_max_tokens if req.max_tokens is None else req.max_tokens
-        top_p = 0.95 if req.top_p is None else req.top_p
         input_token_count = int(inputs["input_ids"].shape[-1])
 
         generation_args: dict[str, Any] = {
@@ -134,7 +121,7 @@ def _build_app(
         }
         if temperature > 0:
             generation_args["temperature"] = temperature
-            generation_args["top_p"] = top_p
+            generation_args["top_p"] = 0.95
 
         with torch.no_grad():
             outputs = model.generate(**inputs, **generation_args)
@@ -142,7 +129,7 @@ def _build_app(
         generated_tokens = outputs[0][input_token_count:]
         content = tokenizer.decode(generated_tokens, skip_special_tokens=True).strip()
         completion_token_count = int(generated_tokens.shape[-1])
-        response_model = req.model or served_model_id
+        response_model = body.get("model") or served_model_id
 
         return {
             "id": f"chatcmpl-{uuid.uuid4().hex}",
