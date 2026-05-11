@@ -28,6 +28,26 @@ from src.agent.mastery_engine import MasteryEngine
 from src.services.env_loader import load_project_env
 
 
+# transformers 5.x removed find_pruneable_heads_and_indices; mineru needs it
+def _patch_transformers_compat() -> None:
+    try:
+        from transformers import pytorch_utils as _ptu
+        if not hasattr(_ptu, "find_pruneable_heads_and_indices"):
+            import torch as _torch
+            def _f(heads, n_heads, head_size, already_pruned_heads):
+                mask = _torch.ones(n_heads, head_size)
+                for h in set(heads) - set(already_pruned_heads):
+                    mask[h] = 0
+                mask = mask.view(-1).eq(1)
+                index = _torch.arange(len(mask), dtype=_torch.long)[mask]
+                return list(set(heads) - set(already_pruned_heads)), index
+            _ptu.find_pruneable_heads_and_indices = _f
+    except Exception:
+        pass
+
+_patch_transformers_compat()
+
+
 DEFAULT_LLM_SETTINGS: dict[str, object] = {
     "mode": "remote",
     "remote": {"api_key": "", "base_url": "https://api.openai.com/v1", "model": ""},
