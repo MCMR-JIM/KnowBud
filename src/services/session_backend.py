@@ -5,6 +5,9 @@ import json
 import time
 import sqlite3
 import re
+import subprocess
+import sys
+import atexit
 from pathlib import Path
 from dataclasses import dataclass, field
 import datetime
@@ -88,7 +91,13 @@ def _load_llm_config(settings: dict | None = None) -> tuple[str, str, str]:
     settings = _load_llm_settings() if settings is None else _merge_llm_settings(settings)
     mode = str(settings.get("mode") or "remote").strip().lower()
     if mode == "local":
-        return "", "", ""
+        local = settings.get("local", {}) or {}
+        port = int(local.get("port", 8000))
+        model_name = str(local.get("model") or "").strip()
+        if not model_name:
+            model_path = str(local.get("model_path") or "").strip()
+            model_name = Path(model_path).resolve().name if model_path else "local-model"
+        return ("not-needed", f"http://127.0.0.1:{port}/v1", model_name)
     remote = settings.get("remote", {})
     return (
         remote.get("api_key", "") or "",
@@ -136,6 +145,39 @@ class SessionBackend:
         self.engine = DecisionEngine(fail_threshold=fail_th, master_streak=master_st)
 
         self.voice_skill = VoiceIOSkill(self.ctx, whisper_model_size=os.getenv("WHISPER_MODEL_SIZE", "tiny"))
+
+        _settings = _load_llm_settings()
+        if _settings.get("mode") == "local":
+            local = _settings.get("local", {}) or {}
+            model_path = str(local.get("model_path") or "").strip()
+            port = int(local.get("port", 8000))
+            if model_path:
+                server_script = Path(__file__).resolve().with_name("local_llm_server.py")
+                if server_script.exists():
+                    precision = str(local.get("precision", "bf16"))
+                    temp = str(local.get("temperature", 0.6))
+                    max_t = str(local.get("max_tokens", 2048))
+                    logger.info("[llm] starting local LLM subprocess on port {}", port)
+                    subprocess.Popen(
+                        [sys.executable, str(server_script),
+                         "--model-path", model_path, "--port", str(port),
+                         "--precision", precision, "--temperature", temp, "--max-tokens", max_t],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    )
+                    import httpx
+                    _health_url = f"http://127.0.0.1:{port}/health"
+                    logger.info("[llm] waiting for local LLM on port {}...", port)
+                    for _i in range(120):
+                        try:
+                            r = httpx.get(_health_url, timeout=2)
+                            if r.status_code == 200:
+                                logger.info("[llm] local LLM ready")
+                                break
+                        except Exception:
+                            pass
+                        time.sleep(1)
+                    else:
+                        logger.warning("[llm] local LLM not ready within 120s")
 
         _api_key, _base_url, _model = _load_llm_config()
         self.llm_skill = LLMTutorSkill(
