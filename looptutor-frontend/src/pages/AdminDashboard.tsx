@@ -1012,6 +1012,9 @@ export default function AdminDashboard() {
           void fetchAllData();
           return;
         }
+        if (status === 'processing') {
+          void fetchGraphData();
+        }
         if (status === 'completed' || status === 'failed') {
           window.clearInterval(intervalId);
           void fetchAllData();
@@ -1020,7 +1023,18 @@ export default function AdminDashboard() {
         console.error('轮询资源解析状态失败', error);
         window.clearInterval(intervalId);
       }
-    }, 3000);
+    }, 5000);
+  };
+
+  const fetchGraphData = async () => {
+    try {
+      const graphRes = await fetch(`${apiBaseUrl}/knowledge/graph`);
+      if (graphRes.ok) {
+        const graphData = await graphRes.json();
+        setGraphNodes(graphData.topics || []);
+        setGraphProposals((graphData.proposals || []).filter((proposal: any) => proposal.trigger === 'resource_ingest' && proposal.status === 'proposed'));
+      }
+    } catch { /* ignore */ }
   };
 
   const uploadPendingFilesForSubject = async (topicId: string, tags: string[]) => {
