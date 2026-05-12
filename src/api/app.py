@@ -889,6 +889,30 @@ def create_subject_root(
     return {"topic_id": topic.topic_id, "title": topic.title, "tags": topic.tags}
 
 
+@app.delete("/v1/knowledge/subject/{topic_id}", tags=["knowledge"])
+def delete_subject(topic_id: str) -> dict[str, Any]:
+    backend = get_backend()
+    result = backend.delete_topic_subtree(topic_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"topic_id not found: {topic_id}")
+    return result
+
+
+@app.put("/v1/knowledge/subject/{topic_id}", tags=["knowledge"])
+def update_subject(topic_id: str, title: str = Form(...)) -> dict[str, Any]:
+    backend = get_backend()
+    topic = backend.get_topic(topic_id)
+    if topic is None:
+        raise HTTPException(status_code=404, detail=f"topic_id not found: {topic_id}")
+    topic.title = title.strip()
+    state = backend.load_app_state(include_history=False)
+    for t in state.curriculum.topics:
+        if t.topic_id == topic_id:
+            t.title = title.strip()
+    backend.save_app_state(state)
+    return {"topic_id": topic.topic_id, "title": topic.title}
+
+
 @app.get("/v1/knowledge/graph/report", tags=["knowledge"])
 def get_knowledge_graph_report() -> dict[str, Any]:
     backend = get_backend()
