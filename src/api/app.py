@@ -260,6 +260,15 @@ def get_backend() -> "SessionBackend":
 
 
 _ingestion_stages: dict[str, str] = {}
+_cancelled_resources: set[str] = set()
+
+
+def _cancel_ingestion(resource_id: str) -> None:
+    _cancelled_resources.add(resource_id)
+
+
+def _is_cancelled(resource_id: str) -> bool:
+    return resource_id in _cancelled_resources
 
 
 def _set_ingestion_stage(resource_id: str, stage: str) -> None:
@@ -711,6 +720,11 @@ def _run_resource_ingestion(
             _set_ingestion_stage(resource_id, "知识图谱插入中")
             logger.info("chunk classification progress", extra=payload)
 
+    if _is_cancelled(resource_id):
+        logger.info("ingestion cancelled before start", extra={"resource_id": resource_id})
+        backend.update_resource_ingestion(resource_id, status="failed", error="cancelled")
+        return
+
     try:
         topics = backend.load_app_state(include_history=False).curriculum.topics
         segments = ingest_document_resource(
@@ -724,6 +738,7 @@ def _run_resource_ingestion(
             enable_new_pipeline=bool(subject),
         )
         _set_ingestion_stage(resource_id, "")
+        _cancelled_resources.discard(resource_id)
         backend.update_resource_ingestion(resource_id, status="completed", error=None)
         updated = backend.get_resource(resource_id)
         if updated is None:
@@ -749,6 +764,7 @@ def _run_resource_ingestion(
         )
     except Exception as exc:
         error = str(exc)[:500]
+        _cancelled_resources.discard(resource_id)
         _set_ingestion_stage(resource_id, "解析失败")
         failure_segments = [_build_ingestion_failed_segment(resource_id, record.media_type, error)]
         try:
@@ -869,6 +885,7 @@ def get_resource_file(resource_id: str):
 def delete_resource(resource_id: str) -> dict[str, Any]:
     backend = get_backend()
     deleted = backend.delete_resource(resource_id)
+    _cancel_ingestion(resource_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"resource_id not found: {resource_id}")
     return {"resource_id": resource_id, "deleted": True}
@@ -990,6 +1007,9 @@ def update_subject_root(
 @app.delete("/v1/knowledge/subject/{topic_id}", tags=["knowledge"])
 def delete_subject_root(topic_id: str) -> dict[str, Any]:
     backend = get_backend()
+    for res in backend.list_all_resources():
+        if res.topic_id == topic_id:
+            _cancel_ingestion(res.resource_id)
     result = backend.delete_topic_subtree(topic_id)
     if result is None:
         raise HTTPException(status_code=404, detail="topic not found")

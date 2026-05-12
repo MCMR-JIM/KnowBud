@@ -1245,6 +1245,9 @@ def _run_structured_ingestion(
     profile = SUBJECT_PROFILES.get(subject, SUBJECT_PROFILES["general"])
 
     # ── Phase 1: one LLM call to scan full document ──
+    from src.api.app import _is_cancelled as _ingestion_cancelled
+    if _ingestion_cancelled(record.resource_id):
+        return [_status_segment(resource_id=record.resource_id, sequence_index=0, status="parse_failed", reason="cancelled", locator={"kind": "structured"})]
     scan = _fast_document_scan(backend, chunks, subject, language_id)
     blocks = scan.get("blocks") or []
     _topic_block_types = {
@@ -1337,6 +1340,9 @@ def _run_structured_ingestion(
         # Step 2: per-topic locate
         _inserted = 0
         for title, desc in deduped:
+            if _ingestion_cancelled(record.resource_id):
+                print(f"[ingestion] cancelled mid-insert at {_inserted}/{_total}", flush=True)
+                break
             if title in topic_map:
                 continue
             pos = locator.locate(title, desc)
