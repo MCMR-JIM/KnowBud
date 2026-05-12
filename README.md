@@ -4,7 +4,7 @@
 
 ## English
 
-**Sprout** is a production-grade desktop learning companion for school-age children. The tutoring flow is driven by a Python FSM and decision engine — not an LLM prompt chain. ASR, TTS, and LLM are stateless, pluggable skill modules. Frontend options include a React/TypeScript SPA and a Streamlit multipage app (child-facing + parent admin).
+**Sprout** is a production-grade desktop learning companion for school-age children. The tutoring flow is driven by a Python FSM and decision engine — not an LLM prompt chain. ASR, TTS, and LLM are stateless, pluggable skill modules. The frontend is a React/TypeScript SPA with child-facing and parent-facing views.
 
 ---
 
@@ -72,14 +72,47 @@
 | **ASR** | faster-whisper (int8), Docker Whisper |
 | **TTS** | edge-tts (async), Docker TTS |
 | **文档解析** | PyMuPDF, python-docx, python-pptx, MinerU |
-| **Child 前端** | React 19, TypeScript 6, Vite 8, Tailwind CSS 3 |
+| **前端框架** | React 19, TypeScript 6, Vite 8 |
+| **样式** | Tailwind CSS 3 |
 | **可视化** | D3.js 7, ECharts 6, Recharts 3 |
 | **PDF 阅读** | react-pdf 10, pdfjs-dist 5 |
-| **Parent 前端** | React Router 7, Axios, Lucide React |
-| **Streamlit 前端** | Streamlit 1.28+ (快速原型/管理用) |
+| **路由/HTTP** | React Router 7, Axios |
+| **图标** | Lucide React |
 | **容器化** | Docker Compose (ASR/TTS 服务) |
 | **测试** | Pytest 7+ |
 | **状态存储** | SQLite (事务存储) + JSON (兼容快照) |
+
+---
+
+## 前端架构
+
+### 页面路由
+
+| 路由 | 页面 | 面向 |
+|------|------|------|
+| `/` | `Home.tsx` | 身份选择（小朋友 / 家长） |
+| `/mode` | `ModeSelect.tsx` | 伴学宠物选择（星空兔 / 小智龙） |
+| `/kids` | `KidsLearning.tsx` | 儿童学习主页面 |
+| `/study` | `StudyRoom.tsx` | 沉浸式学习舱 |
+| `/admin` | `AdminDashboard.tsx` | 家长管理看板 |
+
+### 交互流程
+
+```
+首页身份选择 → 宠物选择 → 学习主页面（语音/文字对话）
+                         → 学习舱（积分、图谱、闯关）
+                         → 家长看板（图谱可视化、资源管理、LLM配置）
+```
+
+### 技术细节
+
+- **视图切换**：React Router 7 基于 URL 的路由，支持浏览器前进/后退
+- **API 通信**：`client.ts` 封装 `SessionAPI`（会话状态/回合/事件/复习/探索窗/知识图谱）和 `ResourceAPI`（上传/片段/教学提示/摄入状态），通过 `config.ts` 统一管理 API 基地址
+- **样式方案**：Tailwind CSS 3 工具类优先 + 自定义毛玻璃卡片、渐变进度条等组件风格
+- **数据可视化**：D3.js 力导向图渲染知识图谱（节点拖拽、缩放、聚焦），ECharts 渲染学习分析图表（雷达图、柱状图、折线图），Recharts 渲染简洁统计图
+- **PDF 阅读**：react-pdf 10 + pdfjs-dist 5 内嵌 PDF 渲染，支持页码跳转
+- **Live2D**：通过 `Live2DRabbit.tsx` 加载 Live2D Cubism 模型，实现伴学宠物动画交互
+- **状态持久化**：`localStorage` 存储角色选择和用户画像，页面刷新不丢失
 
 ---
 
@@ -113,17 +146,27 @@ Sprout/
 │       └── policy.py             # 策略配置
 ├── frontend/              # React/TypeScript 前端
 │   └── src/
-│       ├── pages/         # Home, KidsLearning, StudyRoom, AdminDashboard, ModeSelect
-│       ├── components/    # SettingsPanel, PdfViewer, CelebrationModal, Live2DRabbit
-│       └── api/           # Axios 客户端封装
-├── pages/                 # Streamlit 页面（儿童学习/家长看板）
+│       ├── pages/
+│       │   ├── Home.tsx              # 首页：身份选择（小朋友/家长）
+│       │   ├── ModeSelect.tsx        # 伴学宠物选择（星空兔/小智龙）
+│       │   ├── KidsLearning.tsx      # 儿童学习页：语音/文字对话、TTS 播放、PDF 阅读
+│       │   ├── StudyRoom.tsx         # 沉浸式学习舱：积分条、知识图谱、闯关流程
+│       │   └── AdminDashboard.tsx    # 家长管理看板：学科管理、资源上传、图谱可视化、LLM 设置
+│       ├── components/
+│       │   ├── SettingsPanel.tsx     # LLM 设置：API 密钥、模型选择、GPU 信息、模型下载
+│       │   ├── PdfViewer.tsx         # PDF 阅读器 (react-pdf)
+│       │   ├── CelebrationModal.tsx  # 成就庆祝弹窗
+│       │   ├── DynamicMediaBoard.tsx # 动态多媒体展示板
+│       │   ├── Live2DRabbit.tsx      # 伴学宠物 Live2D 展示
+│       │   └── AppDialog.tsx         # 通用弹窗组件
+│       └── api/
+│           ├── client.ts             # Axios 封装：SessionAPI + ResourceAPI
+│           └── config.ts             # API 基地址配置
 ├── docker/asr_tts/        # Docker ASR/TTS 部署
 ├── scripts/               # 工具脚本 (MinerU worker, 资源图谱模拟, 模型加载测试)
 ├── tests/                 # Pytest 测试套件 (14 个测试文件)
 ├── docs/                  # API 文档、图谱管线说明、ASR/TTS 指南
-├── data/                  # 运行时数据（已 gitignore）
-├── app.py                 # Streamlit 入口（星梦乐园首页）
-└── design.py              # UI 主题、配色、图标、伴学宠物定义
+└── data/                  # 运行时数据（已 gitignore）
 ```
 
 ---
@@ -156,20 +199,12 @@ uvicorn src.api.app:app --host 0.0.0.0 --port 8090 --reload
 
 API 文档：启动后访问 `http://localhost:8090/docs`
 
-### 3. 启动前端（二选一）
-
-**React 前端（推荐，功能完整）**：
+### 3. 启动前端
 
 ```bash
 cd frontend
 npm install
 npm run dev          # 默认 http://localhost:5173
-```
-
-**Streamlit 前端（轻量快速）**：
-
-```bash
-streamlit run app.py
 ```
 
 ### 4. (可选) Docker 部署 ASR/TTS 服务
@@ -214,8 +249,8 @@ docker compose -f docker/asr_tts/docker-compose.yml down
 ## 设计原则
 
 1. **教学流程由 FSM 决策引擎控制，不由 LLM 直接编排**：LLM 只负责内容生成（出题、评估、分类），不参与流程控制
-2. **技能层无 UI 依赖**：`src/skills/` 不依赖 Streamlit 或任何前端框架，纯后端能力
-3. **前后端分离**：FastAPI 提供 RESTful API，前端通过 HTTP 调用，支持 React / Streamlit 双前端
+2. **技能层无 UI 依赖**：`src/skills/` 不依赖任何前端框架，纯后端能力
+3. **前后端分离**：FastAPI 提供 RESTful API，前端通过 HTTP 调用
 4. **状态持久化**：SQLite 事务存储 + 事件溯源，支持断点续学
 5. **纵深离线可用**：本地 ASR/TTS/LLM 推理，断网不影响核心学习体验
 
@@ -269,4 +304,4 @@ pytest tests/test_agent_flow.py -v
 
 ## License
 
-项目所有者后续补充。
+MIT
