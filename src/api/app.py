@@ -1064,8 +1064,6 @@ def delete_subject_root(topic_id: str) -> dict[str, Any]:
     if result is None:
         raise HTTPException(status_code=404, detail="topic not found")
     return result
-
-
 @app.get("/v1/knowledge/graph/report", tags=["knowledge"])
 def get_knowledge_graph_report() -> dict[str, Any]:
     backend = get_backend()
