@@ -887,6 +887,7 @@ def list_resources() -> list[dict[str, Any]]:
             "original_filename": record.original_filename,
             "media_type": record.media_type,
             "size_bytes": record.size_bytes,
+            "topic_id": record.topic_id,
             "ingestion_status": record.ingestion_status,
             "ingestion_stage": record.ingestion_status == "completed" and "已完成" or _get_ingestion_stage(record.resource_id),
             "segment_count": counts["segment_count"],

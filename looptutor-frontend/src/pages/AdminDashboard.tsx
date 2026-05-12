@@ -48,8 +48,10 @@ type TopicResource = {
   media_type: string;
   original_filename: string;
   size_bytes: number;
+  topic_id?: string;
   ingestion_status: string;
   ingestion_stage?: string;
+  ingestion_error?: string;
 };
 
 type SubjectModalMode = 'create' | 'edit';
@@ -1014,7 +1016,8 @@ export default function AdminDashboard() {
       try {
         const statusRes = await ResourceAPI.getResourceIngestionStatus(resourceId);
         const status = statusRes.data?.status;
-        if (status === 'failed' && String(statusRes.data?.error || '').includes('LLM not configured')) {
+        const err = statusRes.data?.error || '';
+        if (status === 'failed' && err.includes('LLM not configured')) {
           window.clearInterval(intervalId);
           await appDialog.alert(LLM_NOT_CONFIGURED_MESSAGE, { title: '模型未配置', intent: 'warning' });
           void fetchAllData();
@@ -1022,6 +1025,7 @@ export default function AdminDashboard() {
         }
         if (status === 'processing') {
           void fetchGraphData();
+          void fetchAllData(); // also refresh resources to get progress labels
         }
         if (status === 'completed' || status === 'failed') {
           window.clearInterval(intervalId);
@@ -1161,6 +1165,20 @@ export default function AdminDashboard() {
   const countChildTopics = (rootId: string) => {
     const children = graphNodes.filter((t) => (t.parent_ids || []).includes(rootId));
     return children.length;
+  };
+
+  const getIngestionLabel = (rootId: string): string | null => {
+    for (const res of allResources) {
+      if (res.topic_id !== rootId) continue;
+      const err = res.ingestion_error || '';
+      if (res.ingestion_status !== 'processing') continue;
+      const extrMatch = err.match(/^extracted:(\d+)$/);
+      if (extrMatch) return `待入图 ${extrMatch[1]}`;
+      const insMatch = err.match(/^inserting:(\d+)\/(\d+)$/);
+      if (insMatch) return `入图中 ${insMatch[1]}/${insMatch[2]}`;
+      return '处理中';
+    }
+    return null;
   };
 
   const collectSubgraphIds = (rootId: string, topics: GraphTopic[]) => {
@@ -1393,6 +1411,7 @@ export default function AdminDashboard() {
                         <div className="rounded-2xl border border-white/80 bg-white/70 p-2">
                           <p className="font-bold text-gray-700">{childCount}</p>
                           <p>提取节点</p>
+                          {(() => { const label = getIngestionLabel(root.topic_id); return label ? <p className="mt-0.5 text-[10px] text-amber-600 font-semibold">{label}</p> : null; })()}
                         </div>
                         <div className="rounded-2xl border border-white/80 bg-white/70 p-2">
                           <p className="font-bold text-gray-700">{getSubjectTag(root.tags || []) || 'custom'}</p>
