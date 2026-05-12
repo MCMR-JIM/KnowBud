@@ -1293,6 +1293,8 @@ def _run_structured_ingestion(
 
     seen: set[str] = set()
     deduped = [(t, d) for t, d in all_topics if not (t in seen or seen.add(t))]
+    _total = len(deduped)
+    backend.update_resource_ingestion(record.resource_id, status="processing", error=f"extracted:{_total}")
 
     # Batch tree organization: create relay nodes before per-topic insertion
     tree: list[dict] = []
@@ -1333,6 +1335,7 @@ def _run_structured_ingestion(
                 locator.refresh()
 
         # Step 2: per-topic locate
+        _inserted = 0
         for title, desc in deduped:
             if title in topic_map:
                 continue
@@ -1360,6 +1363,8 @@ def _run_structured_ingestion(
                     proposal_id=proposal.proposal_id, difficulty=1,
                 )
                 topic_map[title] = tpc.topic_id
+                _inserted += 1
+                backend.update_resource_ingestion(record.resource_id, status="processing", error=f"inserting:{_inserted}/{_total}")
                 if successors:
                     _pending_successors[tpc.topic_id] = successors
                 locator.refresh()
