@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import json
 import re
+import time
+from pprint import pformat
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+
+from src.services.llm_gateway import create_chat_completion
 
 if TYPE_CHECKING:
     from src.services.session_backend import SessionBackend
@@ -33,6 +37,17 @@ class GraphLocator:
     @property
     def _model_name(self):
         return self._backend.llm_skill.model_name
+
+    def _create_completion(self, **kwargs):
+        return create_chat_completion(
+            client=self._client,
+            base_url=getattr(self._backend.llm_skill, "base_url", ""),
+            model_name=kwargs.get("model") or self._model_name,
+            messages=kwargs.get("messages") or [],
+            temperature=float(kwargs.get("temperature", 0.3)),
+            timeout=float(kwargs.get("timeout", 60.0)),
+            extra_body=kwargs.get("extra_body"),
+        )
 
     @property
     def _topics(self) -> list["TopicNode"]:
@@ -71,9 +86,13 @@ class GraphLocator:
             f"新 topic: {topic_title}\n"
             f"描述: {topic_desc[:500]}\n"
         )
+        print(
+            f"\n[GRAPH_LOCATE_PROMPT]\n{pformat({'topic_title': topic_title, 'topic_desc': topic_desc[:500], 'system_prompt': system, 'user_prompt': user})}\n",
+            flush=True,
+        )
 
         try:
-            response = self._client.chat.completions.create(
+            response = self._create_completion(
                 model=self._model_name,
                 messages=[
                     {"role": "system", "content": system},
@@ -83,6 +102,7 @@ class GraphLocator:
                 timeout=60.0,
             )
             raw = (response.choices[0].message.content or "").strip()
+            print(f"\n[GRAPH_LOCATE_RESPONSE]\n{raw}\n", flush=True)
             return self._parse_position(raw)
         except Exception:
             return GraphPosition(exists=False, reason="LLM call failed")
@@ -90,34 +110,86 @@ class GraphLocator:
     def batch_locate(self, topics: list[dict]) -> dict:
         if not self._topics or not topics:
             return {"placements": {}, "relay_nodes": []}
-
-        # Phase 1: cluster similar topics into relay groups (one LLM call)
-        titles = [t.get("title", "") for t in topics]
-        relay_nodes = self.cluster_into_relays(titles)
-
-        # Phase 2: for each topic, search top-K relevant existing nodes + decide placement
-        placements = {}
-        for t in topics:
-            title = t.get("title", "")
-            desc = t.get("desc", "")
+        exact_placements: dict[str, dict] = {}
+        pending_topics: list[dict] = []
+        for topic in topics:
+            title = str(topic.get("title") or "").strip()
+            desc = str(topic.get("desc") or "").strip()
             if not title:
                 continue
-            # Find top-5 most relevant existing topics by title similarity
-            relevant = self._search_relevant_nodes(title, limit=5)
-            if not relevant:
-                relevant = self._topics[:5]  # fallback: first 5 topics
-            relevant_json = json.dumps(
-                [[n.topic_id, n.title,
-                  [p for p in n.parent_ids if p in {x.topic_id for x in self._topics}],
-                  [x.topic_id for x in self._topics if n.topic_id in x.prerequisite_ids]]
-                 for n in relevant],
-                ensure_ascii=False,
-            )
-            pos = self._locate_one(title, desc, relevant_json)
-            if pos:
-                placements[title] = pos
+            title_lower = title.lower()
+            exact_match = next((node for node in self._topics if node.title.strip().lower() == title_lower), None)
+            if exact_match is not None:
+                exact_placements[title] = {
+                    "exists": True,
+                    "node_id": exact_match.topic_id,
+                    "parent_ids": list(exact_match.parent_ids),
+                    "successor_ids": self._compute_successors(exact_match.topic_id),
+                    "reason": "exact title match, no LLM needed",
+                }
+            else:
+                pending_topics.append({"title": title, "desc": desc})
 
-        return {"placements": placements, "relay_nodes": relay_nodes}
+        if not pending_topics:
+            return {"placements": exact_placements, "relay_nodes": []}
+
+        graph_snapshot = self._build_graph_snapshot()
+        candidates_json = json.dumps(pending_topics, ensure_ascii=False)
+        system = (
+            "你是知识图谱批量定位助手。\n"
+            "现有图中每个节点格式为 [id, title, [前置节点id], [后继节点id]]。\n"
+            "你需要一次性处理一批新知识点。对于每个新知识点，判断：\n"
+            "1. 是否与现有节点语义重复（exists=true, node_id=已有节点id）\n"
+            "2. 如果不是重复，应挂到哪些父节点下（parent_ids）\n"
+            "3. 哪些已有节点应把它作为前置（successor_ids）\n"
+            "4. 如有必要，可返回 relay_nodes 或树组织建议，但它们不应阻塞主路径\n"
+            f"学科: {self._subject}\n"
+            "返回 JSON："
+            "{\"relay_nodes\":[{\"title\":string,\"children\":[string]}],"
+            "\"placements\":{\"标题\":{\"exists\":bool,\"node_id\":string|null,\"parent_ids\":[string],\"successor_ids\":[string],\"reason\":string}}}"
+        )
+        user = (
+            f"现有图结构:\n{graph_snapshot}\n\n"
+            f"待定位的新知识点列表:\n{candidates_json}\n"
+        )
+        print(
+            f"\n[GRAPH_BATCH_LOCATE_PROMPT]\n{pformat({'system_prompt': system, 'user_prompt': user, 'candidate_count': len(pending_topics)})}\n",
+            flush=True,
+        )
+        try:
+            started_at = time.time()
+            response = self._create_completion(
+                model=self._model_name,
+                messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+                temperature=0.3,
+                timeout=120.0,
+            )
+            raw = (response.choices[0].message.content or "").strip()
+            print(f"\n[GRAPH_BATCH_LOCATE_RESPONSE]\n{raw}\n", flush=True)
+            print(f"\n[GRAPH_BATCH_LOCATE_DURATION_SEC]\n{time.time() - started_at:.2f}\n", flush=True)
+            raw = re.sub(r"^```(?:json)?\s*", "", raw)
+            raw = re.sub(r"\s*```$", "", raw)
+            data = json.loads(raw)
+            placements = data.get("placements") if isinstance(data, dict) else {}
+            relay_nodes = data.get("relay_nodes") if isinstance(data, dict) else []
+            if not isinstance(placements, dict):
+                placements = {}
+            normalized_placements: dict[str, dict] = {}
+            for title, placement in placements.items():
+                if not isinstance(title, str) or not isinstance(placement, dict):
+                    continue
+                normalized_placements[title] = {
+                    "exists": bool(placement.get("exists", False)),
+                    "node_id": placement.get("node_id"),
+                    "parent_ids": placement.get("parent_ids") or [],
+                    "successor_ids": placement.get("successor_ids") or [],
+                    "reason": str(placement.get("reason", "")),
+                }
+            normalized_placements.update(exact_placements)
+            relay_payload = _normalize_relay_nodes(relay_nodes) if isinstance(relay_nodes, list) else []
+            return {"placements": normalized_placements, "relay_nodes": relay_payload}
+        except Exception:
+            return {"placements": exact_placements, "relay_nodes": []}
 
     def _search_relevant_nodes(self, title: str, limit: int = 5) -> list["TopicNode"]:
         """Find most relevant existing topics by title substring overlap."""
@@ -146,7 +218,7 @@ class GraphLocator:
         )
         user = f"标题列表:\n{titles_json}"
         try:
-            response = self._client.chat.completions.create(
+            response = self._create_completion(
                 model=self._model_name,
                 messages=[{"role":"system","content":system},{"role":"user","content":user}],
                 temperature=0.3, timeout=60.0,
@@ -176,7 +248,7 @@ class GraphLocator:
             f"新概念: {title}\n描述: {desc[:500]}"
         )
         try:
-            response = self._client.chat.completions.create(
+            response = self._create_completion(
                 model=self._model_name,
                 messages=[{"role":"system","content":system},{"role":"user","content":user}],
                 temperature=0.3, timeout=30.0,
@@ -212,7 +284,7 @@ class GraphLocator:
             "请审核并返回结果。"
         )
         try:
-            response = self._client.chat.completions.create(
+            response = self._create_completion(
                 model=self._model_name,
                 messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
                 temperature=0.2, timeout=60.0,

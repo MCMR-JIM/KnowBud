@@ -58,6 +58,7 @@ from src.api.schemas import (
     TurnResponse,
 )
 from src.services.document_ingestion import ingest_document_resource
+from src.services.llm_gateway import call_llm_json
 from src.api.settings_routes import router as settings_router
 from src.skills.llm_tutor_skill import LLMNotConfiguredError
 
@@ -261,6 +262,17 @@ def get_backend() -> "SessionBackend":
 
 _ingestion_stages: dict[str, str] = {}
 _cancelled_resources: set[str] = set()
+_pipeline_stages: dict[str, str] = {}
+
+PIPELINE_STAGE_LABELS: dict[str, str] = {
+    "parsing": "文档解析中",
+    "candidate_extraction": "候选结构生成中",
+    "review": "审核中",
+    "compiling": "编译入图中",
+    "completed": "已完成",
+    "failed": "解析失败",
+    "unknown": "等待中",
+}
 
 
 def _cancel_ingestion(resource_id: str) -> None:
@@ -277,6 +289,14 @@ def _set_ingestion_stage(resource_id: str, stage: str) -> None:
 
 def _get_ingestion_stage(resource_id: str) -> str:
     return _ingestion_stages.get(resource_id, "")
+
+
+def _set_pipeline_stage(resource_id: str, stage: str) -> None:
+    _pipeline_stages[resource_id] = stage
+
+
+def _get_pipeline_stage(resource_id: str) -> str:
+    return _pipeline_stages.get(resource_id, "unknown")
 
 
 @lru_cache(maxsize=1)
@@ -695,6 +715,7 @@ def _run_resource_ingestion(
 
     logger.info("ingestion started", extra={"resource_id": resource_id, "media_type": record.media_type})
     _set_ingestion_stage(resource_id, "文档解析中")
+    _set_pipeline_stage(resource_id, "parsing")
 
     try:
         from src.services.session_backend import _load_llm_config as _reload_config
@@ -704,6 +725,7 @@ def _run_resource_ingestion(
     except LLMNotConfiguredError as exc:
         error = str(exc)
         _set_ingestion_stage(resource_id, "解析失败")
+        _set_pipeline_stage(resource_id, "failed")
         failure_segments = [_build_ingestion_failed_segment(resource_id, record.media_type, error)]
         try:
             backend.replace_resource_segments(resource_id, failure_segments)
@@ -715,13 +737,23 @@ def _run_resource_ingestion(
     def progress(event: str, payload: dict[str, object]) -> None:
         if event == "document_parsed":
             _set_ingestion_stage(resource_id, "知识点总结中")
+            _set_pipeline_stage(resource_id, "candidate_extraction")
             logger.info("document parsed chunk count", extra=payload)
         elif event == "chunk_classification_progress":
-            _set_ingestion_stage(resource_id, "知识图谱插入中")
+            stage_text = str(payload.get("stage", ""))
+            if "candidate_graph_built" in stage_text:
+                _set_ingestion_stage(resource_id, "候选结构已生成")
+                _set_pipeline_stage(resource_id, "review")
+            elif "extracted" in stage_text:
+                _set_ingestion_stage(resource_id, "候选节点提取中")
+                _set_pipeline_stage(resource_id, "candidate_extraction")
+            else:
+                _set_ingestion_stage(resource_id, "知识图谱插入中")
             logger.info("chunk classification progress", extra=payload)
 
     if _is_cancelled(resource_id):
         logger.info("ingestion cancelled before start", extra={"resource_id": resource_id})
+        _set_pipeline_stage(resource_id, "failed")
         backend.update_resource_ingestion(resource_id, status="failed", error="cancelled")
         return
 
@@ -737,9 +769,16 @@ def _run_resource_ingestion(
             enable_graph_search=not bool(subject),
             enable_new_pipeline=bool(subject),
         )
-        _set_ingestion_stage(resource_id, "")
         _cancelled_resources.discard(resource_id)
-        backend.update_resource_ingestion(resource_id, status="completed", error=None)
+        # Only mark completed if ingestion didn't already fail internally
+        current = backend.get_resource(resource_id)
+        if current is not None and current.ingestion_status == "failed":
+            logger.warning("ingestion internal failure preserved", extra={"resource_id": resource_id})
+            return
+        else:
+            _set_ingestion_stage(resource_id, "")
+            _set_pipeline_stage(resource_id, "completed")
+            backend.update_resource_ingestion(resource_id, status="completed", error=None)
         updated = backend.get_resource(resource_id)
         if updated is None:
             logger.warning("ingestion completed but resource missing", extra={"resource_id": resource_id})
@@ -766,6 +805,7 @@ def _run_resource_ingestion(
         error = str(exc)[:500]
         _cancelled_resources.discard(resource_id)
         _set_ingestion_stage(resource_id, "解析失败")
+        _set_pipeline_stage(resource_id, "failed")
         failure_segments = [_build_ingestion_failed_segment(resource_id, record.media_type, error)]
         try:
             backend.replace_resource_segments(resource_id, failure_segments)
@@ -800,19 +840,25 @@ def get_resource_ingestion_status(resource_id: str) -> ResourceIngestionStatusRe
 
     counts = _resource_segment_counts(record)
     stage = _get_ingestion_stage(resource_id)
+    pipeline_stage = _get_pipeline_stage(resource_id)
     if record.ingestion_status == "completed":
         stage = "已完成"
+        if pipeline_stage == "unknown":
+            pipeline_stage = "completed"
     elif record.ingestion_status == "failed" and not stage:
         stage = "解析失败"
+        pipeline_stage = "failed"
     return ResourceIngestionStatusResponse(
         resource_id=resource_id,
         status=record.ingestion_status,
         stage=stage,
+        pipeline_stage=pipeline_stage,
         segment_count=counts["segment_count"],
         classified_count=counts["classified_count"],
         proposed_count=counts["proposed_count"],
         unclassified_count=counts["unclassified_count"],
         parse_failed_count=counts["parse_failed_count"],
+        candidate_node_count=int(getattr(record, "extracted_node_count", 0) or 0),
         error=record.ingestion_error,
     )
 
@@ -907,7 +953,13 @@ def list_resources() -> list[dict[str, Any]]:
             "topic_id": record.topic_id,
             "ingestion_status": record.ingestion_status,
             "ingestion_stage": record.ingestion_status == "completed" and "已完成" or _get_ingestion_stage(record.resource_id),
+            "pipeline_stage": _get_pipeline_stage(record.resource_id),
+            "extracted_node_count": int(getattr(record, "extracted_node_count", 0) or 0),
+            "candidate_node_count": int(getattr(record, "extracted_node_count", 0) or 0),
+            "candidate_graph_json": getattr(record, "candidate_graph_json", None),
+            "review_graph_json": getattr(record, "review_graph_json", None),
             "segment_count": counts["segment_count"],
+            "ingestion_error": record.ingestion_error,
             "error": record.ingestion_error,
         })
     return result
@@ -942,14 +994,12 @@ def _classify_subject_by_title(backend: "SessionBackend", title: str) -> tuple[s
                 raise LLMNotConfiguredError(
                     "LLM not configured: please configure remote API or local model in Settings"
                 )
-            response = client.chat.completions.create(
-                model=backend.llm_skill.model_name,
+            data = call_llm_json(
+                backend,
                 messages=[{"role":"system","content":system},{"role":"user","content":user}],
                 temperature=0.1, timeout=15.0,
             )
-            raw = response.choices[0].message.content.strip()
-            data = _json.loads(raw)
-            lang = data.get("language_id")
+            lang = data.get("language_id") if isinstance(data, dict) else None
             if lang in {"english", "chinese", "japanese", "korean"}:
                 return "language", lang
         except Exception:
@@ -1491,10 +1541,14 @@ def _mastery_info(topic_id: str, mastery) -> MasteryInfo:
 
 def _resource_info(record, topic_title: str) -> ResourceInfo:
     stage = _get_ingestion_stage(record.resource_id)
+    pipeline_stage = _get_pipeline_stage(record.resource_id)
     if record.ingestion_status == "completed":
         stage = "已完成"
+        if pipeline_stage == "unknown":
+            pipeline_stage = "completed"
     elif record.ingestion_status == "failed" and not stage:
         stage = "解析失败"
+        pipeline_stage = "failed"
     return ResourceInfo(
         resource_id=record.resource_id,
         topic_id=record.topic_id,
@@ -1510,6 +1564,11 @@ def _resource_info(record, topic_title: str) -> ResourceInfo:
         ingestion_status=record.ingestion_status,
         ingestion_stage=stage,
         ingestion_error=record.ingestion_error,
+        extracted_node_count=int(getattr(record, "extracted_node_count", 0) or 0),
+        pipeline_stage=pipeline_stage,
+        candidate_node_count=int(getattr(record, "extracted_node_count", 0) or 0),
+        candidate_graph_json=getattr(record, "candidate_graph_json", None),
+        review_graph_json=getattr(record, "review_graph_json", None),
         segments=[_resource_segment_info(segment) for segment in record.segments],
     )
 

@@ -69,7 +69,8 @@ export const ResourceAPI = {
     if (payload.subject) formData.append('subject', payload.subject);
     if (payload.languageId) formData.append('language_id', payload.languageId);
     return apiClient.post('/resource/upload', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 10 * 60 * 1000,
     });
   },
   getTopicResources: (topicId: string) => apiClient.get(`/resource/topics/${topicId}`),

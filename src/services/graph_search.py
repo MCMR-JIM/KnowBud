@@ -11,6 +11,7 @@ from src.services.resource_graph_curation import (
     _language_id_from_tags,
     _subject_from_tags,
 )
+from src.services.llm_gateway import call_llm, call_llm_json, extract_message_text
 
 if TYPE_CHECKING:
     from src.core.models import TopicNode
@@ -61,8 +62,8 @@ class GraphSearchAgent:
             messages = self._build_initial_messages(chunk_text, chunk_context)
             tools = self._build_tools_spec()
             for _ in range(self.MAX_TOOL_ROUNDS):
-                response = self._client.chat.completions.create(
-                    model=self._model_name,
+                response = call_llm(
+                    self,
                     messages=messages,
                     tools=tools,
                     tool_choice="auto",
@@ -206,8 +207,8 @@ class GraphSearchAgent:
             '输出: [{"keyword": "...", "priority": "direct|recommended"}]'
         )
         try:
-            response = self._client.chat.completions.create(
-                model=self._model_name,
+            data = call_llm_json(
+                self,
                 messages=[
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
@@ -215,10 +216,6 @@ class GraphSearchAgent:
                 temperature=0.3,
                 timeout=60.0,
             )
-            raw = (response.choices[0].message.content or "").strip()
-            raw = re.sub(r"^```(?:json)?\s*", "", raw)
-            raw = re.sub(r"\s*```$", "", raw)
-            data = json.loads(raw)
             if isinstance(data, list):
                 return [
                     item for item in data
@@ -443,8 +440,8 @@ class GraphSearchAgent:
             '只返回 JSON 数组: [{"topic_id":"...","relevance":"high|medium|low"}]'
         )
         try:
-            response = self._client.chat.completions.create(
-                model=self._model_name,
+            data = call_llm_json(
+                self,
                 messages=[
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
@@ -452,8 +449,13 @@ class GraphSearchAgent:
                 temperature=0.3,
                 timeout=60.0,
             )
-            raw = (response.choices[0].message.content or "").strip()
-            return self._parse_rerank_result(raw)
+            if not isinstance(data, list):
+                return []
+            return [
+                item
+                for item in data
+                if isinstance(item, dict) and "topic_id" in item and "relevance" in item
+            ]
         except Exception:
             return []
 

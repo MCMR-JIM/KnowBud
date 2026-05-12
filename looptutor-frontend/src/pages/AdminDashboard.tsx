@@ -52,6 +52,9 @@ type TopicResource = {
   ingestion_status: string;
   ingestion_stage?: string;
   ingestion_error?: string;
+  extracted_node_count?: number;
+  pipeline_stage?: string;
+  candidate_node_count?: number;
 };
 
 type SubjectModalMode = 'create' | 'edit';
@@ -74,6 +77,7 @@ type LearningDashboardData = {
 type GraphCanvasNode = SimulationNodeDatum & {
   id: string;
   title: string;
+  edgeCount: number;
   radius: number;
   collisionRadius: number;
   topic: GraphTopic;
@@ -89,6 +93,14 @@ type GraphCanvasLink = SimulationLinkDatum<GraphCanvasNode> & {
   source: string | GraphCanvasNode;
   target: string | GraphCanvasNode;
   type: 'parent' | 'prereq' | 'both';
+};
+
+const getNodeEdgeCount = (topic: GraphTopic, allTopics: GraphTopic[]) => {
+  const parentCount = topic.parent_ids?.length || 0;
+  const prerequisiteCount = topic.prerequisite_ids?.length || 0;
+  const childCount = allTopics.filter((candidate) => (candidate.parent_ids || []).includes(topic.topic_id)).length;
+  const successorCount = allTopics.filter((candidate) => (candidate.prerequisite_ids || []).includes(topic.topic_id)).length;
+  return parentCount + prerequisiteCount + childCount + successorCount;
 };
 
 const getSubjectTag = (tags: string[] = []) => {
@@ -157,14 +169,15 @@ function KnowledgeGraphCanvas({
       const canvasSpan = Math.min(width, height);
       const nodes: GraphCanvasNode[] = topics.map((topic, index) => {
         const isRoot = (topic.tags || []).includes('facet:root');
-        const edgeWeight = (topic.parent_ids?.length || 0) + (topic.prerequisite_ids?.length || 0);
+        const edgeWeight = getNodeEdgeCount(topic, topics);
         const angle = index * Math.PI * (3 - Math.sqrt(5));
         const initialRadius = canvasSpan * (0.14 + 0.38 * Math.sqrt((index + 1) / topicCount));
         const labelWidth = Math.min(172, Math.max(64, topic.title.length * 11 + 22));
-        const nodeRadius = isRoot ? 19 : 8 + edgeWeight * 1.6;
+        const nodeRadius = isRoot ? 22 : 10 + edgeWeight * 1.8;
         return {
           id: topic.topic_id,
           title: topic.title,
+          edgeCount: edgeWeight,
           topic,
           isRoot,
           isMistake: mistakeSet.has(topic.topic_id),
@@ -197,12 +210,16 @@ function KnowledgeGraphCanvas({
       const links = Array.from(linkByPair.values());
 
       const outgoing = new Map<string, string[]>();
+      const parentOutgoing = new Map<string, string[]>();
       const incomingCount = new Map(nodes.map((node) => [node.id, 0]));
       for (const link of links) {
         const sourceId = String(link.source);
         const targetId = String(link.target);
         outgoing.set(sourceId, [...(outgoing.get(sourceId) || []), targetId]);
-        incomingCount.set(targetId, (incomingCount.get(targetId) || 0) + 1);
+        if (link.type === 'parent' || link.type === 'both') {
+          parentOutgoing.set(sourceId, [...(parentOutgoing.get(sourceId) || []), targetId]);
+          incomingCount.set(targetId, (incomingCount.get(targetId) || 0) + 1);
+        }
       }
 
       const rootNodes = nodes.filter((node) => node.isRoot);
@@ -221,7 +238,7 @@ function KnowledgeGraphCanvas({
       while (queue.length > 0) {
         const sourceId = queue.shift() || '';
         const nextDepth = (depthById.get(sourceId) || 0) + 1;
-        for (const targetId of outgoing.get(sourceId) || []) {
+        for (const targetId of parentOutgoing.get(sourceId) || []) {
           const currentDepth = depthById.get(targetId);
           if (currentDepth !== undefined && currentDepth >= nextDepth) continue;
           depthById.set(targetId, nextDepth);
@@ -276,10 +293,10 @@ function KnowledgeGraphCanvas({
           }
 
           const count = ordered.length;
-          const localSpread = uniqueRootIds.length === 1 ? Math.PI * 2 : Math.min(Math.PI * 0.92, (Math.PI * 2 / uniqueRootIds.length) * 0.78);
+          const localSpread = uniqueRootIds.length === 1 ? Math.min(Math.PI * 1.3, Math.max(Math.PI * 0.28, count * 0.16)) : Math.min(Math.PI * 0.92, (Math.PI * 2 / uniqueRootIds.length) * 0.78);
           const baseAngle = uniqueRootIds.length === 1 ? -Math.PI / 2 + depth * 0.42 : rootCenter.angle;
           const angle = count === 1 ? baseAngle : baseAngle - localSpread / 2 + (localSpread * (index + 0.5)) / count;
-          const ring = (uniqueRootIds.length === 1 ? singleRootStep : multiRootStep) * depth;
+          const ring = (uniqueRootIds.length === 1 ? singleRootStep * 1.12 : multiRootStep) * depth;
           node.targetX = rootCenter.x + Math.cos(angle) * ring;
           node.targetY = rootCenter.y + Math.sin(angle) * ring;
         }
@@ -295,7 +312,7 @@ function KnowledgeGraphCanvas({
         }).strength(0.18))
         .force('charge', d3.forceManyBody<GraphCanvasNode>().strength((node) => {
           if (node.isRoot) return -720;
-          const w = (node.topic.parent_ids?.length || 0) + (node.topic.prerequisite_ids?.length || 0);
+          const w = node.edgeCount;
           return -(380 + w * 80);
         }).distanceMin(48).distanceMax(Math.max(width, height) * 0.85))
         .force('center', d3.forceCenter(width / 2, height / 2))
@@ -360,8 +377,18 @@ function KnowledgeGraphCanvas({
               ? 'rgba(251, 191, 36, 0.68)'
               : 'rgba(125, 211, 252, 0.58)';
           ctx.beginPath();
-          ctx.moveTo(startX, startY);
-          ctx.lineTo(endX, endY);
+          if (link.type === 'prereq') {
+            const mx = (startX + endX) / 2;
+            const my = (startY + endY) / 2;
+            const nx = -uy;
+            const ny = ux;
+            const curve = Math.min(42, Math.max(16, length * 0.12));
+            ctx.moveTo(startX, startY);
+            ctx.quadraticCurveTo(mx + nx * curve, my + ny * curve, endX, endY);
+          } else {
+            ctx.moveTo(startX, startY);
+            ctx.lineTo(endX, endY);
+          }
           if (link.type === 'parent') {
             ctx.setLineDash([6, 6]);
             ctx.strokeStyle = linkColor;
@@ -407,7 +434,7 @@ function KnowledgeGraphCanvas({
           ctx.font = `800 ${node.isRoot ? 11 : 10}px Nunito, Segoe UI, sans-serif`;
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
-          ctx.fillText(node.isRoot ? 'ROOT' : String((node.topic.parent_ids?.length || 0) + (node.topic.prerequisite_ids?.length || 0)), x, y);
+          ctx.fillText(node.isRoot ? 'ROOT' : String(node.edgeCount), x, y);
 
           const label = node.title.length > 18 ? `${node.title.slice(0, 18)}...` : node.title;
           ctx.font = '700 11px Nunito, Segoe UI, sans-serif';
@@ -717,8 +744,6 @@ export default function AdminDashboard() {
     }
   });
   const [knowledgePoints, setKnowledgePoints] = useState<{ id: number, topicId: string, name: string, lastReview: string, resourceCount: number }[]>([]);
-  const [graphProposals, setGraphProposals] = useState<any[]>([]);
-  const [reviewingProposalId, setReviewingProposalId] = useState('');
   const [engineLogs, setEngineLogs] = useState<string[]>([]);
   const [dataLoading, setDataLoading] = useState(false);
   // 知识图谱状态
@@ -763,7 +788,6 @@ export default function AdminDashboard() {
         
         // 【新增】保存完整的知识图谱节点，供右侧渲染使用
         setGraphNodes(graphData.topics || []);
-        setGraphProposals((graphData.proposals || []).filter((proposal: any) => proposal.trigger === 'resource_ingest' && proposal.status === 'proposed'));
       }
 
       try {
@@ -1044,20 +1068,23 @@ export default function AdminDashboard() {
       if (graphRes.ok) {
         const graphData = await graphRes.json();
         const newTopics: GraphTopic[] = graphData.topics || [];
-        const oldIds = graphNodes.map(t => t.topic_id).sort().join(',');
-        const newIds = newTopics.map(t => t.topic_id).sort().join(',');
-        if (oldIds !== newIds) {
+        const serialize = (items: GraphTopic[]) => items
+          .map((topic) => `${topic.topic_id}|${topic.title}|${(topic.parent_ids || []).slice().sort().join(',')}|${(topic.prerequisite_ids || []).slice().sort().join(',')}`)
+          .sort()
+          .join('||');
+        const oldSignature = serialize(graphNodes);
+        const newSignature = serialize(newTopics);
+        if (oldSignature !== newSignature) {
           setGraphNodes(newTopics);
         }
-        setGraphProposals((graphData.proposals || []).filter((proposal: any) => proposal.trigger === 'resource_ingest' && proposal.status === 'proposed'));
       }
     } catch { /* ignore */ }
   };
 
-  const uploadPendingFilesForSubject = async (topicId: string, tags: string[]) => {
+  const uploadPendingFilesForSubject = async (topicId: string, tags: string[], files: File[] = pendingResourceFiles) => {
     const subject = getSubjectTag(tags);
     const languageId = getSubjectLanguageId(tags);
-    for (const file of pendingResourceFiles) {
+    for (const file of files) {
       const res = await ResourceAPI.uploadResource({
         file,
         topicId,
@@ -1071,6 +1098,20 @@ export default function AdminDashboard() {
     }
   };
 
+  const startSubjectUploads = (topicId: string, tags: string[], files: File[]) => {
+    if (files.length === 0) return;
+    void uploadPendingFilesForSubject(topicId, tags, files)
+      .then(() => fetchAllData())
+      .catch(async (error) => {
+        console.error('学科资源上传失败', error);
+        if (isLlmNotConfiguredError(error)) {
+          await appDialog.alert(LLM_NOT_CONFIGURED_MESSAGE, { title: '模型未配置', intent: 'warning' });
+          return;
+        }
+        await appDialog.alert('学科已创建，但资源上传失败，请稍后重试', { title: '资源上传失败', intent: 'error' });
+      });
+  };
+
   const handleSaveSubject = async () => {
     const normalizedName = subjectName.trim();
     if (!normalizedName) {
@@ -1082,6 +1123,7 @@ export default function AdminDashboard() {
     try {
       let topicId = editingSubject?.topic_id || '';
       let tags = editingSubject?.tags || [];
+      const filesToUpload = [...pendingResourceFiles];
 
       if (subjectModalMode === 'create') {
         const res = await KnowledgeAPI.createSubject(normalizedName);
@@ -1095,10 +1137,10 @@ export default function AdminDashboard() {
 
       if (!topicId) throw new Error('学科创建失败');
 
-      await uploadPendingFilesForSubject(topicId, tags);
       setSubjectModalOpen(false);
       resetSubjectModal();
-      await fetchAllData();
+      void fetchAllData();
+      startSubjectUploads(topicId, tags, filesToUpload);
     } catch (error) {
       console.error('保存学科失败', error);
       if (isLlmNotConfiguredError(error)) {
@@ -1148,37 +1190,48 @@ export default function AdminDashboard() {
     [graphNodes],
   );
 
-  const countNodesUnderRoot = (rootId: string) => {
-    const childIds = new Set<string>();
-
-    const walk = (parentId: string) => {
-      for (const topic of graphNodes) {
-        if (!(topic.parent_ids || []).includes(parentId) && !(topic.prerequisite_ids || []).includes(parentId)) continue;
-        if (childIds.has(topic.topic_id)) continue;
-        childIds.add(topic.topic_id);
-        walk(topic.topic_id);
-      }
-    };
-    walk(rootId);
-    return childIds.size;
-  };
-  const countChildTopics = (rootId: string) => {
-    const children = graphNodes.filter((t) => (t.parent_ids || []).includes(rootId));
-    return children.length;
-  };
-
-  const getIngestionLabel = (rootId: string): string | null => {
+  const getExtractedNodeCount = (rootId: string) => {
+    let total = 0;
     for (const res of allResources) {
       if (res.topic_id !== rootId) continue;
-      const err = res.ingestion_error || '';
+      total += res.candidate_node_count ?? res.extracted_node_count ?? 0;
+    }
+    return total;
+  };
+
+  const getSubjectResourceCount = (rootId: string) => {
+    return allResources.filter((res) => res.topic_id === rootId).length;
+  };
+
+  const getIngestionStageLabel = (rootId: string): string | null => {
+    for (const res of allResources) {
+      if (res.topic_id !== rootId) continue;
       if (res.ingestion_status !== 'processing') continue;
-      const extrMatch = err.match(/^extracted:(\d+)$/);
-      if (extrMatch) return `待入图 ${extrMatch[1]}`;
-      const insMatch = err.match(/^inserting:(\d+)\/(\d+)$/);
-      if (insMatch) return `入图中 ${insMatch[1]}/${insMatch[2]}`;
-      return '处理中';
+      return res.ingestion_stage || '处理中';
     }
     return null;
+  };
+
+  const getPipelineStageLabel = (rootId: string): string | null => {
+    for (const res of allResources) {
+      if (res.topic_id !== rootId) continue;
+      if (res.ingestion_status === 'processing') {
+        return pipelineStageToLabel(res.pipeline_stage);
+      }
+    }
+    return null;
+  };
+
+  const pipelineStageToLabel = (stage?: string): string => {
+    switch (stage) {
+      case 'parsing': return '文档解析中';
+      case 'candidate_extraction': return '候选结构生成中';
+      case 'review': return '审核中';
+      case 'compiling': return '编译入图中';
+      case 'completed': return '已完成';
+      case 'failed': return '解析失败';
+      default: return '等待中';
+    }
   };
 
   const collectSubgraphIds = (rootId: string, topics: GraphTopic[]) => {
@@ -1229,41 +1282,6 @@ export default function AdminDashboard() {
       await appDialog.alert("无法连接后端服务", { title: '连接失败', intent: 'error' });
     } finally {
       setIsLoading(false);
-    }
-  };
-
-  const handleApproveProposal = async (proposal: any) => {
-    setReviewingProposalId(proposal.proposal_id);
-    try {
-      await KnowledgeAPI.approveProposal(proposal.proposal_id, {
-        title: proposal.title,
-        summary: proposal.summary,
-        parent_node_ids: proposal.parent_node_ids,
-        edge_type: proposal.edge_type,
-        tags: ['parent-approved'],
-        reason: '家长确认 AI 建议节点',
-      });
-      await appDialog.alert('已新增知识节点，并回挂相关资源片段', { title: '审核完成', intent: 'success' });
-      await fetchAllData();
-    } catch (error) {
-      console.error(error);
-      await appDialog.alert('审核失败，请检查后端服务', { title: '审核失败', intent: 'error' });
-    } finally {
-      setReviewingProposalId('');
-    }
-  };
-
-  const handleRejectProposal = async (proposal: any) => {
-    setReviewingProposalId(proposal.proposal_id);
-    try {
-      await KnowledgeAPI.rejectProposal(proposal.proposal_id, '家长拒绝该新增节点');
-      await appDialog.alert('已拒绝该知识节点建议', { title: '已拒绝', intent: 'info' });
-      await fetchAllData();
-    } catch (error) {
-      console.error(error);
-      await appDialog.alert('拒绝失败，请检查后端服务', { title: '拒绝失败', intent: 'error' });
-    } finally {
-      setReviewingProposalId('');
     }
   };
 
@@ -1361,8 +1379,8 @@ export default function AdminDashboard() {
 
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 {subjectRoots.map((root) => {
-                  const nodeCount = countNodesUnderRoot(root.topic_id);
-                  const childCount = countChildTopics(root.topic_id);
+                  const nodeCount = getExtractedNodeCount(root.topic_id);
+                  const resourceCount = getSubjectResourceCount(root.topic_id);
                   const isDeleting = deletingSubjectId === root.topic_id;
                   return (
                     <div
@@ -1409,9 +1427,9 @@ export default function AdminDashboard() {
                           <p>知识节点</p>
                         </div>
                         <div className="rounded-2xl border border-white/80 bg-white/70 p-2">
-                          <p className="font-bold text-gray-700">{childCount}</p>
-                          <p>提取节点</p>
-                          {(() => { const label = getIngestionLabel(root.topic_id); return label ? <p className="mt-0.5 text-[10px] text-amber-600 font-semibold">{label}</p> : null; })()}
+                          <p className="font-bold text-gray-700">{resourceCount}</p>
+                          <p>资源数量</p>
+                          {(() => { const label = getPipelineStageLabel(root.topic_id); return label ? <p className="mt-0.5 text-[10px] text-amber-600 font-semibold">{label}</p> : getIngestionStageLabel(root.topic_id) ? <p className="mt-0.5 text-[10px] text-amber-600 font-semibold">{getIngestionStageLabel(root.topic_id)}</p> : null; })()}
                         </div>
                         <div className="rounded-2xl border border-white/80 bg-white/70 p-2">
                           <p className="font-bold text-gray-700">{getSubjectTag(root.tags || []) || 'custom'}</p>
@@ -1477,9 +1495,10 @@ export default function AdminDashboard() {
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-bold text-gray-800">{res.resource_name}</p>
                         <p className="text-xs text-gray-400">
-                          {isProcessing && res.ingestion_stage ? `${res.ingestion_stage} · ` : ''}
+                          {isProcessing && (res.pipeline_stage ? `${pipelineStageToLabel(res.pipeline_stage)} · ` : res.ingestion_stage ? `${res.ingestion_stage} · ` : '')}
                           {res.media_type && `${res.media_type} `}
                           {res.size_bytes && ` ${(res.size_bytes / 1024 / 1024).toFixed(2)} MB`}
+                          {res.extracted_node_count !== undefined && res.extracted_node_count > 0 && ` · 候选节点 ${res.extracted_node_count}`}
                         </p>
                       </div>
                       <span className={[
@@ -1489,7 +1508,7 @@ export default function AdminDashboard() {
                         isFailed ? 'bg-red-100 text-red-700' :
                         'bg-gray-100 text-gray-500'
                       ].join(' ')}>
-                        {isProcessing ? (res.ingestion_stage || '解析中') : isCompleted ? '已完成' : isFailed ? '失败' : '等待'}
+                        {isProcessing ? pipelineStageToLabel(res.pipeline_stage || 'parsing') : isCompleted ? '已完成' : isFailed ? '失败' : '等待'}
                       </span>
                     </div>
                   )})}
@@ -1521,55 +1540,6 @@ export default function AdminDashboard() {
               </button>
             </div>
 
-            <div className="border-t border-gray-100 pt-6">
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <h2 className="text-lg font-semibold text-gray-700">AI 建议新增知识点</h2>
-                  <p className="text-xs text-gray-400 mt-1">来自资源切片入库，确认后会加入知识图谱并回挂相关资源。</p>
-                </div>
-                <span className="text-xs px-3 py-1 rounded-full bg-blue-50 text-blue-600 border border-blue-100">
-                  {graphProposals.length} 条待审核
-                </span>
-              </div>
-
-              {graphProposals.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 p-4 text-sm text-gray-400 text-center">
-                  暂无待审核的知识节点建议。
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {graphProposals.slice(0, 5).map((proposal) => (
-                    <div key={proposal.proposal_id} className="rounded-xl border border-blue-100 bg-white p-4 shadow-sm">
-                      <div className="flex justify-between gap-4">
-                        <div className="min-w-0">
-                          <p className="text-sm font-bold text-gray-800">{proposal.title}</p>
-                          <p className="text-xs text-gray-500 mt-1 line-clamp-2">{proposal.summary || proposal.reason}</p>
-                          <p className="text-xs text-blue-500 mt-2">
-                            父节点：{(proposal.parent_node_ids || []).join(', ') || '待系统补齐'} · 关系：{proposal.edge_type}
-                          </p>
-                        </div>
-                        <div className="flex flex-col gap-2 shrink-0">
-                          <button
-                            onClick={() => handleApproveProposal(proposal)}
-                            disabled={reviewingProposalId === proposal.proposal_id}
-                            className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-bold hover:bg-blue-700 disabled:opacity-50"
-                          >
-                            确认新增
-                          </button>
-                          <button
-                            onClick={() => handleRejectProposal(proposal)}
-                            disabled={reviewingProposalId === proposal.proposal_id}
-                            className="px-3 py-1.5 rounded-lg bg-gray-100 text-gray-600 text-xs font-medium hover:bg-gray-200 disabled:opacity-50"
-                          >
-                            拒绝
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
           </div>
         )}
 

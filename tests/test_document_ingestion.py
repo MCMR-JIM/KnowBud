@@ -34,8 +34,14 @@ def _build_backend(tmp_path: Path) -> SessionBackend:
 
 
 def _make_client(monkeypatch, tmp_path: Path, backend: SessionBackend) -> TestClient:
+    import src.services.session_backend as session_backend_module
+
     data_root = tmp_path / "data"
     monkeypatch.setenv("DATA_ROOT", str(data_root))
+    backend.llm_skill.client.api_key = getattr(backend.llm_skill.client, "api_key", None) or "test_key"
+    monkeypatch.setattr(backend.llm_skill, "ensure_configured", lambda: None)
+    monkeypatch.setattr(backend.llm_skill, "reconfigure", lambda **_: None)
+    monkeypatch.setattr(session_backend_module, "_load_llm_config", lambda: ("test_key", "https://api.test", "test-model"))
     if hasattr(backend.llm_skill, "client") and hasattr(backend.llm_skill.client, "chat"):
         monkeypatch.setattr(
             backend.llm_skill.client.chat.completions,
@@ -134,16 +140,15 @@ def test_upload_txt_ingests_segments_and_records_events(monkeypatch, tmp_path: P
 
     resource_id = resource["resource_id"]
     status_payload = _wait_for_ingestion(client, resource_id)
-    assert status_payload == {
-        "resource_id": resource_id,
-        "status": "completed",
-        "segment_count": 2,
-        "classified_count": 1,
-        "proposed_count": 1,
-        "unclassified_count": 0,
-        "parse_failed_count": 0,
-        "error": None,
-    }
+    assert status_payload["resource_id"] == resource_id
+    assert status_payload["status"] == "completed"
+    assert status_payload["stage"] == "已完成"
+    assert status_payload["segment_count"] == 2
+    assert status_payload["classified_count"] == 1
+    assert status_payload["proposed_count"] == 1
+    assert status_payload["unclassified_count"] == 0
+    assert status_payload["parse_failed_count"] == 0
+    assert status_payload["error"] is None
 
     segments_response = client.get(f"/v1/resource/{resource_id}/segments")
     assert segments_response.status_code == 200
@@ -338,6 +343,33 @@ def test_get_topic_resources_includes_resources_matched_by_segment_topic(monkeyp
     assert resource["ingestion_error"] is None
     assert any(segment["topic_id"] == "math_01" for segment in resource["segments"])
     assert any(segment["topic_id"] == "demo_01" for segment in resource["segments"])
+
+
+def test_list_resources_exposes_ingestion_error_field(monkeypatch, tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    client = _make_client(monkeypatch, tmp_path, backend)
+
+    source_path = tmp_path / "broken.txt"
+    source_path.write_text("broken", encoding="utf-8")
+    backend.create_resource_record(
+        topic_id="demo_01",
+        resource_name="Broken",
+        category="learn",
+        media_type="txt",
+        mime_type="text/plain",
+        original_filename="broken.txt",
+        stored_path=str(source_path),
+        size_bytes=source_path.stat().st_size,
+        ingestion_status="processing",
+        ingestion_error="extracted:3",
+    )
+
+    response = client.get("/v1/resources")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload[0]["ingestion_error"] == "extracted:3"
+    assert payload[0]["error"] == "extracted:3"
 
 
 def test_get_topic_teaching_cues_returns_guiding_questions(monkeypatch, tmp_path: Path) -> None:
@@ -585,16 +617,16 @@ def test_upload_returns_processing_before_background_ingestion_finishes(monkeypa
 
     status_response = client.get(f"/v1/resource/{resource_id}/ingestion-status")
     assert status_response.status_code == 200
-    assert status_response.json() == {
-        "resource_id": resource_id,
-        "status": "processing",
-        "segment_count": 0,
-        "classified_count": 0,
-        "proposed_count": 0,
-        "unclassified_count": 0,
-        "parse_failed_count": 0,
-        "error": None,
-    }
+    status_payload = status_response.json()
+    assert status_payload["resource_id"] == resource_id
+    assert status_payload["status"] == "processing"
+    assert status_payload["stage"] == "知识点总结中"
+    assert status_payload["segment_count"] == 0
+    assert status_payload["classified_count"] == 0
+    assert status_payload["proposed_count"] == 0
+    assert status_payload["unclassified_count"] == 0
+    assert status_payload["parse_failed_count"] == 0
+    assert status_payload["error"] is None
 
     unblock.set()
     completed = _wait_for_ingestion(client, resource_id)
@@ -759,6 +791,97 @@ def _llm_resp(data):
     return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
 
 
+def test_llm_call_disables_deepseek_thinking() -> None:
+    from types import SimpleNamespace
+    from src.services.document_ingestion import _llm_call
+
+    captured: dict[str, object] = {}
+
+    def fake_create(**kwargs):
+        captured.update(kwargs)
+        return _llm_resp({"ok": True})
+
+    backend = SimpleNamespace(
+        llm_skill=SimpleNamespace(
+            base_url="https://api.deepseek.com",
+            ensure_configured=lambda: None,
+            client=SimpleNamespace(
+                chat=SimpleNamespace(
+                    completions=SimpleNamespace(create=fake_create),
+                )
+            ),
+        )
+    )
+
+    _llm_call(backend, model="deepseek-chat", messages=[])
+
+    assert captured["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+def test_parse_with_mineru_uses_subprocess_worker(tmp_path: Path, monkeypatch) -> None:
+    import json
+    import src.services.document_ingestion as di
+    from types import SimpleNamespace
+
+    source_path = tmp_path / "sample.pdf"
+    source_path.write_bytes(b"fake-pdf")
+
+    def fake_run(command, **kwargs):
+        output_index = command.index("--output") + 1
+        output_path = Path(command[output_index])
+        output_path.write_text(
+            json.dumps({
+                "markdown": "# 标题\n内容",
+                "content_list": [],
+                "images_dir": None,
+                "error": None,
+            }, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(di.subprocess, "run", fake_run)
+
+    result = di._parse_with_mineru(str(source_path), lang="ch")
+
+    assert result["error"] is None
+    assert result["markdown"] == "# 标题\n内容"
+
+
+def test_attach_block_source_texts_uses_neighboring_markers() -> None:
+    from src.services.document_ingestion import _attach_block_source_texts
+
+    scan_text = "Lesson 1\nPresent Continuous details\nLesson 2\nSimple Past details"
+    blocks = [
+        {"label": "Lesson 1", "summary": "Present Continuous", "start_marker": "Lesson 1", "end_marker": "Lesson 2"},
+        {"label": "Lesson 2", "summary": "Simple Past", "start_marker": "Lesson 2", "end_marker": ""},
+    ]
+
+    enriched = _attach_block_source_texts(scan_text, blocks)
+
+    assert "Present Continuous details" in enriched[0]["source_text"]
+    assert "Simple Past details" in enriched[1]["source_text"]
+
+
+def test_get_model_context_limit_prefers_settings_catalog(monkeypatch, tmp_path: Path) -> None:
+    import json
+    from src.services.document_ingestion import _get_model_context_limit
+
+    settings_dir = tmp_path / "data"
+    settings_dir.mkdir(parents=True, exist_ok=True)
+    settings_path = settings_dir / "llm_settings.json"
+    settings_path.write_text(json.dumps({
+        "mode": "remote",
+        "remote": {"model": "deepseek-chat"},
+        "llm_models": {
+            "deepseek-chat": {"context_limit": "262144", "label": "DeepSeek Chat"},
+        },
+    }), encoding="utf-8")
+    monkeypatch.setenv("DATA_ROOT", str(settings_dir))
+
+    assert _get_model_context_limit(None) == 262144
+
+
 def test_structured_ingestion_basic(tmp_path: Path) -> None:
     backend = _build_backend(tmp_path)
     backend.llm_skill.client.api_key = "test_key"
@@ -815,6 +938,77 @@ def test_structured_ingestion_basic(tmp_path: Path) -> None:
         lesson_segments = [s for s in segments if s.label == "chunk"]
         assert len(lesson_segments) >= 1
         assert call_count[0] >= 2  # scan + topic extraction occurred
+    finally:
+        backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
+
+
+def test_structured_ingestion_streams_candidates_without_tree_stage(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    backend.llm_skill.client.api_key = "test_key"
+
+    state = backend.load_app_state(include_history=False)
+    state.curriculum.topics.append(
+        TopicNode(topic_id="eng_root", title="英语", difficulty=1, prerequisite_ids=[], tags=["subject:language", "facet:root", "language:english"]),
+    )
+    backend.save_app_state(state)
+
+    def mock_create(**kwargs):
+        system = kwargs["messages"][0]["content"]
+        user = kwargs["messages"][1]["content"]
+        if "文档全文" in user:
+            return _llm_resp({
+                "doc_type": "textbook",
+                "blocks": [
+                    {"label": "Lesson 1", "type": "topic_area", "summary": "Present Continuous lesson", "start_marker": "Lesson 1", "end_marker": "Lesson 2"},
+                    {"label": "Lesson 2", "type": "topic_area", "summary": "Simple Past lesson", "start_marker": "Lesson 2", "end_marker": ""},
+                ],
+            })
+        if "请提取知识点" in user and "Lesson 1" in user:
+            return _llm_resp([{"title": "Present Continuous", "desc": "现在进行时"}])
+        if "请提取知识点" in user and "Lesson 2" in user:
+            return _llm_resp([{"title": "Simple Past", "desc": "一般过去时"}])
+        raise AssertionError(f"unexpected llm call: {system} | {user[:120]}")
+
+    backend.llm_skill._orig = backend.llm_skill.client.chat.completions.create
+    backend.llm_skill.client.chat.completions.create = mock_create
+
+    try:
+        source_path = tmp_path / "sample.txt"
+        source_path.write_text(
+            "Lesson 1\nPresent Continuous: He is running.\n\nLesson 2\nSimple Past: He walked to school.",
+            encoding="utf-8",
+        )
+        record = backend.create_resource_record(
+            topic_id="eng_root",
+            resource_name="English",
+            category="learn",
+            media_type="txt",
+            mime_type="text/plain",
+            original_filename="sample.txt",
+            stored_path=str(source_path),
+            size_bytes=source_path.stat().st_size,
+        )
+        topics = backend.load_app_state(include_history=False).curriculum.topics
+        segments = ingest_document_resource(
+            backend=backend,
+            record=record,
+            topics=topics,
+            subject="language",
+            language_id="english",
+            enable_new_pipeline=True,
+        )
+
+        assert len(segments) >= 2
+
+        graph_json = backend.get_resource_candidate_graph(record.resource_id)
+        assert graph_json is not None
+        import json as _json
+        graph_data = _json.loads(graph_json)
+        assert len(graph_data["candidate_nodes"]) == 2
+
+        titles = {n["title"] for n in graph_data["candidate_nodes"]}
+        assert "Present Continuous" in titles
+        assert "Simple Past" in titles
     finally:
         backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
 
@@ -1138,3 +1332,368 @@ def test_batch_tree_relay_parents(tmp_path: Path) -> None:
     grammar_topic = next((t for t in state2.curriculum.topics if t.topic_id == grammar_tid), None)
     assert grammar_topic is not None
     assert "root" in grammar_topic.parent_ids
+
+
+# ── Candidate Graph Tests ──
+
+
+def test_candidate_graph_generated_from_structured_ingestion(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    backend.llm_skill.client.api_key = "test_key"
+
+    state = backend.load_app_state(include_history=False)
+    state.curriculum.topics.append(
+        TopicNode(topic_id="eng_root", title="英语", difficulty=1, prerequisite_ids=[],
+                  tags=["subject:language", "facet:root", "language:english"]),
+    )
+    backend.save_app_state(state)
+
+    call_count = [0]
+
+    def mock_create(**kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return _llm_resp({
+                "doc_type": "textbook",
+                "blocks": [
+                    {"label": "Lesson 1", "type": "topic_area",
+                     "summary": "Present Continuous lesson",
+                     "start_marker": "Lesson 1", "end_marker": ""},
+                ]
+            })
+        if call_count[0] == 2:
+            return _llm_resp([{"title": "Present Continuous", "desc": "现在进行时"}])
+        return _llm_resp({})
+
+    backend.llm_skill._orig = backend.llm_skill.client.chat.completions.create
+    backend.llm_skill.client.chat.completions.create = mock_create
+
+    try:
+        source_path = tmp_path / "sample.txt"
+        source_path.write_text("Lesson 1\nPresent Continuous: He is running.", encoding="utf-8")
+        record = backend.create_resource_record(
+            topic_id="eng_root", resource_name="English", category="learn",
+            media_type="txt", mime_type="text/plain", original_filename="sample.txt",
+            stored_path=str(source_path), size_bytes=source_path.stat().st_size,
+        )
+        topics = backend.load_app_state(include_history=False).curriculum.topics
+        segments = ingest_document_resource(
+            backend=backend, record=record, topics=topics,
+            subject="language", language_id="english",
+            enable_new_pipeline=True,
+        )
+
+        lesson_segments = [s for s in segments if s.label == "chunk"]
+        assert len(lesson_segments) >= 1
+        assert call_count[0] >= 2
+
+        graph_json = backend.get_resource_candidate_graph(record.resource_id)
+        assert graph_json is not None
+
+        import json as _json
+        graph_data = _json.loads(graph_json)
+        assert graph_data["schema_version"] == "2.0"
+        assert graph_data["document"]["resource_id"] == record.resource_id
+        assert graph_data["document"]["subject"] == "language"
+        assert len(graph_data["candidate_nodes"]) >= 1
+        assert graph_data["candidate_nodes"][0]["title"] == "Present Continuous"
+        assert graph_data["candidate_nodes"][0]["temp_id"].startswith("cand_")
+        assert graph_data["candidate_nodes"][0]["node_kind"] == "knowledge"
+        assert len(graph_data["source_segments"]) >= 1
+        assert graph_data["diagnostics"]["pipeline"] == "structured_scan"
+        assert graph_data["diagnostics"]["node_count"] >= 1
+
+        extracted_node_count = graph_data["diagnostics"]["node_count"]
+        resource = backend.get_resource(record.resource_id)
+        assert resource is not None
+        assert resource.extracted_node_count == extracted_node_count
+    finally:
+        backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
+
+
+def test_candidate_graph_node_count_matches_extraction(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    backend.llm_skill.client.api_key = "test_key"
+
+    call_count = [0]
+
+    def mock_create(**kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return _llm_resp({
+                "doc_type": "textbook",
+                "blocks": [
+                    {"label": "Lesson 1", "type": "topic_area",
+                     "summary": "Grammar lesson", "start_marker": "Lesson 1", "end_marker": "Lesson 2"},
+                    {"label": "Lesson 2", "type": "topic_area",
+                     "summary": "Vocabulary lesson", "start_marker": "Lesson 2", "end_marker": ""},
+                ]
+            })
+        if call_count[0] == 2:
+            return _llm_resp([{"title": "Present Continuous", "desc": "现在进行时"}])
+        if call_count[0] == 3:
+            return _llm_resp([{"title": "Weather Vocabulary", "desc": "天气词汇"}])
+        return _llm_resp({})
+
+    backend.llm_skill._orig = backend.llm_skill.client.chat.completions.create
+    backend.llm_skill.client.chat.completions.create = mock_create
+
+    try:
+        source_path = tmp_path / "sample.txt"
+        source_path.write_text(
+            "Lesson 1\nPresent Continuous: He is running.\n\nLesson 2\nWeather: sunny, rainy.",
+            encoding="utf-8",
+        )
+        record = backend.create_resource_record(
+            topic_id="demo_01", resource_name="English", category="learn",
+            media_type="txt", mime_type="text/plain", original_filename="sample.txt",
+            stored_path=str(source_path), size_bytes=source_path.stat().st_size,
+        )
+        topics = backend.load_app_state(include_history=False).curriculum.topics
+        ingest_document_resource(
+            backend=backend, record=record, topics=topics,
+            subject="language", language_id="english",
+            enable_new_pipeline=True,
+        )
+
+        graph_json = backend.get_resource_candidate_graph(record.resource_id)
+        import json as _json
+        graph_data = _json.loads(graph_json)
+        assert len(graph_data["candidate_nodes"]) == 2
+        titles = {n["title"] for n in graph_data["candidate_nodes"]}
+        assert "Present Continuous" in titles
+        assert "Weather Vocabulary" in titles
+        assert graph_data["diagnostics"]["node_count"] == 2
+        assert graph_data["diagnostics"]["edge_count"] >= 0
+        assert graph_data["diagnostics"]["segment_count"] == 2
+
+        resource = backend.get_resource(record.resource_id)
+        assert resource is not None
+        assert resource.extracted_node_count == 2
+        assert resource.candidate_graph_json is not None
+    finally:
+        backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
+
+
+def test_candidate_graph_contains_relays_and_edges(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    backend.llm_skill.client.api_key = "test_key"
+
+    call_count = [0]
+
+    def mock_create(**kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return _llm_resp({
+                "doc_type": "textbook",
+                "blocks": [
+                    {"label": "Unit 5", "type": "topic_area",
+                     "summary": "Grammar unit", "start_marker": "Unit 5", "end_marker": ""},
+                ]
+            })
+        if call_count[0] == 2:
+            return _llm_resp([
+                {"title": "Present Continuous", "desc": "现在进行时"},
+                {"title": "Simple Past", "desc": "一般过去时"},
+                {"title": "Modal Verbs", "desc": "情态动词"},
+            ])
+        return _llm_resp({})
+
+    backend.llm_skill._orig = backend.llm_skill.client.chat.completions.create
+    backend.llm_skill.client.chat.completions.create = mock_create
+
+    try:
+        source_path = tmp_path / "sample.txt"
+        source_path.write_text(
+            "Unit 5\nPresent Continuous: be+ing.\nSimple Past: verb+ed.\nModal Verbs: can, must.",
+            encoding="utf-8",
+        )
+        record = backend.create_resource_record(
+            topic_id="demo_01", resource_name="Grammar", category="learn",
+            media_type="txt", mime_type="text/plain", original_filename="sample.txt",
+            stored_path=str(source_path), size_bytes=source_path.stat().st_size,
+        )
+        topics = backend.load_app_state(include_history=False).curriculum.topics
+        ingest_document_resource(
+            backend=backend, record=record, topics=topics,
+            subject="language", language_id="english",
+            enable_new_pipeline=True,
+        )
+
+        graph_json = backend.get_resource_candidate_graph(record.resource_id)
+        import json as _json
+        graph_data = _json.loads(graph_json)
+
+        assert len(graph_data["candidate_nodes"]) == 3
+        assert graph_data["diagnostics"]["node_count"] == 3
+
+        relays = graph_data["candidate_relays"]
+        assert len(relays) == 1
+        assert relays[0]["node_kind"] == "relay"
+        assert relays[0]["relay_id"].startswith("relay_")
+        assert len(relays[0]["children_temp_ids"]) == 3
+
+        edges = graph_data["candidate_edges"]
+        assert len(edges) == 3
+        for edge in edges:
+            assert edge["edge_type"] == "part_of"
+            assert edge["edge_kind"] == "parent_child"
+            assert edge["target_temp_id"] == relays[0]["relay_id"]
+            assert edge["source_temp_id"].startswith("cand_")
+
+        for edge in edges:
+            assert edge["edge_id"].startswith("edge_")
+            assert edge["review_status"] == "pending"
+
+        for node in graph_data["candidate_nodes"]:
+            assert node["review_status"] == "pending"
+            assert node["source_segment_refs"][0]["segment_id"] is not None
+    finally:
+        backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
+
+
+def test_candidate_graph_retrieved_from_resource_record(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    backend.llm_skill.client.api_key = "test_key"
+
+    call_count = [0]
+
+    def mock_create(**kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return _llm_resp({
+                "doc_type": "textbook",
+                "blocks": [
+                    {"label": "Lesson 1", "type": "topic_area",
+                     "summary": "Grammar", "start_marker": "Lesson 1", "end_marker": ""},
+                ]
+            })
+        if call_count[0] == 2:
+            return _llm_resp([{"title": "Noun Types", "desc": "名词分类"}])
+        return _llm_resp({})
+
+    backend.llm_skill._orig = backend.llm_skill.client.chat.completions.create
+    backend.llm_skill.client.chat.completions.create = mock_create
+
+    try:
+        source_path = tmp_path / "sample.txt"
+        source_path.write_text("Lesson 1\nNouns: common, proper.", encoding="utf-8")
+        record = backend.create_resource_record(
+            topic_id="demo_01", resource_name="Grammar", category="learn",
+            media_type="txt", mime_type="text/plain", original_filename="sample.txt",
+            stored_path=str(source_path), size_bytes=source_path.stat().st_size,
+        )
+        topics = backend.load_app_state(include_history=False).curriculum.topics
+        ingest_document_resource(
+            backend=backend, record=record, topics=topics,
+            subject="language", language_id="english",
+            enable_new_pipeline=True,
+        )
+
+        resource = backend.get_resource(record.resource_id)
+        assert resource is not None
+        assert resource.candidate_graph_json is not None
+
+        import json as _json
+        graph = _json.loads(resource.candidate_graph_json)
+        assert graph["document"]["resource_id"] == record.resource_id
+        assert graph["document"]["original_filename"] == "sample.txt"
+        assert graph["document"]["media_type"] == "txt"
+        assert len(graph["candidate_nodes"]) == 1
+        assert graph["candidate_nodes"][0]["temp_id"] == "cand_001"
+        assert graph["candidate_nodes"][0]["title"] == "Noun Types"
+
+        graph2_json = backend.get_resource_candidate_graph(record.resource_id)
+        graph2 = _json.loads(graph2_json)
+        assert graph2 == graph
+    finally:
+        backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
+
+
+def test_candidate_graph_empty_when_no_topics(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    backend.llm_skill.client.api_key = "test_key"
+
+    call_count = [0]
+
+    def mock_create(**kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return _llm_resp({
+                "doc_type": "workbook",
+                "blocks": [
+                    {"label": "Exercise", "type": "exercise_only",
+                     "summary": "Fill in blanks", "start_marker": "Exercise", "end_marker": ""},
+                ]
+            })
+        return _llm_resp({})
+
+    backend.llm_skill._orig = backend.llm_skill.client.chat.completions.create
+    backend.llm_skill.client.chat.completions.create = mock_create
+
+    try:
+        source_path = tmp_path / "sample.txt"
+        source_path.write_text("Exercise:\n1. He ___ running.\n2. She ___ reading.", encoding="utf-8")
+        record = backend.create_resource_record(
+            topic_id="demo_01", resource_name="Exercise", category="learn",
+            media_type="txt", mime_type="text/plain", original_filename="sample.txt",
+            stored_path=str(source_path), size_bytes=source_path.stat().st_size,
+        )
+        topics = backend.load_app_state(include_history=False).curriculum.topics
+        segments = ingest_document_resource(
+            backend=backend, record=record, topics=topics,
+            subject="language", language_id="english",
+            enable_new_pipeline=True,
+        )
+
+        graph_json = backend.get_resource_candidate_graph(record.resource_id)
+        import json as _json
+        graph_data = _json.loads(graph_json)
+        assert len(graph_data["candidate_nodes"]) == 0
+        assert graph_data["diagnostics"]["node_count"] == 0
+
+        assert any(s.label == "chunk" for s in segments)
+    finally:
+        backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig
+
+
+def test_candidate_graph_skip_wordlist_and_appendix(tmp_path: Path) -> None:
+    backend = _build_backend(tmp_path)
+    backend.llm_skill.client.api_key = "test_key"
+
+    def mock_create(**kwargs):
+        return _llm_resp({
+            "doc_type": "textbook",
+            "blocks": [
+                {"label": "Words", "type": "word_list",
+                 "summary": "vocab", "start_marker": "Words", "end_marker": ""},
+                {"label": "Index", "type": "appendix",
+                 "summary": "index", "start_marker": "Index", "end_marker": ""},
+            ]
+        })
+
+    backend.llm_skill._orig = backend.llm_skill.client.chat.completions.create
+    backend.llm_skill.client.chat.completions.create = mock_create
+
+    try:
+        source_path = tmp_path / "sample.txt"
+        source_path.write_text("Word List: apple\nIndex: page 100", encoding="utf-8")
+        record = backend.create_resource_record(
+            topic_id="demo_01", resource_name="Words", category="learn",
+            media_type="txt", mime_type="text/plain", original_filename="sample.txt",
+            stored_path=str(source_path), size_bytes=source_path.stat().st_size,
+        )
+        topics = backend.load_app_state(include_history=False).curriculum.topics
+        ingest_document_resource(
+            backend=backend, record=record, topics=topics,
+            subject="language", language_id="english",
+            enable_new_pipeline=True,
+        )
+
+        graph_json = backend.get_resource_candidate_graph(record.resource_id)
+        import json as _json
+        graph_data = _json.loads(graph_json)
+        assert len(graph_data["candidate_nodes"]) == 0
+        assert graph_data["document"]["doc_type"] == "textbook"
+    finally:
+        backend.llm_skill.client.chat.completions.create = backend.llm_skill._orig

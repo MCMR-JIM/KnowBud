@@ -188,6 +188,11 @@ class ResourceInfo(BaseModel):
     ingestion_status: str = "pending"
     ingestion_stage: Optional[str] = None
     ingestion_error: Optional[str] = None
+    extracted_node_count: int = 0
+    pipeline_stage: str = "unknown"
+    candidate_node_count: int = 0
+    candidate_graph_json: Optional[str] = None
+    review_graph_json: Optional[str] = None
     segments: list[ResourceSegmentInfo] = Field(default_factory=list)
 
 
@@ -234,11 +239,13 @@ class ResourceIngestionStatusResponse(BaseModel):
     resource_id: str
     status: str
     stage: str = ""
+    pipeline_stage: str = "unknown"
     segment_count: int = 0
     classified_count: int = 0
     proposed_count: int = 0
     unclassified_count: int = 0
     parse_failed_count: int = 0
+    candidate_node_count: int = 0
     error: Optional[str] = None
 
 

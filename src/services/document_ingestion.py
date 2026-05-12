@@ -1,15 +1,33 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import re
+import subprocess
+import sys
+import tempfile
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
-from src.core.models import ResourceRecord, ResourceSegment, TopicNode
+from src.core.models import (
+    CandidateEdge,
+    CandidateGraph,
+    CandidateNode,
+    CandidateRelay,
+    DocumentMeta,
+    ExtractionDiagnostics,
+    ResourceRecord,
+    ResourceSegment,
+    SourceRef,
+    SourceSegment,
+    TopicNode,
+)
 from src.agent.models import EdgeType
+from src.services.llm_gateway import create_chat_completion, extract_message_text
 from src.services.resource_graph_curation import (
     _subject_from_tags,
     create_resource_level_proposals,
@@ -25,16 +43,52 @@ MAX_CHARS = 1800
 CLASSIFIED_THRESHOLD = 0.45
 CLASSIFY_BATCH_SIZE = 1
 
+logger = logging.getLogger(__name__)
+
 
 def _llm_call(backend, **kwargs):
-    if "deepseek" in (getattr(backend.llm_skill, "base_url", "") or ""):
-        kwargs.setdefault("extra_body", {"thinking": {"type": "disabled"}})
-    return _llm_call(backend, **kwargs)
+    backend.llm_skill.ensure_configured()
+    client = getattr(backend.llm_skill, "client", None)
+    if client is None:
+        raise RuntimeError("LLM client is not configured")
+    return create_chat_completion(
+        client=client,
+        base_url=getattr(backend.llm_skill, "base_url", ""),
+        model_name=kwargs.get("model") or getattr(backend.llm_skill, "model_name", ""),
+        messages=kwargs.get("messages") or [],
+        temperature=float(kwargs.get("temperature", 0.3)),
+        timeout=float(kwargs.get("timeout", 60.0)),
+        extra_body=kwargs.get("extra_body"),
+    )
+
+
+def _console_log(title: str, payload: object) -> None:
+    try:
+        if isinstance(payload, (dict, list)):
+            rendered = json.dumps(payload, ensure_ascii=False, indent=2)
+        else:
+            rendered = str(payload)
+    except Exception:
+        rendered = str(payload)
+    print(f"\n[{title}]\n{rendered}\n", flush=True)
 
 
 def _strip_images(text: str) -> str:
     import re as _re
     return _re.sub(r"!\[.*?\]\(.*?\)", "", text).strip()
+
+
+def _safe_progress(
+    progress_callback: Callable[[str, dict[str, object]], None] | None,
+    event: str,
+    payload: dict[str, object],
+) -> None:
+    if progress_callback is None:
+        return
+    try:
+        progress_callback(event, payload)
+    except Exception:
+        logger.exception("progress callback failed", extra={"event": event})
 
 
 def _estimate_tokens(text: str) -> int:
@@ -63,8 +117,10 @@ def ingest_document_resource(
     import os as _os
 
     units: list[TextUnit] | None = None
+    parser = _select_parser(record)
+    allow_mineru = _os.getenv("MINERU_ENABLED", "true").strip().lower() != "false"
 
-    if _os.getenv("MINERU_ENABLED", "true").strip().lower() != "false":
+    if allow_mineru:
         _mineru_result: dict | None = None
         try:
             _lang = _mineru_lang_code(language_id)
@@ -72,15 +128,14 @@ def ingest_document_resource(
             if _mineru_result["error"] is None:
                 units = _convert_mineru_to_textunits(_mineru_result)
             else:
-                print(f"\n⚠ MinerU 解析失败，回退到原有解析器: {_mineru_result['error']}\n")
+                logger.warning("MinerU parse failed, falling back: %s", _mineru_result["error"])
         except Exception as _mineru_exc:
-            print(f"\n⚠ MinerU 调用异常，回退到原有解析器: {_mineru_exc}\n")
+            logger.warning("MinerU invocation failed, falling back: %s", str(_mineru_exc))
         finally:
             if _mineru_result and _mineru_result.get("images_dir"):
                 _cleanup_mineru_temp(_mineru_result["images_dir"])
 
     if units is None:
-        parser = _select_parser(record)
         if parser is None:
             segments = [
                 _status_segment(
@@ -110,15 +165,15 @@ def ingest_document_resource(
             return segments
 
     chunks = _units_to_chunks(units)
-    if progress_callback is not None:
-        progress_callback(
-            "document_parsed",
-            {
-                "resource_id": record.resource_id,
-                "chunk_count": len(chunks),
-                "media_type": record.media_type,
-            },
-        )
+    _safe_progress(
+        progress_callback,
+        "document_parsed",
+        {
+            "resource_id": record.resource_id,
+            "chunk_count": len(chunks),
+            "media_type": record.media_type,
+        },
+    )
     if not chunks:
         segments = [
             _status_segment(
@@ -136,6 +191,7 @@ def ingest_document_resource(
         segments = _run_structured_ingestion(
             backend=backend, record=record, chunks=chunks,
             topics=topics, subject=subject, language_id=language_id,
+            progress_callback=progress_callback,
         )
         backend.replace_resource_segments(record.resource_id, segments)
         return segments
@@ -360,21 +416,55 @@ def _parse_with_mineru(file_path: str, lang: str = "ch") -> dict:
         "images_dir": None,
         "error": None,
     }
-    try:
-        path = Path(file_path)
-        suffix = path.suffix.lower()
-        file_bytes = path.read_bytes()
+    worker = Path(__file__).resolve().parents[2] / "scripts" / "mineru_worker.py"
+    with tempfile.NamedTemporaryFile(prefix="mineru_result_", suffix=".json", delete=False) as handle:
+        output_path = Path(handle.name)
 
-        if suffix == ".docx":
-            result = _mineru_parse_office(file_bytes, suffix)
-        elif suffix == ".pptx":
-            result = _mineru_parse_office(file_bytes, suffix)
-        elif suffix in (".pdf", ".png", ".jpg", ".jpeg"):
-            result = _mineru_parse_pdf_image(file_bytes, suffix, path.stem, lang)
+    try:
+        project_root = Path(__file__).resolve().parents[2]
+        env = os.environ.copy()
+        existing_python_path = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = str(project_root) if not existing_python_path else f"{project_root}{os.pathsep}{existing_python_path}"
+        command = [
+            sys.executable,
+            str(worker),
+            "--file",
+            file_path,
+            "--lang",
+            lang,
+            "--output",
+            str(output_path),
+        ]
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=1800,
+            check=False,
+            cwd=str(project_root),
+            env=env,
+        )
+        if completed.returncode != 0:
+            stderr = (completed.stderr or completed.stdout or "").strip()
+            result["error"] = stderr[:500] or f"MinerU worker failed with exit code {completed.returncode}"
+            return result
+        if not output_path.exists():
+            result["error"] = "MinerU worker did not produce output"
+            return result
+        payload = json.loads(output_path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict):
+            result.update(payload)
         else:
-            result["error"] = f"Unsupported file type: {suffix}"
+            result["error"] = "MinerU worker returned invalid payload"
+    except subprocess.TimeoutExpired:
+        result["error"] = "MinerU parsing timed out"
     except Exception as exc:
         result["error"] = str(exc)
+    finally:
+        try:
+            output_path.unlink(missing_ok=True)
+        except Exception:
+            pass
     return result
 
 
@@ -1245,18 +1335,19 @@ def _run_structured_ingestion(
     topics: list[TopicNode],
     subject: str,
     language_id: str | None = None,
+    progress_callback: Callable[[str, dict[str, object]], None] | None = None,
 ) -> list[ResourceSegment]:
     from src.services.resource_graph_curation import SUBJECT_PROFILES, _proposal_tags
-    from src.services.graph_locator import GraphLocator
 
     profile = SUBJECT_PROFILES.get(subject, SUBJECT_PROFILES["general"])
 
-    # ── Phase 1: one LLM call to scan full document ──
     from src.api.app import _is_cancelled as _ingestion_cancelled
     if _ingestion_cancelled(record.resource_id):
         return [_status_segment(resource_id=record.resource_id, sequence_index=0, status="parse_failed", reason="cancelled", locator={"kind": "structured"})]
+
     scan = _fast_document_scan(backend, chunks, subject, language_id)
     blocks = scan.get("blocks") or []
+    full_text = "\n\n".join(c.text for c in chunks if c.text)
     _topic_block_types = {
         "topic_area", "grammar_point", "vocabulary_theme", "pronunciation",
         "reading", "functional_expression",
@@ -1264,6 +1355,46 @@ def _run_structured_ingestion(
     }
     topic_blocks = [b for b in blocks if b.get("type") in _topic_block_types]
     exercise_blocks = [b for b in blocks if b.get("type") == "exercise_only"]
+
+    logger.info(
+        "structured scan summary",
+        extra={
+            "resource_id": record.resource_id,
+            "block_count": len(blocks),
+            "topic_block_count": len(topic_blocks),
+            "exercise_block_count": len(exercise_blocks),
+            "block_types": [str((b or {}).get("type") or "") for b in blocks[:50]],
+        },
+    )
+
+    if not topic_blocks and blocks:
+        fallback_blocks = [
+            b for b in blocks
+            if str((b or {}).get("type") or "") not in {"word_list", "appendix", "exercise_only"}
+        ]
+        if fallback_blocks:
+            topic_blocks = fallback_blocks
+            for block in topic_blocks:
+                block.setdefault("type", "topic_area")
+            logger.warning(
+                "no typed topic blocks from scan, using fallback blocks",
+                extra={"resource_id": record.resource_id, "fallback_block_count": len(topic_blocks)},
+            )
+
+    if not topic_blocks and full_text.strip():
+        topic_blocks = [{
+            "label": "document",
+            "summary": "full document fallback",
+            "type": "topic_area",
+            "start_marker": "",
+            "end_marker": "",
+            "source_text": full_text[:24000],
+            "_whole_document_fallback": True,
+        }]
+        logger.warning(
+            "scan returned no usable topic blocks, falling back to whole document extraction",
+            extra={"resource_id": record.resource_id, "text_length": len(full_text)},
+        )
 
     if not topic_blocks and not exercise_blocks:
         return [
@@ -1275,128 +1406,207 @@ def _run_structured_ingestion(
         ]
 
     topic_map = {t.title.strip(): t.topic_id for t in topics}
-    root_topic_id = _find_subject_root_id(topics, subject, language_id)
+    seen_titles: set[str] = set()
+    candidates: list[dict[str, object]] = []
+    block_workers = min(6, max(1, len(topic_blocks)))
 
-    # ── Phase 2: parallel topic extraction (no locator) ──
-    all_results: dict[str, list] = {}
     if topic_blocks and backend.llm_skill.client.api_key:
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            futures = {
+        with ThreadPoolExecutor(max_workers=block_workers) as executor:
+            futures = [
                 executor.submit(
-                    _process_topic_block, backend, block, chunks,
-                    subject, language_id, topic_map,
-                ): block
-                for block in topic_blocks
-            }
-            for future in as_completed(futures):
-                block = futures[future]
-                try:
-                    all_results[block.get("label", block.get("summary", ""))] = future.result()
-                except Exception:
-                    pass
-
-    # ── Collect, dedup, then locate + insert sequentially ──
-    all_topics: list[tuple[str, str]] = []
-    for results in all_results.values():
-        for t, d in results:
-            all_topics.append((t, d))
-
-    seen: set[str] = set()
-    deduped = [(t, d) for t, d in all_topics if not (t in seen or seen.add(t))]
-    _total = len(deduped)
-    backend.update_resource_ingestion(record.resource_id, status="processing", error=f"extracted:{_total}")
-
-    # Batch tree organization: create relay nodes before per-topic insertion
-    tree: list[dict] = []
-    if len(deduped) > 1 and backend.llm_skill.client.api_key:
-        try:
-            tree = _batch_organize_topic_tree(
-                backend=backend,
-                candidates=[t for t, d in deduped],
-                subject=subject,
-                language_id=language_id,
-            )
-            if tree:
-                _create_relay_and_attach(
-                    backend=backend, tree=tree,
-                    root_topic_id=root_topic_id, topic_map=topic_map,
-                    subject=subject, language_id=language_id,
-                    topics=topics,
+                    _process_topic_block,
+                    backend,
+                    block,
+                    chunks,
+                    subject,
+                    language_id,
+                    topic_map,
                 )
+                for block in topic_blocks
+            ]
+            for future in as_completed(futures):
+                if _ingestion_cancelled(record.resource_id):
+                    logger.info("structured ingestion cancelled during extraction", extra={"resource_id": record.resource_id})
+                    break
+                try:
+                    block_result = future.result()
+                except Exception:
+                    logger.exception("topic block extraction failed", extra={"resource_id": record.resource_id})
+                    continue
+
+                block = block_result["block"]
+                block_idx = -1
+                for _bi, _orig in enumerate(topic_blocks):
+                    if block is _orig:
+                        block_idx = _bi
+                        break
+                if block_idx < 0:
+                    continue
+                block["topic_candidates"] = [item["title"] for item in block_result["topics"]]
+                block["source_text"] = block_result["text"][:500]
+
+                for candidate in block_result["topics"]:
+                    title = candidate["title"]
+                    desc = candidate["desc"]
+                    title_key = _candidate_key(title)
+                    if title_key in seen_titles:
+                        _console_log("INGEST_QUEUE_DEDUP", {"skipped_title": title, "current_queue": sorted(seen_titles)})
+                        continue
+                    seen_titles.add(title_key)
+                    _console_log(
+                        "INGEST_QUEUE_STATE",
+                        {
+                            "enqueued_title": title,
+                            "current_queue": sorted(seen_titles),
+                        },
+                    )
+                    candidates.append({
+                        "title": title,
+                        "desc": desc,
+                        "whole_document_fallback": bool(block.get("_whole_document_fallback")),
+                        "block_idx": block_idx,
+                    })
+
+    _console_log("INGEST_CANDIDATE_BATCH", candidates)
+
+    candidate_graph = _build_candidate_graph_from_extraction(
+        record=record,
+        candidates=candidates,
+        topic_blocks=topic_blocks,
+        subject=subject,
+        language_id=language_id,
+        chunks=chunks,
+        backend=backend,
+        scan=scan,
+    )
+
+    try:
+        graph_json = candidate_graph.model_dump_json(indent=2, ensure_ascii=False)
+    except Exception:
+        graph_json = json.dumps(candidate_graph.model_dump(), ensure_ascii=False, default=str)
+    backend.store_resource_candidate_graph(record.resource_id, graph_json)
+
+    gross_node_count = len(candidate_graph.candidate_nodes)
+    backend.update_resource_ingestion(
+        record.resource_id,
+        status="processing",
+        error=None,
+        extracted_node_count=gross_node_count,
+    )
+    _safe_progress(
+        progress_callback,
+        "chunk_classification_progress",
+        {
+            "resource_id": record.resource_id,
+            "stage": "candidate_graph_built",
+            "extracted_node_count": gross_node_count,
+        },
+    )
+    logger.info(
+        "candidate graph built",
+        extra={
+            "resource_id": record.resource_id,
+            "gross_node_count": gross_node_count,
+            "relay_count": len(candidate_graph.candidate_relays),
+            "edge_count": len(candidate_graph.candidate_edges),
+        },
+    )
+
+    # ── Review + Compile pipeline ──
+    _set_pipeline_stage(progress_callback, record.resource_id, "review")
+    try:
+        from src.services.candidate_review import compile_review_result, review_candidate_graph
+
+        review_result = review_candidate_graph(
+            candidate_graph,
+            existing_topics=topics,
+            backend=backend,
+        )
+        _console_log("INGEST_REVIEW_RESULT", {
+            "naming_passed": review_result.naming.passed,
+            "logic_passed": review_result.logic.passed,
+            "compilable_nodes": len(review_result.compilable_nodes),
+            "dropped": review_result.dropped_temp_ids,
+            "merge_map": review_result.merge_map,
+        })
+
+        _set_pipeline_stage(progress_callback, record.resource_id, "compiling")
+        compile_result = compile_review_result(
+            backend,
+            review_result,
+            candidate_graph,
+            resource_id_override=record.resource_id,
+        )
+        _console_log("INGEST_COMPILE_RESULT", {
+            "created_topics": compile_result.created_topic_count,
+            "relays": compile_result.relay_count,
+            "knowledge": compile_result.knowledge_count,
+            "relinked_segments": compile_result.relinked_segment_count,
+            "errors": compile_result.errors,
+        })
+
+        # Write actual created knowledge-node count (exclude relays)
+        actual_node_count = compile_result.knowledge_count
+        if compile_result.errors:
+            logger.warning(
+                "compile completed with errors",
+                extra={
+                    "resource_id": record.resource_id,
+                    "created_topics": actual_node_count,
+                    "planned_nodes": len(review_result.compilable_nodes),
+                    "errors": compile_result.errors,
+                },
+            )
+        backend.update_resource_ingestion(
+            record.resource_id,
+            status="processing",
+            error=None,
+            extracted_node_count=actual_node_count,
+        )
+        _safe_progress(
+            progress_callback,
+            "chunk_classification_progress",
+            {
+                "resource_id": record.resource_id,
+                "stage": "compiled",
+                "extracted_node_count": actual_node_count,
+            },
+        )
+
+        # Store review result alongside candidate graph
+        try:
+            review_json = review_result.model_dump_json(indent=2, ensure_ascii=False)
+            backend.store_resource_review_graph(record.resource_id, review_json)
+            # Log summary to console for debugging; candidate_graph_json keeps the extraction output
+            _console_log("INGEST_REVIEW_FULL", {
+                "review_id": review_result.review_id,
+                "naming_passed": review_result.naming.passed,
+                "logic_passed": review_result.logic.passed,
+                "compilable_count": len(review_result.compilable_nodes),
+                "merge_map": review_result.merge_map,
+                "dropped": review_result.dropped_temp_ids,
+            })
         except Exception:
             pass
+    except Exception as exc:
+        error_msg = str(exc)[:200]
+        logger.exception("review/compile pipeline failed", extra={"resource_id": record.resource_id, "error": error_msg})
+        _safe_progress(
+            progress_callback,
+            "chunk_classification_progress",
+            {
+                "resource_id": record.resource_id,
+                "stage": "review_failed",
+                "error": error_msg,
+            },
+        )
+        # Propagate failure: mark ingestion as failed so outer layer and frontend see the error
+        try:
+            backend.update_resource_ingestion(record.resource_id, status="failed", error=f"review_compile: {error_msg}")
+        except Exception:
+            pass
+        _set_pipeline_stage(progress_callback, record.resource_id, "failed")
 
-    if deduped:
-        from src.services.graph_locator import GraphLocator
-
-        locator = GraphLocator(backend, subject, language_id)
-
-        # Step 1: cluster into relay groups (one LLM call)
-        all_titles = [t for t, d in deduped if t not in topic_map]
-        if len(all_titles) > 2:
-            relay_nodes = locator.cluster_into_relays(all_titles)
-            if relay_nodes:
-                _create_relay_and_attach(
-                    backend=backend, tree=relay_nodes,
-                    root_topic_id=root_topic_id, topic_map=topic_map,
-                    subject=subject, language_id=language_id,
-                    topics=topics,
-                )
-                locator.refresh()
-
-        # Step 2: per-topic locate
-        _inserted = 0
-        for title, desc in deduped:
-            if _ingestion_cancelled(record.resource_id):
-                print(f"[ingestion] cancelled mid-insert at {_inserted}/{_total}", flush=True)
-                break
-            if title in topic_map:
-                continue
-            pos = locator.locate(title, desc)
-            if pos.exists and pos.node_id:
-                topic_map[title] = pos.node_id
-                continue
-
-            parents = [pid for pid in pos.parent_ids if pid in topic_map.values()]
-            if not parents and root_topic_id:
-                parents = [root_topic_id]
-            try:
-                proposal = backend.create_graph_proposal_from_resource(
-                    title=title, summary=desc[:200],
-                    tags=_proposal_tags(
-                        subject=subject, facet=profile.default_facet,
-                        language_id=language_id,
-                    ),
-                    parent_node_ids=parents,
-                    prerequisite_node_ids=[],
-                    edge_type="part_of" if parents else "requires",
-                    reason=pos.reason[:80],
-                )
-                _st, _pr, tpc, _, _ = backend.approve_graph_proposal(
-                    proposal_id=proposal.proposal_id, difficulty=1,
-                )
-                topic_map[title] = tpc.topic_id
-                _inserted += 1
-                backend.update_resource_ingestion(record.resource_id, status="processing", error=f"inserting:{_inserted}/{_total}")
-                if successors:
-                    _pending_successors[tpc.topic_id] = successors
-                locator.refresh()
-            except Exception:
-                pass
-
-        # Batch-update: set prerequisite relationships from tree structure
-        if tree and topic_map:
-            _state = backend.load_app_state(include_history=False)
-            _prereq_map = _flatten_tree_prerequisites(tree, topic_map)
-            for _child_id, _prereq_ids in _prereq_map.items():
-                _child = next((t for t in _state.curriculum.topics if t.topic_id == _child_id), None)
-                if _child:
-                    for _pid in _prereq_ids:
-                        if _pid and _pid != _child_id and _pid not in _child.prerequisite_ids:
-                            _child.prerequisite_ids.append(_pid)
-            backend.save_app_state(_state)
-
-    # ── Process exercises ──
     if exercise_blocks:
         _process_exercise_blocks(
             backend=backend, blocks=exercise_blocks, chunks=chunks,
@@ -1405,10 +1615,21 @@ def _run_structured_ingestion(
             profile=profile, _proposal_tags=_proposal_tags,
         )
 
-    # ── Build segments ──
     return _build_segments_from_scan(
-        scan=scan, record=record, topics=topics, topic_map=topic_map,
+        scan=scan, record=record, topics=topics, topic_map=topic_map, chunks=chunks,
     )
+
+
+def _set_pipeline_stage(
+    progress_callback: Callable[[str, dict[str, object]], None] | None,
+    resource_id: str,
+    stage: str,
+) -> None:
+    try:
+        from src.api.app import _set_pipeline_stage as _api_set_pipeline_stage
+        _api_set_pipeline_stage(resource_id, stage)
+    except Exception:
+        pass
 
 
 # ── Phase 1 helpers ──
@@ -1425,10 +1646,30 @@ def _get_model_context_limit(backend: "SessionBackend") -> int:
         except Exception:
             pass
     mode = str(settings.get("mode") or "remote")
+    model_catalog = settings.get("llm_models") if isinstance(settings.get("llm_models"), dict) else {}
     if mode == "local":
         model_name = str((settings.get("local") or {}).get("model") or (settings.get("local") or {}).get("model_path") or "")
     else:
         model_name = str((settings.get("remote") or {}).get("model") or "")
+    if model_catalog:
+        model_key = str(model_name).strip()
+        for key, model_def in model_catalog.items():
+            if not isinstance(model_def, dict):
+                continue
+            candidates = {
+                str(key).strip(),
+                str(model_def.get("label") or "").strip(),
+                str(model_def.get("repo_id") or "").strip(),
+            }
+            if model_key not in candidates:
+                continue
+            raw_limit = model_def.get("context_limit")
+            try:
+                parsed_limit = int(str(raw_limit).strip())
+                if parsed_limit > 0:
+                    return parsed_limit
+            except (TypeError, ValueError):
+                pass
     model_lower = model_name.lower()
     if "deepseek" in model_lower:
         return 1000000
@@ -1449,6 +1690,16 @@ def _fast_document_scan(
     context_limit = _get_model_context_limit(backend)
     max_tokens = int(context_limit * 0.8)
     text_tokens = _estimate_tokens(full_text)
+    _console_log(
+        "INGEST_SCAN_TOKEN_SUMMARY",
+        {
+            "total_text_chars": len(full_text),
+            "total_estimated_tokens": text_tokens,
+            "context_limit": context_limit,
+            "scan_max_tokens": max_tokens,
+            "chunk_count": len(chunks),
+        },
+    )
     if text_tokens <= max_tokens:
         return _fast_document_scan_single(backend, full_text, subject, language_id)
 
@@ -1460,6 +1711,15 @@ def _fast_document_scan(
     while start < len(full_text):
         end = min(start + window_chars, len(full_text))
         part = full_text[start:end]
+        _console_log(
+            "INGEST_SCAN_WINDOW",
+            {
+                "window_start": start,
+                "window_end": end,
+                "window_chars": len(part),
+                "window_estimated_tokens": _estimate_tokens(part),
+            },
+        )
         partial_scan = _fast_document_scan_single(backend, part, subject, language_id)
         blocks = partial_scan.get("blocks") or []
         for b in blocks:
@@ -1469,6 +1729,59 @@ def _fast_document_scan(
             break
         start = end - overlap
     return {"doc_type": "textbook", "blocks": blocks_all}
+
+
+def _attach_block_source_texts(scan_text: str, blocks: list[dict]) -> list[dict]:
+    if not scan_text.strip():
+        return blocks
+
+    normalized_text = scan_text
+    cursor = 0
+    block_count = len(blocks)
+    for index, block in enumerate(blocks):
+        if not isinstance(block, dict):
+            continue
+        start_marker = str(block.get("start_marker") or "").strip()
+        end_marker = str(block.get("end_marker") or "").strip()
+        label = str(block.get("label") or "").strip()
+        summary = str(block.get("summary") or "").strip()
+
+        start_pos = cursor
+        for marker in (start_marker, label, summary):
+            if not marker:
+                continue
+            found = normalized_text.find(marker, cursor)
+            if found != -1:
+                start_pos = found
+                break
+
+        end_pos = len(normalized_text)
+        if end_marker:
+            found_end = normalized_text.find(end_marker, start_pos + max(len(start_marker), 1))
+            if found_end != -1:
+                end_pos = found_end
+        if end_pos == len(normalized_text) and index + 1 < block_count:
+            next_block = blocks[index + 1]
+            if isinstance(next_block, dict):
+                next_markers = [
+                    str(next_block.get("start_marker") or "").strip(),
+                    str(next_block.get("label") or "").strip(),
+                    str(next_block.get("summary") or "").strip(),
+                ]
+                for marker in next_markers:
+                    if not marker:
+                        continue
+                    found_next = normalized_text.find(marker, start_pos + max(len(start_marker), 1))
+                    if found_next != -1:
+                        end_pos = found_next
+                        break
+
+        snippet = normalized_text[start_pos:end_pos].strip()
+        if not snippet:
+            snippet = summary or label or normalized_text[max(0, start_pos): min(len(normalized_text), start_pos + 2000)].strip()
+        block["source_text"] = snippet[:12000]
+        cursor = max(cursor, end_pos if end_pos > start_pos else start_pos)
+    return blocks
 
 
 def _fast_document_scan_single(
@@ -1532,6 +1845,17 @@ def _fast_document_scan_single(
             '"type":"topic_area|exercise_only|fuzzy|word_list|appendix","start_marker":"...","end_marker":"..."}]'
         )
     user = f"文档全文:\n```text\n{full_text}\n```\n请分析并返回 JSON。"
+    _console_log(
+        "INGEST_SCAN_PROMPT",
+        {
+            "subject": subject,
+            "language_id": language_id,
+            "full_text_chars": len(full_text),
+            "full_text_estimated_tokens": _estimate_tokens(full_text),
+            "system_prompt": system,
+            "user_prompt": "文档全文: <omitted resource text>\\n请分析并返回 JSON。",
+        },
+    )
 
     fallback = {"doc_type": "unknown", "blocks": []}
     try:
@@ -1541,10 +1865,16 @@ def _fast_document_scan_single(
             temperature=0.3, timeout=600.0,
         )
         raw = (response.choices[0].message.content or "").strip()
+        _console_log("INGEST_SCAN_RESPONSE", raw)
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)
         data = json.loads(raw)
-        return data if isinstance(data, dict) else fallback
+        if isinstance(data, dict):
+            blocks = data.get("blocks") or data.get("sections") or []
+            if isinstance(blocks, list):
+                data["blocks"] = _attach_block_source_texts(full_text, [block for block in blocks if isinstance(block, dict)])
+            return data
+        return fallback
     except Exception:
         return fallback
 
@@ -1558,16 +1888,152 @@ def _process_topic_block(
     subject: str,
     language_id: str | None,
     topic_map: dict[str, str],
-) -> list:
-    block_text = _extract_block_text(block, chunks)
+) -> dict[str, object]:
+    block_text = str(block.get("source_text") or "").strip() or _extract_block_text(block, chunks)
+    _console_log(
+        "INGEST_TOPIC_BLOCK_INPUT",
+        {
+            "label": block.get("label"),
+            "type": block.get("type"),
+            "summary": block.get("summary"),
+            "block_text_chars": len(block_text),
+            "block_text_estimated_tokens": _estimate_tokens(block_text),
+        },
+    )
     topics_data = _extract_topics_from_block_text(backend, block_text, subject, language_id)
-    results: list = []
+    results: list[dict[str, str]] = []
     for td in topics_data:
         title = (td.get("title") or "").strip()
         desc = (td.get("desc") or "").strip()
         if title:
-            results.append((title, desc))
-    return results
+            results.append({"title": title, "desc": desc})
+    if not results:
+        fallback_title = str(block.get("label") or "").strip()
+        fallback_desc = str(block.get("summary") or "").strip()
+        if fallback_title and fallback_title.lower() not in {"document", "words", "word list", "appendix"}:
+            results.append({"title": fallback_title[:120], "desc": fallback_desc[:200]})
+    _console_log("INGEST_TOPIC_BLOCK_OUTPUT", {"label": block.get("label"), "topics": results})
+    return {"block": block, "text": block_text, "topics": results}
+
+
+def _candidate_key(title: str) -> str:
+    normalized = re.sub(r"\s+", " ", title.strip().lower())
+    return normalized[:200]
+
+
+def _resolve_parent_ids(parent_ids: list[str], topic_map: dict[str, str]) -> list[str]:
+    resolved: list[str] = []
+    for parent_id in parent_ids:
+        if parent_id in topic_map.values():
+            resolved.append(parent_id)
+            continue
+        if parent_id.startswith("relay_"):
+            relay_title = parent_id[len("relay_"):].strip()
+            mapped = topic_map.get(relay_title)
+            if mapped:
+                resolved.append(mapped)
+                continue
+        mapped = topic_map.get(parent_id)
+        if mapped:
+            resolved.append(mapped)
+    return list(dict.fromkeys(resolved))
+
+
+def _insert_topic_candidate(
+    *,
+    backend: "SessionBackend",
+    locator,
+    topic_map: dict[str, str],
+    topics: list[TopicNode],
+    title: str,
+    desc: str,
+    root_topic_id: str | None,
+    subject: str,
+    language_id: str | None,
+    profile: object,
+    proposal_tags_builder,
+    placement: dict[str, object] | None = None,
+    use_root_shortcut: bool = False,
+) -> bool:
+    existing = _link_to_topic(title, topics, topic_map)
+    if existing:
+        _console_log("INGEST_INSERT_SKIP_EXISTING", {"title": title, "matched_topic_id": existing})
+        return False
+
+    pos_exists = False
+    pos_node_id = None
+    pos_parent_ids: list[str] = []
+    pos_successor_ids: list[str] = []
+    pos_reason = ""
+    if placement is not None:
+        pos_exists = bool(placement.get("exists", False))
+        pos_node_id = placement.get("node_id")
+        pos_parent_ids = [pid for pid in (placement.get("parent_ids") or []) if isinstance(pid, str)]
+        pos_successor_ids = [pid for pid in (placement.get("successor_ids") or []) if isinstance(pid, str)]
+        pos_reason = str(placement.get("reason", ""))
+    else:
+        pos = locator.locate(title, desc)
+        pos_exists = pos.exists
+        pos_node_id = pos.node_id
+        pos_parent_ids = list(pos.parent_ids)
+        pos_successor_ids = list(pos.successor_ids)
+        pos_reason = pos.reason
+
+    if pos_exists and pos_node_id:
+        topic_map[title] = pos_node_id
+        _console_log("INGEST_INSERT_REUSED", {"title": title, "node_id": pos_node_id, "reason": pos_reason})
+        return False
+
+    parents = _resolve_parent_ids(pos_parent_ids, topic_map)
+    if use_root_shortcut and root_topic_id:
+        parents = [root_topic_id]
+    elif not parents and root_topic_id:
+        parents = [root_topic_id]
+    _console_log(
+        "INGEST_INSERT_ACTION",
+        {
+            "title": title,
+            "desc": desc[:200],
+            "parent_ids": parents,
+            "locator_reason": pos_reason,
+        },
+    )
+    try:
+        proposal = backend.create_graph_proposal_from_resource(
+            title=title,
+            summary=desc[:200],
+            tags=proposal_tags_builder(
+                subject=subject,
+                facet=profile.default_facet,
+                language_id=language_id,
+            ),
+            parent_node_ids=parents,
+            prerequisite_node_ids=_resolve_parent_ids(pos_successor_ids, topic_map),
+            edge_type="part_of" if parents else "requires",
+            reason=pos_reason[:80],
+        )
+        _st, _pr, topic, _, _ = backend.approve_graph_proposal(
+            proposal_id=proposal.proposal_id,
+            difficulty=1,
+        )
+        _console_log(
+            "INGEST_INSERT_RESULT",
+            {
+                "title": title,
+                "proposal_id": proposal.proposal_id,
+                "topic_id": topic.topic_id,
+            },
+        )
+        topic_map[title] = topic.topic_id
+        topics.append(topic)
+        locator.refresh()
+        return True
+    except Exception:
+        logger.exception(
+            "topic insertion failed",
+            extra={"title": title},
+        )
+        return False
 
 
 def _extract_block_text(block: dict, chunks: list[TextUnit]) -> str:
@@ -1605,6 +2071,17 @@ def _extract_topics_from_block_text(
         '返回 JSON 数组: [{"title":"知识点名","desc":"一句话说明"}]'
     )
     user = f"段落:\n```text\n{block_text[:3000]}\n```\n请提取知识点。"
+    _console_log(
+        "INGEST_TOPIC_EXTRACT_PROMPT",
+        {
+            "subject": subject,
+            "language_id": language_id,
+            "block_text_chars": len(block_text),
+            "block_text_estimated_tokens": _estimate_tokens(block_text),
+            "system_prompt": system,
+            "user_prompt": "段落: <omitted resource text>\\n请提取知识点。",
+        },
+    )
     try:
         response = _llm_call(backend, 
             model=backend.llm_skill.model_name,
@@ -1612,6 +2089,7 @@ def _extract_topics_from_block_text(
             temperature=0.3, timeout=600.0,
         )
         raw = (response.choices[0].message.content or "").strip()
+        _console_log("INGEST_TOPIC_EXTRACT_RESPONSE", raw)
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)
         data = json.loads(raw)
@@ -1671,17 +2149,19 @@ def _build_segments_from_scan(
     record: ResourceRecord,
     topics: list[TopicNode],
     topic_map: dict[str, str],
+    chunks: list[TextUnit],
 ) -> list[ResourceSegment]:
     blocks = scan.get("blocks") or []
     segments: list[ResourceSegment] = []
     seg_index = 0
 
     for block in blocks:
-        block_text = _extract_block_text(block, [])
-        if not block_text and hasattr(block, "text"):
+        block_text = str(block.get("source_text") or "").strip() or _extract_block_text(block, chunks)
+        if not block_text:
             block_text = block.get("summary", "")
         btype = block.get("type", "unknown")
         label = block.get("label", btype)
+        candidate_titles = [str(item).strip() for item in (block.get("topic_candidates") or []) if str(item).strip()]
 
         seg_index += 1
         if btype in {"word_list", "appendix"}:
@@ -1699,10 +2179,16 @@ def _build_segments_from_scan(
             )
         else:
             matched_tid = None
-            for title, tid in topic_map.items():
-                if title.lower() in (label or "").lower() or title.lower() in (block.get("summary", "") or "").lower():
-                    matched_tid = tid
+            preferred_titles = candidate_titles or [label, block.get("summary", "")]
+            for preferred_title in preferred_titles:
+                matched_tid = _link_to_topic(preferred_title, topics, topic_map)
+                if matched_tid:
                     break
+            if matched_tid is None:
+                for title, tid in topic_map.items():
+                    if title.lower() in (label or "").lower() or title.lower() in (block.get("summary", "") or "").lower():
+                        matched_tid = tid
+                        break
             segments.append(
                 ResourceSegment(
                     segment_id=_segment_id(record.resource_id, seg_index),
@@ -1719,6 +2205,158 @@ def _build_segments_from_scan(
                 )
             )
     return segments
+
+
+def _build_candidate_graph_from_extraction(
+    *,
+    record: ResourceRecord,
+    candidates: list[dict[str, object]],
+    topic_blocks: list[dict],
+    subject: str,
+    language_id: str | None,
+    chunks: list[TextUnit],
+    backend: "SessionBackend",
+    scan: dict,
+) -> CandidateGraph:
+    import datetime as _dt
+    import time as _time
+
+    now_iso = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    full_text = "\n\n".join(c.text for c in chunks if c.text)
+
+    doc_meta = DocumentMeta(
+        resource_id=record.resource_id,
+        resource_name=record.resource_name,
+        media_type=record.media_type,
+        original_filename=record.original_filename,
+        subject=subject,
+        language_id=language_id,
+        doc_type=str(scan.get("doc_type", "")),
+        total_chunks=len(chunks),
+        total_chars=len(full_text),
+        extraction_timestamp=now_iso,
+    )
+
+    source_segments: list[SourceSegment] = []
+    seg_index = 0
+    for block in topic_blocks:
+        seg_index += 1
+        block_text = str(block.get("source_text") or block.get("summary", ""))
+        source_segments.append(
+            SourceSegment(
+                segment_id=_segment_id(record.resource_id, seg_index),
+                segment_index=seg_index,
+                locator={
+                    "kind": "structured",
+                    "section_type": block.get("type", "unknown"),
+                    "block_label": str(block.get("label", "")),
+                },
+                text=block_text[:2000],
+                status="unclassified",
+            )
+        )
+
+    candidate_nodes: list[CandidateNode] = []
+    title_to_idx: dict[str, int] = {}
+    for idx, candidate in enumerate(candidates, start=1):
+        title = str(candidate["title"]).strip()
+        desc = str(candidate["desc"]).strip()
+        temp_id = f"cand_{idx:03d}"
+        title_to_idx[title] = idx
+
+        block_idx_val = int(candidate.get("block_idx", idx - 1)) if isinstance(candidate.get("block_idx"), (int, float)) else idx - 1
+        block_idx = max(0, min(block_idx_val, len(topic_blocks) - 1))
+        block = topic_blocks[block_idx] if topic_blocks else {}
+        block_label = str(block.get("label") or "")
+
+        refs: list[SourceRef] = []
+        if block_idx < len(source_segments):
+            refs.append(
+                SourceRef(
+                    segment_id=source_segments[block_idx].segment_id,
+                    excerpt=title[:120],
+                    relevance=0.9,
+                )
+            )
+
+        candidate_nodes.append(
+            CandidateNode(
+                temp_id=temp_id,
+                title=title,
+                normalized_title=title,
+                subject=subject,
+                language_id=language_id,
+                facet="general",
+                summary=desc[:200],
+                confidence=0.85,
+                extraction_label=block_label or None,
+                source_segment_refs=refs,
+            )
+        )
+
+    relays: list[CandidateRelay] = []
+    edges: list[CandidateEdge] = []
+    block_to_nodes: dict[int, list[str]] = {}
+    for idx, candidate in enumerate(candidates, start=1):
+        b_idx = int(candidate.get("block_idx", idx - 1)) if isinstance(candidate.get("block_idx"), (int, float)) else idx - 1
+        b_idx = max(0, min(b_idx, len(topic_blocks) - 1))
+        block_to_nodes.setdefault(b_idx, []).append(f"cand_{idx:03d}")
+
+    relay_idx = 0
+    for b_idx, node_ids in block_to_nodes.items():
+        if len(node_ids) < 2:
+            continue
+        relay_idx += 1
+        relay_id = f"relay_{relay_idx:03d}"
+        block = topic_blocks[b_idx] if b_idx < len(topic_blocks) else {}
+        relay_title = str(block.get("label") or block.get("summary") or f"Section {relay_idx}")
+
+        relays.append(
+            CandidateRelay(
+                relay_id=relay_id,
+                title=relay_title,
+                subject=subject,
+                language_id=language_id,
+                facet="topic_area",
+                children_temp_ids=list(node_ids),
+                confidence=0.8,
+                grouping_rationale=f"Nodes extracted from same document section: {relay_title}",
+            )
+        )
+
+        for node_id in node_ids:
+            edges.append(
+                CandidateEdge(
+                    edge_id=f"edge_{len(edges)+1:03d}",
+                    source_temp_id=node_id,
+                    target_temp_id=relay_id,
+                    edge_type="part_of",
+                    edge_kind="parent_child",
+                    confidence=0.85,
+                    rationale=f"Belongs to {relay_title}",
+                )
+            )
+
+    model_name = getattr(getattr(backend, "llm_skill", None), "model_name", "") or ""
+    diag = ExtractionDiagnostics(
+        extraction_model=model_name,
+        pipeline="structured_scan",
+        node_count=len(candidate_nodes),
+        relay_count=len(relays),
+        edge_count=len(edges),
+        merge_group_count=0,
+        segment_count=len(source_segments),
+    )
+
+    return CandidateGraph(
+        extraction_id=f"extr_{int(_time.time()*1000)}_{os.urandom(3).hex()}",
+        document=doc_meta,
+        candidate_nodes=candidate_nodes,
+        candidate_relays=relays,
+        candidate_edges=edges,
+        source_segments=source_segments,
+        diagnostics=diag,
+    )
 
 
 def _status_segment(

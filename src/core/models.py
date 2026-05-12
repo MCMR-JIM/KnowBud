@@ -85,6 +85,9 @@ class ResourceRecord(BaseModel):
     created_ts: str
     ingestion_status: str = "pending"
     ingestion_error: Optional[str] = None
+    extracted_node_count: int = 0
+    candidate_graph_json: Optional[str] = None
+    review_graph_json: Optional[str] = None
     segments: list[ResourceSegment] = Field(default_factory=list)
 
 
@@ -149,3 +152,203 @@ class AppState(BaseModel):
     profile: UserProfile
     learning: LearningState
     curriculum: CurriculumConfig
+
+
+# ── Candidate Graph Models (RAG extraction output) ──
+
+class SourceRef(BaseModel):
+    segment_id: str
+    excerpt: str = ""
+    relevance: Optional[float] = None
+
+
+class SourceSegment(BaseModel):
+    segment_id: str
+    segment_index: int
+    locator: dict[str, Any] = Field(default_factory=dict)
+    text: str = ""
+    status: str = "unclassified"
+
+
+class CandidateNode(BaseModel):
+    temp_id: str
+    title: str
+    normalized_title: str = ""
+    subject: str
+    language_id: Optional[str] = None
+    facet: str
+    summary: str = ""
+    node_kind: Literal["knowledge"] = "knowledge"
+    tags: list[str] = Field(default_factory=list)
+    difficulty: Optional[int] = None
+    confidence: float = 0.0
+    extraction_label: Optional[str] = None
+    source_segment_refs: list[SourceRef] = Field(default_factory=list)
+    review_status: str = "pending"
+    review_notes: Optional[str] = None
+
+
+class CandidateRelay(BaseModel):
+    relay_id: str
+    title: str
+    subject: str
+    language_id: Optional[str] = None
+    facet: str
+    node_kind: Literal["relay"] = "relay"
+    children_temp_ids: list[str] = Field(default_factory=list)
+    parent_temp_ids: list[str] = Field(default_factory=list)
+    confidence: float = 0.0
+    grouping_rationale: str = ""
+    source_segment_refs: list[SourceRef] = Field(default_factory=list)
+    review_status: str = "pending"
+    review_notes: Optional[str] = None
+
+
+class CandidateEdge(BaseModel):
+    edge_id: str
+    source_temp_id: str
+    target_temp_id: str
+    edge_type: str = "requires"
+    edge_kind: str = "parent_child"
+    confidence: float = 0.0
+    rationale: str = ""
+    source_segment_refs: list[SourceRef] = Field(default_factory=list)
+    review_status: str = "pending"
+    review_notes: Optional[str] = None
+
+
+class MergeCandidate(BaseModel):
+    merge_group_id: str
+    canonical_temp_id: str
+    merged_temp_ids: list[str] = Field(default_factory=list)
+    merge_type: str = "semantic_equivalence"
+    confidence: float = 0.0
+    rationale: str = ""
+    review_status: str = "pending"
+    review_notes: Optional[str] = None
+
+
+class DiagnosticsWarning(BaseModel):
+    code: str
+    message: str
+    affected_temp_ids: list[str] = Field(default_factory=list)
+    severity: str = "warn"
+
+
+class ExtractionDiagnostics(BaseModel):
+    extraction_model: str = ""
+    extraction_temperature: float = 0.3
+    total_extraction_time_ms: int = 0
+    pipeline: str = ""
+    node_count: int = 0
+    relay_count: int = 0
+    edge_count: int = 0
+    merge_group_count: int = 0
+    segment_count: int = 0
+    warnings: list[DiagnosticsWarning] = Field(default_factory=list)
+    notes: str = ""
+
+
+class DocumentMeta(BaseModel):
+    resource_id: str
+    resource_name: str
+    media_type: str
+    original_filename: str
+    subject: str
+    language_id: Optional[str] = None
+    doc_type: str = ""
+    total_chunks: int = 0
+    total_chars: int = 0
+    extraction_timestamp: str = ""
+
+
+class CandidateGraph(BaseModel):
+    schema_version: str = "2.0"
+    extraction_id: str = ""
+    document: DocumentMeta
+    candidate_nodes: list[CandidateNode] = Field(default_factory=list)
+    candidate_relays: list[CandidateRelay] = Field(default_factory=list)
+    candidate_edges: list[CandidateEdge] = Field(default_factory=list)
+    merge_candidates: list[MergeCandidate] = Field(default_factory=list)
+    source_segments: list[SourceSegment] = Field(default_factory=list)
+    diagnostics: ExtractionDiagnostics = Field(default_factory=ExtractionDiagnostics)
+
+
+# ── Review Layer Models (candidate structure review output) ──
+
+class NamingIssue(BaseModel):
+    issue_id: str
+    temp_id: str
+    issue_type: Literal[
+        "redundant_name",
+        "exercise_title",
+        "overlong_title",
+        "near_duplicate",
+        "mergeable_to_existing",
+    ]
+    severity: Literal["error", "warn", "info"] = "warn"
+    title: str = ""
+    suggested_title: Optional[str] = None
+    description: str = ""
+    merge_target_temp_id: Optional[str] = None
+    merge_target_existing_topic_id: Optional[str] = None
+
+
+class LogicIssue(BaseModel):
+    issue_id: str
+    temp_id: str
+    issue_type: Literal[
+        "wrong_parent",
+        "prerequisite_inversion",
+        "excessive_relay",
+        "self_reference",
+        "cross_subject",
+        "orphan_node",
+        "duplicate_edge",
+    ]
+    severity: Literal["error", "warn", "info"] = "warn"
+    description: str = ""
+    suggested_parent_ids: list[str] = Field(default_factory=list)
+    suggested_prerequisite_ids: list[str] = Field(default_factory=list)
+    affected_temp_ids: list[str] = Field(default_factory=list)
+
+
+class NamingReview(BaseModel):
+    passed: bool = True
+    issues: list[NamingIssue] = Field(default_factory=list)
+    canonical_titles: dict[str, str] = Field(default_factory=dict)
+
+
+class LogicReview(BaseModel):
+    passed: bool = True
+    issues: list[LogicIssue] = Field(default_factory=list)
+
+
+class CompilableNode(BaseModel):
+    temp_id: str
+    canonical_title: str
+    subject: str
+    language_id: Optional[str] = None
+    facet: str
+    summary: str = ""
+    node_kind: Literal["knowledge", "relay"] = "knowledge"
+    parent_temp_ids: list[str] = Field(default_factory=list)
+    prerequisite_temp_ids: list[str] = Field(default_factory=list)
+    edge_type: str = "part_of"
+    tags: list[str] = Field(default_factory=list)
+    difficulty: Optional[int] = None
+    source_temp_ids: list[str] = Field(default_factory=list)
+
+
+class ReviewResult(BaseModel):
+    schema_version: str = "2.0"
+    review_id: str = ""
+    extraction_id: str = ""
+    resource_id: str = ""
+    naming: NamingReview = Field(default_factory=NamingReview)
+    logic: LogicReview = Field(default_factory=LogicReview)
+    compilable_nodes: list[CompilableNode] = Field(default_factory=list)
+    compilable_edges: list[CandidateEdge] = Field(default_factory=list)
+    compilable_relays: list[CandidateRelay] = Field(default_factory=list)
+    merge_map: dict[str, str] = Field(default_factory=dict)
+    dropped_temp_ids: list[str] = Field(default_factory=list)

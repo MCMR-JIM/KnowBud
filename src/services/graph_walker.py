@@ -5,6 +5,8 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from src.services.llm_gateway import call_llm, call_llm_json
+
 if TYPE_CHECKING:
     from src.services.session_backend import SessionBackend
     from src.core.models import TopicNode, GraphProposalRecord
@@ -227,15 +229,14 @@ class GraphWalker:
             '返回 JSON: {"action":"child|prereq"}'
         )
         try:
-            response = self._client.chat.completions.create(
-                model=self._model_name,
+            raw = call_llm_json(
+                self,
                 messages=[
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
                 ],
                 temperature=0.3, timeout=30.0,
             )
-            raw = self._parse_llm_json(response.choices[0].message.content or "")
             action = raw.get("action", "") if isinstance(raw, dict) else ""
             if action == "prereq":
                 return WalkResult(
@@ -328,15 +329,14 @@ class GraphWalker:
 
     def _call_llm(self, system: str, user: str) -> dict:
         try:
-            response = self._client.chat.completions.create(
-                model=self._model_name,
+            return call_llm_json(
+                self,
                 messages=[
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
                 ],
                 temperature=0.3, timeout=30.0,
             )
-            return self._parse_llm_json(response.choices[0].message.content or "")
         except Exception:
             return {"action": "no_match"}
 

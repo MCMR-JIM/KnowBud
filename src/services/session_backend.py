@@ -402,6 +402,7 @@ class SessionBackend:
         size_bytes: int,
         ingestion_status: str = "pending",
         ingestion_error: str | None = None,
+        extracted_node_count: int = 0,
         segments: list[ResourceSegment] | None = None,
     ) -> ResourceRecord:
         record = ResourceRecord(
@@ -417,6 +418,7 @@ class SessionBackend:
             created_ts=datetime.datetime.now(timezone.utc).isoformat(),
             ingestion_status=ingestion_status,
             ingestion_error=ingestion_error,
+            extracted_node_count=extracted_node_count,
             segments=segments
             if segments is not None
             else [
@@ -440,13 +442,20 @@ class SessionBackend:
         *,
         status: str,
         error: str | None = None,
+        extracted_node_count: int | None = None,
     ) -> None:
         with self._db_connection() as conn:
             self._ensure_storage_initialized(conn)
-            conn.execute(
-                "UPDATE resource_library SET ingestion_status = ?, ingestion_error = ? WHERE resource_id = ?",
-                (status, error, resource_id),
-            )
+            if extracted_node_count is None:
+                conn.execute(
+                    "UPDATE resource_library SET ingestion_status = ?, ingestion_error = ? WHERE resource_id = ?",
+                    (status, error, resource_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE resource_library SET ingestion_status = ?, ingestion_error = ?, extracted_node_count = ? WHERE resource_id = ?",
+                    (status, error, extracted_node_count, resource_id),
+                )
             conn.commit()
 
     def list_resources_by_topic(self, topic_id: str) -> list[ResourceRecord]:
@@ -458,7 +467,7 @@ class SessionBackend:
             rows = conn.execute(
                 """
                 SELECT resource_id, topic_id, resource_name, category, media_type, mime_type,
-                       original_filename, stored_path, size_bytes, created_ts, ingestion_status, ingestion_error, segments_json
+                       original_filename, stored_path, size_bytes, created_ts, ingestion_status, ingestion_error, extracted_node_count, segments_json, candidate_graph_json, review_graph_json
                 FROM resource_library
                 WHERE resource_id IN (
                     SELECT DISTINCT r.resource_id
@@ -478,7 +487,7 @@ class SessionBackend:
             row = conn.execute(
                 """
                 SELECT resource_id, topic_id, resource_name, category, media_type, mime_type,
-                       original_filename, stored_path, size_bytes, created_ts, ingestion_status, ingestion_error, segments_json
+                       original_filename, stored_path, size_bytes, created_ts, ingestion_status, ingestion_error, extracted_node_count, segments_json, candidate_graph_json, review_graph_json
                 FROM resource_library
                 WHERE resource_id = ?
                 """,
@@ -487,6 +496,46 @@ class SessionBackend:
             if row is None:
                 return None
             return self._resource_from_row(conn, row)
+
+    def store_resource_candidate_graph(self, resource_id: str, candidate_graph_json: str) -> None:
+        with self._db_connection() as conn:
+            self._ensure_storage_initialized(conn)
+            conn.execute(
+                "UPDATE resource_library SET candidate_graph_json = ? WHERE resource_id = ?",
+                (candidate_graph_json, resource_id),
+            )
+            conn.commit()
+
+    def store_resource_review_graph(self, resource_id: str, review_graph_json: str) -> None:
+        with self._db_connection() as conn:
+            self._ensure_storage_initialized(conn)
+            conn.execute(
+                "UPDATE resource_library SET review_graph_json = ? WHERE resource_id = ?",
+                (review_graph_json, resource_id),
+            )
+            conn.commit()
+
+    def get_resource_review_graph(self, resource_id: str) -> str | None:
+        with self._db_connection() as conn:
+            self._ensure_storage_initialized(conn)
+            row = conn.execute(
+                "SELECT review_graph_json FROM resource_library WHERE resource_id = ?",
+                (resource_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return str(row["review_graph_json"]) if row["review_graph_json"] is not None else None
+
+    def get_resource_candidate_graph(self, resource_id: str) -> str | None:
+        with self._db_connection() as conn:
+            self._ensure_storage_initialized(conn)
+            row = conn.execute(
+                "SELECT candidate_graph_json FROM resource_library WHERE resource_id = ?",
+                (resource_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return str(row["candidate_graph_json"]) if row["candidate_graph_json"] is not None else None
 
     def list_resource_segments(self, resource_id: str) -> list[ResourceSegment]:
         with self._db_connection() as conn:
@@ -511,7 +560,7 @@ class SessionBackend:
             rows = conn.execute(
                 """
                 SELECT resource_id, topic_id, resource_name, category, media_type, mime_type,
-                       original_filename, stored_path, size_bytes, created_ts, ingestion_status, ingestion_error, segments_json
+                       original_filename, stored_path, size_bytes, created_ts, ingestion_status, ingestion_error, extracted_node_count, segments_json, candidate_graph_json, review_graph_json
                 FROM resource_library
                 ORDER BY created_ts DESC, resource_id DESC
                 """
@@ -1432,7 +1481,10 @@ class SessionBackend:
                 created_ts TEXT NOT NULL,
                 ingestion_status TEXT NOT NULL DEFAULT 'pending',
                 ingestion_error TEXT,
-                segments_json TEXT NOT NULL
+                extracted_node_count INTEGER NOT NULL DEFAULT 0,
+                segments_json TEXT NOT NULL,
+                candidate_graph_json TEXT,
+                review_graph_json TEXT
             )
             """
         )
@@ -1502,6 +1554,12 @@ class SessionBackend:
             conn.execute("ALTER TABLE resource_library ADD COLUMN ingestion_status TEXT NOT NULL DEFAULT 'pending'")
         if "ingestion_error" not in columns:
             conn.execute("ALTER TABLE resource_library ADD COLUMN ingestion_error TEXT")
+        if "extracted_node_count" not in columns:
+            conn.execute("ALTER TABLE resource_library ADD COLUMN extracted_node_count INTEGER NOT NULL DEFAULT 0")
+        if "candidate_graph_json" not in columns:
+            conn.execute("ALTER TABLE resource_library ADD COLUMN candidate_graph_json TEXT")
+        if "review_graph_json" not in columns:
+            conn.execute("ALTER TABLE resource_library ADD COLUMN review_graph_json TEXT")
 
     def _load_state_row(self, conn: sqlite3.Connection) -> AppState | None:
         row = conn.execute("SELECT state_json FROM app_state WHERE state_id = 1").fetchone()
@@ -1589,9 +1647,9 @@ class SessionBackend:
             """
             INSERT INTO resource_library(
                 resource_id, topic_id, resource_name, category, media_type, mime_type,
-                original_filename, stored_path, size_bytes, created_ts, ingestion_status, ingestion_error, segments_json
+                original_filename, stored_path, size_bytes, created_ts, ingestion_status, ingestion_error, extracted_node_count, segments_json, candidate_graph_json, review_graph_json
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.resource_id,
@@ -1606,7 +1664,10 @@ class SessionBackend:
                 record.created_ts,
                 record.ingestion_status,
                 record.ingestion_error,
+                record.extracted_node_count,
                 json.dumps([segment.model_dump() for segment in record.segments], ensure_ascii=False),
+                record.candidate_graph_json,
+                None,
             ),
         )
         conn.commit()
@@ -1686,6 +1747,17 @@ class SessionBackend:
             except Exception:
                 segments = []
 
+        candidate_graph_json_val = None
+        review_graph_json_val = None
+        try:
+            candidate_graph_json_val = row["candidate_graph_json"]
+        except (IndexError, KeyError):
+            pass
+        try:
+            review_graph_json_val = row["review_graph_json"]
+        except (IndexError, KeyError):
+            pass
+
         return ResourceRecord(
             resource_id=str(row["resource_id"]),
             topic_id=str(row["topic_id"]),
@@ -1699,6 +1771,9 @@ class SessionBackend:
             created_ts=str(row["created_ts"]),
             ingestion_status=str(row["ingestion_status"] or "pending"),
             ingestion_error=str(row["ingestion_error"]) if row["ingestion_error"] is not None else None,
+            extracted_node_count=int(row["extracted_node_count"] or 0),
+            candidate_graph_json=str(candidate_graph_json_val) if candidate_graph_json_val is not None else None,
+            review_graph_json=str(review_graph_json_val) if review_graph_json_val is not None else None,
             segments=segments,
         )
 

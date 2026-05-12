@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from src.core.models import GraphProposalRecord, ResourceRecord, ResourceSegment, TopicNode
+from src.services.llm_gateway import call_llm, call_llm_json, call_llm_text
 
 if TYPE_CHECKING:
     from src.services.session_backend import SessionBackend
@@ -262,8 +263,8 @@ def detect_resource_subject(
         try:
             sample = text[:800]
             subject_list = ", ".join(sorted(k for k in SUBJECT_PROFILES if k != "general"))
-            response = backend.llm_skill.client.chat.completions.create(
-                model=backend.llm_skill.model_name,
+            llm = call_llm_text(
+                backend,
                 messages=[
                     {
                         "role": "system",
@@ -279,8 +280,7 @@ def detect_resource_subject(
                 ],
                 temperature=0.1,
                 timeout=30.0,
-            )
-            llm = (response.choices[0].message.content or "").strip().lower()
+            ).strip().lower()
             if llm in SUBJECT_PROFILES and llm != "general":
                 return llm
         except Exception:
@@ -419,10 +419,8 @@ def _deduplicate_clusters_within_batch(
 
     merge_groups: list[dict] = []
     try:
-        client = backend.llm_skill.client
-        model = backend.llm_skill.model_name
-        response = client.chat.completions.create(
-            model=model,
+        data = call_llm_json(
+            backend,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -430,10 +428,6 @@ def _deduplicate_clusters_within_batch(
             temperature=0.3,
             timeout=60.0,
         )
-        raw = (response.choices[0].message.content or "").strip()
-        raw = re.sub(r"^```(?:json)?\s*", "", raw)
-        raw = re.sub(r"\s*```$", "", raw)
-        data = json.loads(raw)
         if isinstance(data, list):
             merge_groups = data
     except Exception:
@@ -787,10 +781,8 @@ def deduplicate_candidate_title(
     )
 
     try:
-        client = backend.llm_skill.client
-        model = backend.llm_skill.model_name
-        response = client.chat.completions.create(
-            model=model,
+        data = call_llm_json(
+            backend,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -798,10 +790,6 @@ def deduplicate_candidate_title(
             temperature=0.3,
             timeout=60.0,
         )
-        raw = (response.choices[0].message.content or "").strip()
-        raw = re.sub(r"^```(?:json)?\s*", "", raw)
-        raw = re.sub(r"\s*```$", "", raw)
-        data = json.loads(raw)
         matched = data.get("matched_topic_id") if isinstance(data, dict) else None
         if isinstance(matched, str) and matched:
             node_ids = {node.get("topic_id") for node in coarse}

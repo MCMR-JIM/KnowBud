@@ -10,6 +10,7 @@ from openai import OpenAI
 from src.skills.base_skill import BaseSkill, SkillContext
 from src.agent.models import EdgeType
 from src.core.models import PendingQuestion, EvaluationResult, RadarScore, TopicNode
+from src.services.llm_gateway import create_chat_completion, extract_message_text, strip_json_fence
 
 
 class ResourceChunkClassification(BaseModel):
@@ -303,22 +304,16 @@ class LLMTutorSkill(BaseSkill):
             try:
                 self.ensure_configured()
                 assert self.client is not None
-                response = self.client.chat.completions.create(
-                    model=self.model_name,
+                response = create_chat_completion(
+                    client=self.client,
+                    base_url=self.base_url,
+                    model_name=self.model_name,
                     messages=messages,
                     temperature=0.3,
                     timeout=60.0,
                 )
-                raw_content = response.choices[0].message.content.strip()
-                
-                if raw_content.startswith("```json"):
-                    raw_content = raw_content[7:]
-                if raw_content.startswith("```"):
-                    raw_content = raw_content[3:]
-                if raw_content.endswith("```"):
-                    raw_content = raw_content[:-3]
-                    
-                return model_class.model_validate_json(raw_content.strip())
+                raw_content = strip_json_fence(extract_message_text(response))
+                return model_class.model_validate_json(raw_content)
                 
             except (ValidationError, json.JSONDecodeError) as e:
                 if attempt == 0:

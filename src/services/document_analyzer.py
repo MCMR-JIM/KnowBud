@@ -6,6 +6,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from src.services.llm_gateway import call_llm_json
+
 if TYPE_CHECKING:
     from src.services.session_backend import SessionBackend
     from src.services.document_ingestion import TextUnit
@@ -101,8 +103,8 @@ def _call_structure_llm(
     )
 
     try:
-        response = backend.llm_skill.client.chat.completions.create(
-            model=backend.llm_skill.model_name,
+        data = call_llm_json(
+            backend,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -110,10 +112,6 @@ def _call_structure_llm(
             temperature=0.3,
             timeout=60.0,
         )
-        content = (response.choices[0].message.content or "").strip()
-        content = re.sub(r"^```(?:json)?\s*", "", content)
-        content = re.sub(r"\s*```$", "", content)
-        data = json.loads(content)
         if isinstance(data, dict) and "sections" in data:
             items = data["sections"]
             if isinstance(items, list):
@@ -192,8 +190,8 @@ def _run_fuzzy_reading(
         )
         user = f"段落:\n```text\n{section.text[:2000]}\n```\n请提取 topic 候选关键词。"
         try:
-            response = backend.llm_skill.client.chat.completions.create(
-                model=backend.llm_skill.model_name,
+            data = call_llm_json(
+                backend,
                 messages=[
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
@@ -201,10 +199,6 @@ def _run_fuzzy_reading(
                 temperature=0.3,
                 timeout=60.0,
             )
-            content = (response.choices[0].message.content or "").strip()
-            content = re.sub(r"^```(?:json)?\s*", "", content)
-            content = re.sub(r"\s*```$", "", content)
-            data = json.loads(content)
             if isinstance(data, dict):
                 cands = data.get("topic_candidates") or []
                 if isinstance(cands, list):
