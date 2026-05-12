@@ -1148,6 +1148,26 @@ def _batch_organize_topic_tree(
         return []
 
 
+def _flatten_tree_prerequisites(tree: list[dict], topic_map: dict[str, str]) -> dict[str, list[str]]:
+    result: dict[str, list[str]] = {}
+    def _walk(nodes: list[dict]) -> list[str]:
+        prev: str | None = None
+        for node in nodes:
+            raw_title = (node.get("title") or "").strip()
+            clean = raw_title.replace("[中继]", "").strip()
+            children = node.get("children") or []
+            child_ids = _walk(children) if children else (
+                [topic_map.get(clean, clean)] if clean in topic_map else []
+            )
+            for cid in child_ids:
+                if prev and cid and cid != prev:
+                    result.setdefault(cid, []).append(prev)
+                prev = cid
+        return child_ids if children else [topic_map.get(clean, clean)]
+    _walk(tree)
+    return result
+
+
 def _create_relay_and_attach(
     *,
     backend: "SessionBackend",
@@ -1275,6 +1295,7 @@ def _run_structured_ingestion(
     deduped = [(t, d) for t, d in all_topics if not (t in seen or seen.add(t))]
 
     # Batch tree organization: create relay nodes before per-topic insertion
+    tree: list[dict] = []
     if len(deduped) > 1 and backend.llm_skill.client.api_key:
         try:
             tree = _batch_organize_topic_tree(
@@ -1311,8 +1332,7 @@ def _run_structured_ingestion(
                 )
                 locator.refresh()
 
-        # Step 2: per-topic locate + collect successor relations for batch update
-        _pending_successors: dict[str, list[str]] = {}
+        # Step 2: per-topic locate
         for title, desc in deduped:
             if title in topic_map:
                 continue
@@ -1324,8 +1344,6 @@ def _run_structured_ingestion(
             parents = [pid for pid in pos.parent_ids if pid in topic_map.values()]
             if not parents and root_topic_id:
                 parents = [root_topic_id]
-            successors = [pid for pid in pos.successor_ids
-                          if pid in topic_map.values() and pid != root_topic_id]
             try:
                 proposal = backend.create_graph_proposal_from_resource(
                     title=title, summary=desc[:200],
@@ -1348,14 +1366,16 @@ def _run_structured_ingestion(
             except Exception:
                 pass
 
-        # Batch-update successor prerequisites
-        if _pending_successors:
+        # Batch-update: set prerequisite relationships from tree structure
+        if tree and topic_map:
             _state = backend.load_app_state(include_history=False)
-            for _tid, _sids in _pending_successors.items():
-                for _sid in _sids:
-                    _succ = next((t for t in _state.curriculum.topics if t.topic_id == _sid), None)
-                    if _succ and _tid not in _succ.prerequisite_ids:
-                        _succ.prerequisite_ids.append(_tid)
+            _prereq_map = _flatten_tree_prerequisites(tree, topic_map)
+            for _child_id, _prereq_ids in _prereq_map.items():
+                _child = next((t for t in _state.curriculum.topics if t.topic_id == _child_id), None)
+                if _child:
+                    for _pid in _prereq_ids:
+                        if _pid and _pid != _child_id and _pid not in _child.prerequisite_ids:
+                            _child.prerequisite_ids.append(_pid)
             backend.save_app_state(_state)
 
     # ── Process exercises ──
