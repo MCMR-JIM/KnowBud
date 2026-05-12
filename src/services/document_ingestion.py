@@ -26,6 +26,12 @@ CLASSIFIED_THRESHOLD = 0.45
 CLASSIFY_BATCH_SIZE = 1
 
 
+def _llm_call(backend, **kwargs):
+    if "deepseek" in (getattr(backend.llm_skill, "base_url", "") or ""):
+        kwargs.setdefault("extra_body", {"thinking": {"type": "disabled"}})
+    return _llm_call(backend, **kwargs)
+
+
 def _strip_images(text: str) -> str:
     import re as _re
     return _re.sub(r"!\[.*?\]\(.*?\)", "", text).strip()
@@ -919,14 +925,15 @@ def _classify_chunks_batch(
 
     raw_results: list[dict] = []
     try:
-        response = backend.llm_skill.client.chat.completions.create(
+        response = _llm_call(backend, 
             model=backend.llm_skill.model_name,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
             temperature=0.3,
-            timeout=120.0,
+            timeout=600.0,
+            extra_body={"thinking": {"type": "disabled"}} if "deepseek" in (getattr(backend.llm_skill, "base_url", "") or "") else None,
         )
         content = (response.choices[0].message.content or "").strip()
         content = re.sub(r"^```(?:json)?\s*", "", content)
@@ -1134,7 +1141,7 @@ def _batch_organize_topic_tree(
         "请组织为树形结构。中继节点标题加 [中继] 后缀。"
     )
     try:
-        response = backend.llm_skill.client.chat.completions.create(
+        response = _llm_call(backend, 
             model=backend.llm_skill.model_name,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
             temperature=0.3, timeout=600.0,
@@ -1528,7 +1535,7 @@ def _fast_document_scan_single(
 
     fallback = {"doc_type": "unknown", "blocks": []}
     try:
-        response = backend.llm_skill.client.chat.completions.create(
+        response = _llm_call(backend, 
             model=backend.llm_skill.model_name,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
             temperature=0.3, timeout=600.0,
@@ -1599,7 +1606,7 @@ def _extract_topics_from_block_text(
     )
     user = f"段落:\n```text\n{block_text[:3000]}\n```\n请提取知识点。"
     try:
-        response = backend.llm_skill.client.chat.completions.create(
+        response = _llm_call(backend, 
             model=backend.llm_skill.model_name,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
             temperature=0.3, timeout=600.0,
