@@ -61,10 +61,15 @@ const InlineKnowledgeMap = ({ nodes, onSelectNode }: { nodes: any[], onSelectNod
 );
 
 // ================= 模块三：右侧对话卡片 =================
-const InteractionCard = ({ state, onSend, isLoading, isRecording, onStartRecord, onStopRecord, onPlayVoice, onToggleAudio, roleLabel = '星空兔', ttsStatus = 'idle' }: any) => {
+type ChatMessage = { id: number; role: 'ai' | 'user'; content: string };
+
+const InteractionCard = ({ messages, onSend, isLoading, isRecording, onStartRecord, onStopRecord, onPlayVoice, onToggleAudio, roleLabel = '星空兔', ttsStatus = 'idle' }: any) => {
   const [inputText, setInputText] = useState('');
+  const chatEndRef = useRef<HTMLDivElement>(null);
 
   const handleSendClick = () => { if (inputText.trim() && !isLoading) { onSend(inputText); setInputText(''); } };
+
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
   return (
     <div className="w-full flex-1 min-h-0 bg-white/70 backdrop-blur-2xl rounded-[2.5rem] shadow-lg border-2 border-white flex flex-col pointer-events-auto overflow-hidden">
@@ -74,32 +79,41 @@ const InteractionCard = ({ state, onSend, isLoading, isRecording, onStartRecord,
           <span className="font-black text-indigo-950 text-xl tracking-tight">{roleLabel}伴学</span>
         </div>
       </div>
-      <div className="flex-1 p-6 overflow-y-auto custom-scrollbar flex flex-col">
-        {state.type === 'none' && !isLoading && (
+      <div className="flex-1 p-6 overflow-y-auto custom-scrollbar flex flex-col gap-4">
+        {messages.length === 0 && !isLoading && (
           <div className="m-auto text-gray-400 text-sm text-center">你可以随时按住麦克风和我聊天，或者翻开资料哦！</div>
         )}
-        {state.type !== 'none' && (
-          <div className={`relative p-6 rounded-3xl rounded-tl-none border-2 mb-6 shadow-sm bg-fuchsia-50 border-fuchsia-200`}>
-            <div className="absolute top-0 -left-3 w-0 h-0 border-t-[12px] border-t-fuchsia-50 border-l-[12px] border-l-transparent"></div>
-            <div className="flex justify-between items-start gap-4">
-              <p className="text-xl leading-[1.6] font-bold flex-1 text-fuchsia-600 whitespace-pre-wrap">{state.message}</p>
-              <button onClick={() => {
-                if (ttsStatus === 'playing') { onToggleAudio?.(); }
-                else if (ttsStatus === 'paused') { onToggleAudio?.(); }
-                else if (ttsStatus === 'idle' && state.message) { onPlayVoice(state.message); }
-              }} className={`shrink-0 w-12 h-12 rounded-full flex items-center justify-center cursor-pointer transition-all shadow-sm ${ttsStatus === 'loading' ? 'bg-purple-300 text-white' : ttsStatus === 'playing' ? 'bg-purple-500 text-white animate-pulse' : 'bg-white text-purple-500 hover:bg-purple-50 border-2 border-purple-100'}`}>
-                {ttsStatus === 'loading' ? <Loader2 className="animate-spin" size={24} /> :
-                 ttsStatus === 'playing' ? <Pause size={24} strokeWidth={2.5} /> :
-                 <Volume2 size={24} strokeWidth={2.5} />}
-              </button>
-            </div>
+        {messages.map((msg: ChatMessage) => (
+          <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+            {msg.role === 'ai' ? (
+              <div className="relative p-6 rounded-3xl rounded-tl-none border-2 shadow-sm bg-fuchsia-50 border-fuchsia-200 max-w-[85%]">
+                <div className="absolute top-0 -left-3 w-0 h-0 border-t-[12px] border-t-fuchsia-50 border-l-[12px] border-l-transparent"></div>
+                <div className="flex justify-between items-start gap-4">
+                  <p className="text-xl leading-[1.6] font-bold flex-1 text-fuchsia-600 whitespace-pre-wrap">{msg.content}</p>
+                  <button onClick={() => {
+                    if (ttsStatus === 'playing') { onToggleAudio?.(); }
+                    else if (ttsStatus === 'paused') { onToggleAudio?.(); }
+                    else if (ttsStatus === 'idle' && msg.content) { onPlayVoice(msg.content); }
+                  }} className={`shrink-0 w-12 h-12 rounded-full flex items-center justify-center cursor-pointer transition-all shadow-sm ${ttsStatus === 'loading' ? 'bg-purple-300 text-white' : ttsStatus === 'playing' ? 'bg-purple-500 text-white animate-pulse' : 'bg-white text-purple-500 hover:bg-purple-50 border-2 border-purple-100'}`}>
+                    {ttsStatus === 'loading' ? <Loader2 className="animate-spin" size={24} /> :
+                     ttsStatus === 'playing' ? <Pause size={24} strokeWidth={2.5} /> :
+                     <Volume2 size={24} strokeWidth={2.5} />}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="p-5 rounded-3xl rounded-tr-none shadow-sm bg-white border-2 border-gray-100 max-w-[75%]">
+                <p className="text-lg text-gray-700 font-bold whitespace-pre-wrap">{msg.content}</p>
+              </div>
+            )}
           </div>
-        )}
+        ))}
         {isLoading && (
-           <div className="flex items-center gap-3 text-purple-500 font-bold mb-4 ml-2 bg-purple-50 w-fit px-4 py-2 rounded-full shadow-sm">
-             <Loader2 className="animate-spin" size={20} /> 星空兔思考中...
+           <div className="flex items-center gap-3 text-purple-500 font-bold ml-2 bg-purple-50 w-fit px-4 py-2 rounded-full shadow-sm">
+             <Loader2 className="animate-spin" size={20} /> {roleLabel}思考中...
            </div>
         )}
+        <div ref={chatEndRef} />
       </div>
       <div className="p-6 bg-white/50 backdrop-blur-md border-t-2 border-white flex flex-col gap-4">
         <div className="flex items-center gap-3 bg-white/80 rounded-2xl px-5 py-4 border-2 border-purple-50 focus-within:border-purple-300 transition-colors">
@@ -228,7 +242,7 @@ export default function StudyRoom() {
   const [pdfResourceUrl, setPdfResourceUrl] = useState<string | null>(null);
   const [currentResourceName, setCurrentResourceName] = useState<string>('');
   
-  const [interactionState, setInteractionState] = useState<any>({ type: 'none', message: '' });
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [masteryList, setMasteryList] = useState<any[]>([]);
   const [totalScore, setTotalScore] = useState(0);
   const [prevMastery, setPrevMastery] = useState<Record<string, string>>({});
@@ -241,13 +255,23 @@ export default function StudyRoom() {
   const audioChunksRef = useRef<BlobPart[]>([]);
   const triggeredPagesRef = useRef<Set<number>>(new Set());
   const allTopicsRef = useRef<any[]>([]);
+  const currentTopicIdRef = useRef<string>('');
+  const currentTopicTitleRef = useRef<string>('');
   const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
   const ttsBlobUrlRef = useRef<string | null>(null);
   const [ttsStatus, setTtsStatus] = useState<'idle' | 'loading' | 'playing' | 'paused'>('idle');
 
+  // 始终保持 ref 与 state 同步，消除闭包陷阱
+  useEffect(() => { currentTopicIdRef.current = currentTopicId; }, [currentTopicId]);
   useEffect(() => {
     allTopicsRef.current = allTopics;
-  }, [allTopics]);
+    const node = allTopics.find(t => t.topic_id === currentTopicIdRef.current);
+    currentTopicTitleRef.current = node?.title || '';
+  }, [allTopics, currentTopicId]);
+
+  const addMessage = (role: 'ai' | 'user', content: string) => {
+    setMessages(prev => [...prev, { id: Date.now(), role, content }]);
+  };
 
   // 🌟 新增：如果处于复习模式，拉取后端的复习队列
   useEffect(() => {
@@ -347,7 +371,7 @@ export default function StudyRoom() {
   }, [activeSubjectId, allTopics, masteryList, currentTopicId, playMode, reviewQueueTopics]);
 
   useEffect(() => {
-    setInteractionState({ type: 'none', message: '' });
+    setMessages([]);
     triggeredPagesRef.current.clear();
     
     if (!currentTopicId) {
@@ -381,8 +405,8 @@ export default function StudyRoom() {
           const topicNode = allTopicsRef.current.find(t => t.topic_id === currentTopicId);
           const topicTitle = topicNode ? topicNode.title : "新知识";
           const greeting = `${userProfile.name}，我们现在来探索关于【${topicTitle}】的奥秘吧，你可以按住麦克风问我任何问题哦！`;
-          setInteractionState({ type: 'feedback', message: greeting });
-          handleHoverRead(greeting);
+          addMessage('ai', greeting);
+          fetchTTSAudio(greeting);
         }
       }).catch(e => console.error("获取资源失败:", e));
     });
@@ -406,11 +430,9 @@ export default function StudyRoom() {
       }
 
       if (cleanMessage) {
-        setInteractionState({ type: 'feedback', message: cleanMessage });
-        handleHoverRead(cleanMessage);
-        triggeredPagesRef.current.add(p); 
-      } else {
-        setInteractionState({ type: 'none', message: '' });
+        addMessage('ai', cleanMessage);
+        fetchTTSAudio(cleanMessage);
+        triggeredPagesRef.current.add(p);
       }
     } catch (error) {
       console.error("AI 巡场提问失败:", error);
@@ -419,12 +441,32 @@ export default function StudyRoom() {
     }
   };
 
-  const handleHoverRead = async (text: string) => {
-    // 停止之前的播放
-    if (ttsAudioRef.current) {
-      ttsAudioRef.current.pause();
+  // 仅拉取 TTS 音频并缓存（AI 回复时静默调用，不播放）
+  const fetchTTSAudio = async (text: string) => {
+    try {
+      const res = await fetch('http://127.0.0.1:5501/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+      if (!res.ok) throw new Error(`TTS ${res.status}`);
+      const blob = await res.blob();
+      // 释放上一次的 blob URL
       if (ttsBlobUrlRef.current) URL.revokeObjectURL(ttsBlobUrlRef.current);
+      const blobUrl = URL.createObjectURL(blob);
+      ttsBlobUrlRef.current = blobUrl;
+      const audio = new Audio(blobUrl);
+      audio.onended = () => setTtsStatus('idle');
+      audio.onerror = () => setTtsStatus('idle');
+      ttsAudioRef.current = audio;
+    } catch (e) {
+      console.error('TTS 预加载失败:', e);
     }
+  };
+
+  // 用户点击喇叭按钮时：拉取 + 播放
+  const handlePlayVoice = async (text: string) => {
+    if (ttsAudioRef.current) ttsAudioRef.current.pause();
     setTtsStatus('loading');
     try {
       const res = await fetch('http://127.0.0.1:5501/tts', {
@@ -434,6 +476,7 @@ export default function StudyRoom() {
       });
       if (!res.ok) throw new Error(`TTS ${res.status}`);
       const blob = await res.blob();
+      if (ttsBlobUrlRef.current) URL.revokeObjectURL(ttsBlobUrlRef.current);
       const blobUrl = URL.createObjectURL(blob);
       const audio = new Audio(blobUrl);
       ttsAudioRef.current = audio;
@@ -462,14 +505,18 @@ export default function StudyRoom() {
   const handleSendText = async (textToSend: string) => {
     if (!textToSend.trim() || isLoading) return;
     if (ttsAudioRef.current) { ttsAudioRef.current.pause(); setTtsStatus('idle'); }
+    addMessage('user', textToSend);
     setIsLoading(true);
     try {
-      const res = await SessionAPI.sendTextRealtime(textToSend);
-      setInteractionState({ type: 'feedback', message: res.data.reply_text });
-      handleHoverRead(res.data.reply_text);
+      // 注入最新知识点上下文，避免闭包陷阱
+      const topicTitle = currentTopicTitleRef.current;
+      const enriched = topicTitle ? `【正在学习：${topicTitle}】\n${textToSend}` : textToSend;
+      const res = await SessionAPI.sendTextRealtime(enriched);
+      addMessage('ai', res.data.reply_text);
+      fetchTTSAudio(res.data.reply_text);
       await syncBackendState(true);
     } catch (error) {
-      setInteractionState({ type: 'feedback', message: '哎呀，网络好像断开了！' });
+      addMessage('ai', '哎呀，网络好像断开了！');
     } finally {
       setIsLoading(false);
     }
@@ -506,11 +553,11 @@ export default function StudyRoom() {
     setIsLoading(true);
     try {
       const response = await SessionAPI.sendAudio(blob);
-      setInteractionState({ type: 'feedback', message: response.data.reply_text });
-      handleHoverRead(response.data.reply_text);
+      addMessage('ai', response.data.reply_text);
+      fetchTTSAudio(response.data.reply_text);
       await syncBackendState(true);
     } catch (error) {
-      setInteractionState({ type: 'feedback', message: '哎呀，语音魔法失效了！' });
+      addMessage('ai', '哎呀，语音魔法失效了！');
     } finally {
       setIsLoading(false);
     }
@@ -592,7 +639,7 @@ export default function StudyRoom() {
             {roleEmoji}
             <div className="absolute -bottom-3 bg-fuchsia-100 text-fuchsia-600 px-4 py-1.5 rounded-full text-xs font-black shadow-sm border border-white whitespace-nowrap">{roleLabel}</div>
           </div>
-          <InteractionCard roleLabel={roleLabel} state={interactionState} isLoading={isLoading} isRecording={isRecording} onStartRecord={startRecording} onStopRecord={stopRecording} onPlayVoice={handleHoverRead} onToggleAudio={handleToggleAudio} ttsStatus={ttsStatus} onSend={handleSendText} />
+          <InteractionCard roleLabel={roleLabel} messages={messages} isLoading={isLoading} isRecording={isRecording} onStartRecord={startRecording} onStopRecord={stopRecording} onPlayVoice={handlePlayVoice} onToggleAudio={handleToggleAudio} ttsStatus={ttsStatus} onSend={handleSendText} />
         </div>
       </main>
 
