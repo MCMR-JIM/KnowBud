@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, RefreshCw, Rocket, Sparkles, Repeat } from 'lucide-react';
 import Live2DRabbit from '../components/Live2DRabbit';
 
-const ROLE_KEY = 'looptutor_role';
+const ROLE_KEY = 'sprout_role';
 type Role = 'rabbit' | 'dinosaur';
 
 function getSavedRole(): Role {

@@ -1,1 +1,1 @@
-"""LTA (Local Teaching Agent) application package."""
+"""Sprout — AI Learning Companion application package."""

@@ -71,7 +71,7 @@ def _build_app(
     from fastapi import FastAPI, HTTPException
     from starlette.requests import Request
 
-    app = FastAPI(title="LoopTutor Local LLM")
+    app = FastAPI(title="Sprout Local LLM")
     served_model_id = Path(model_path).resolve().name
     created_at = int(time.time())
 

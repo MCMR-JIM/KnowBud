@@ -1,7 +1,7 @@
 # 后端知识图谱 Pipeline 技术文档
 
 > **版本**: 1.0  
-> **适用范围**: LoopTutor 后端知识图谱的完整数据流，从资源上传到图节点创建、去重、批准、落库。  
+> **适用范围**: Sprout 后端知识图谱的完整数据流，从资源上传到图节点创建、去重、批准、落库。  
 > **相关源码**:
 > - `src/api/app.py` — HTTP API 入口
 > - `src/services/document_ingestion.py` — 文档摄入引擎

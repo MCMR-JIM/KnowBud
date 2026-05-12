@@ -222,12 +222,12 @@ export default function StudyRoom() {
   const playMode = searchParams.get('mode') || 'learn'; // 'learn' 或 'review'
 
   // 读取身份选择界面的角色状态
-  const savedRole = (localStorage.getItem('looptutor_role') as 'rabbit' | 'dinosaur') || 'rabbit';
+  const savedRole = (localStorage.getItem('sprout_role') as 'rabbit' | 'dinosaur') || 'rabbit';
   const roleEmoji = savedRole === 'rabbit' ? '🐰' : '🦖';
   const roleLabel = savedRole === 'rabbit' ? '星空兔' : '小恐龙';
 
   const [userProfile, setUserProfile] = useState(() => {
-    const saved = localStorage.getItem('looptutor_profile');
+    const saved = localStorage.getItem('sprout_profile');
     return saved ? JSON.parse(saved) : { name: '小勇士', age: 7, gender: 'boy', avatar: '🐰' };
   });
   const [showProfileModal, setShowProfileModal] = useState(false);
@@ -657,7 +657,7 @@ export default function StudyRoom() {
           onClose={() => setShowProfileModal(false)}
           onSave={(newProfile: any) => {
             setUserProfile(newProfile);
-            localStorage.setItem('looptutor_profile', JSON.stringify(newProfile));
+            localStorage.setItem('sprout_profile', JSON.stringify(newProfile));
           }}
         />
       )}

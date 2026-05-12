@@ -71,7 +71,7 @@ TURN_EVENT_KIND = "api_turn_completed"
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
-    title="LoopTutor Frontend API",
+    title="Sprout Frontend API",
     version=API_VERSION,
     description="Single-session frontend APIs with transactional state storage and on-demand memory retrieval.",
 )
@@ -375,7 +375,7 @@ def health():
     backend = get_backend()
     return {
         "ok": True,
-        "service": "looptutor-api",
+        "service": "sprout-api",
         "version": API_VERSION,
         "arch_mode": getattr(backend, "learning_arch_mode", "unknown"),
     }
