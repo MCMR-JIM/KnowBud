@@ -1,29 +1,36 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { ArrowLeft, BookOpen, Search, Smile, Mic, Send, Zap, Loader2, Volume2, Check, MessageCircle, Camera } from 'lucide-react';
+import { ArrowLeft, BookOpen, Search, Smile, Mic, Send, Zap, Loader2, Volume2, Pause, Check, MessageCircle, Camera } from 'lucide-react';
 import PdfViewer from '../components/PdfViewer';
 import CelebrationModal from '../components/CelebrationModal';
 import { SessionAPI, apiClient } from '../api/client';
 import { useAppDialog } from '../components/AppDialog';
 
 // ================= 模块一：数据卡片 =================
-const UserStatsCard = ({ totalScore = 0 }) => (
-  <div className="w-full flex flex-col items-center justify-center gap-3 bg-white/60 backdrop-blur-xl p-6 rounded-[2.5rem] shadow-lg border-2 border-white pointer-events-auto hover:-translate-y-1 transition-all cursor-pointer">
-    <div className="flex items-center gap-2">
-      <Zap size={32} className="text-fuchsia-400 fill-fuchsia-400 animate-pulse shrink-0" />
-      <span className="text-indigo-950 font-black text-3xl tracking-tight">{totalScore} 能量</span>
+const UserStatsCard = ({ totalScore = 0 }) => {
+  const maxScore = 500;
+  const pct = Math.min(Math.round((totalScore / maxScore) * 100), 100);
+  return (
+    <div className="w-full flex flex-col items-center justify-center gap-3 bg-white/60 backdrop-blur-xl p-6 rounded-[2.5rem] shadow-lg border-2 border-white pointer-events-auto hover:-translate-y-1 transition-all cursor-pointer">
+      <div className="flex items-center gap-2">
+        <Zap size={32} className="text-fuchsia-400 fill-fuchsia-400 animate-pulse shrink-0" />
+        <span className="text-indigo-950 font-black text-3xl tracking-tight">{totalScore} 能量</span>
+      </div>
+      <div className="w-full bg-gray-200 rounded-full h-4 overflow-hidden shadow-inner">
+        <div className="bg-gradient-to-r from-yellow-300 to-orange-400 h-full rounded-full transition-all duration-700 ease-out" style={{ width: `${pct}%` }} />
+      </div>
+      <div className="bg-white/60 px-4 py-1.5 rounded-full border border-white shadow-sm mt-1">
+        <span className="text-gray-600 text-sm font-bold">坚持学习，继续加油！</span>
+      </div>
     </div>
-    <div className="bg-white/60 px-4 py-1.5 rounded-full border border-white shadow-sm mt-1">
-      <span className="text-gray-600 text-sm font-bold">坚持学习，继续加油！</span>
-    </div>
-  </div>
-);
+  );
+};
 
 // ================= 模块二：知识星图 =================
 const InlineKnowledgeMap = ({ nodes, onSelectNode }: { nodes: any[], onSelectNode: (id: string) => void }) => (
   <div className="w-full flex-1 min-h-0 flex flex-col bg-white/60 backdrop-blur-xl p-5 rounded-[2rem] shadow-lg border-2 border-white pointer-events-auto overflow-hidden">
     <div className="bg-purple-100 text-purple-800 px-4 py-1.5 rounded-full font-black text-xs mb-4 flex items-center justify-center gap-2 border border-purple-200 shrink-0 mx-auto w-fit">
-      🗺️ 探索星图
+      <span className="text-lg font-bold">🗺️ 探索星图</span>
     </div>
     <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar">
       {nodes.length === 0 ? (
@@ -54,11 +61,9 @@ const InlineKnowledgeMap = ({ nodes, onSelectNode }: { nodes: any[], onSelectNod
 );
 
 // ================= 模块三：右侧对话卡片 =================
-const InteractionCard = ({ state, onSend, isLoading, isRecording, onStartRecord, onStopRecord, onPlayVoice }: any) => {
+const InteractionCard = ({ state, onSend, isLoading, isRecording, onStartRecord, onStopRecord, onPlayVoice, onToggleAudio, roleLabel = '星空兔', ttsStatus = 'idle' }: any) => {
   const [inputText, setInputText] = useState('');
-  const [isPlaying, setIsPlaying] = useState(false);
 
-  useEffect(() => { setIsPlaying(false); }, [state.message]);
   const handleSendClick = () => { if (inputText.trim() && !isLoading) { onSend(inputText); setInputText(''); } };
 
   return (
@@ -66,7 +71,7 @@ const InteractionCard = ({ state, onSend, isLoading, isRecording, onStartRecord,
       <div className="p-5 border-b-2 border-white/50 flex items-center justify-between bg-gradient-to-r from-purple-50/50 to-fuchsia-50/50">
         <div className="flex items-center gap-2 pl-2">
           <MessageCircle className="text-purple-500" size={24} />
-          <span className="font-black text-indigo-950 text-xl tracking-tight">星空兔伴学</span>
+          <span className="font-black text-indigo-950 text-xl tracking-tight">{roleLabel}伴学</span>
         </div>
       </div>
       <div className="flex-1 p-6 overflow-y-auto custom-scrollbar flex flex-col">
@@ -78,8 +83,14 @@ const InteractionCard = ({ state, onSend, isLoading, isRecording, onStartRecord,
             <div className="absolute top-0 -left-3 w-0 h-0 border-t-[12px] border-t-fuchsia-50 border-l-[12px] border-l-transparent"></div>
             <div className="flex justify-between items-start gap-4">
               <p className="text-xl leading-[1.6] font-bold flex-1 text-fuchsia-600 whitespace-pre-wrap">{state.message}</p>
-              <button onClick={() => { setIsPlaying(!isPlaying); if (!isPlaying && state.message) onPlayVoice(state.message); else window.speechSynthesis.cancel(); }} className={`shrink-0 w-12 h-12 rounded-full flex items-center justify-center cursor-pointer transition-all shadow-sm ${isPlaying ? 'bg-purple-500 text-white animate-pulse' : 'bg-white text-purple-500 hover:bg-purple-50 border-2 border-purple-100'}`}>
-                {isPlaying ? <Loader2 className="animate-spin" size={24} /> : <Volume2 size={24} strokeWidth={2.5} />}
+              <button onClick={() => {
+                if (ttsStatus === 'playing') { onToggleAudio?.(); }
+                else if (ttsStatus === 'paused') { onToggleAudio?.(); }
+                else if (ttsStatus === 'idle' && state.message) { onPlayVoice(state.message); }
+              }} className={`shrink-0 w-12 h-12 rounded-full flex items-center justify-center cursor-pointer transition-all shadow-sm ${ttsStatus === 'loading' ? 'bg-purple-300 text-white' : ttsStatus === 'playing' ? 'bg-purple-500 text-white animate-pulse' : 'bg-white text-purple-500 hover:bg-purple-50 border-2 border-purple-100'}`}>
+                {ttsStatus === 'loading' ? <Loader2 className="animate-spin" size={24} /> :
+                 ttsStatus === 'playing' ? <Pause size={24} strokeWidth={2.5} /> :
+                 <Volume2 size={24} strokeWidth={2.5} />}
               </button>
             </div>
           </div>
@@ -196,6 +207,11 @@ export default function StudyRoom() {
   const searchParams = new URLSearchParams(location.search);
   const playMode = searchParams.get('mode') || 'learn'; // 'learn' 或 'review'
 
+  // 读取身份选择界面的角色状态
+  const savedRole = (localStorage.getItem('looptutor_role') as 'rabbit' | 'dinosaur') || 'rabbit';
+  const roleEmoji = savedRole === 'rabbit' ? '🐰' : '🦖';
+  const roleLabel = savedRole === 'rabbit' ? '星空兔' : '小恐龙';
+
   const [userProfile, setUserProfile] = useState(() => {
     const saved = localStorage.getItem('looptutor_profile');
     return saved ? JSON.parse(saved) : { name: '小勇士', age: 7, gender: 'boy', avatar: '🐰' };
@@ -224,7 +240,10 @@ export default function StudyRoom() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<BlobPart[]>([]);
   const triggeredPagesRef = useRef<Set<number>>(new Set());
-  const allTopicsRef = useRef<any[]>([]); 
+  const allTopicsRef = useRef<any[]>([]);
+  const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
+  const ttsBlobUrlRef = useRef<string | null>(null);
+  const [ttsStatus, setTtsStatus] = useState<'idle' | 'loading' | 'playing' | 'paused'>('idle');
 
   useEffect(() => {
     allTopicsRef.current = allTopics;
@@ -400,18 +419,49 @@ export default function StudyRoom() {
     }
   };
 
-  const handleHoverRead = (text: string) => {
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = 'zh-CN';
-    utterance.rate = 0.85;
-    utterance.pitch = 1.1;
-    window.speechSynthesis.speak(utterance);
+  const handleHoverRead = async (text: string) => {
+    // 停止之前的播放
+    if (ttsAudioRef.current) {
+      ttsAudioRef.current.pause();
+      if (ttsBlobUrlRef.current) URL.revokeObjectURL(ttsBlobUrlRef.current);
+    }
+    setTtsStatus('loading');
+    try {
+      const res = await fetch('http://127.0.0.1:5501/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+      if (!res.ok) throw new Error(`TTS ${res.status}`);
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const audio = new Audio(blobUrl);
+      ttsAudioRef.current = audio;
+      ttsBlobUrlRef.current = blobUrl;
+      audio.onended = () => setTtsStatus('idle');
+      audio.onerror = () => setTtsStatus('idle');
+      await audio.play();
+      setTtsStatus('playing');
+    } catch (e) {
+      console.error('TTS 请求失败:', e);
+      setTtsStatus('idle');
+    }
+  };
+
+  const handleToggleAudio = () => {
+    if (!ttsAudioRef.current) return;
+    if (ttsStatus === 'playing') {
+      ttsAudioRef.current.pause();
+      setTtsStatus('paused');
+    } else if (ttsStatus === 'paused') {
+      ttsAudioRef.current.play();
+      setTtsStatus('playing');
+    }
   };
 
   const handleSendText = async (textToSend: string) => {
     if (!textToSend.trim() || isLoading) return;
-    window.speechSynthesis.cancel();
+    if (ttsAudioRef.current) { ttsAudioRef.current.pause(); setTtsStatus('idle'); }
     setIsLoading(true);
     try {
       const res = await SessionAPI.sendTextRealtime(textToSend);
@@ -426,7 +476,7 @@ export default function StudyRoom() {
   };
 
   const startRecording = async () => {
-    window.speechSynthesis.cancel();
+    if (ttsAudioRef.current) { ttsAudioRef.current.pause(); setTtsStatus('idle'); }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mediaRecorder = new MediaRecorder(stream);
@@ -500,7 +550,7 @@ export default function StudyRoom() {
           {/* 🌟 右上角渲染自定义头像 */}
           <div 
             onClick={() => setShowProfileModal(true)}
-            className="w-14 h-14 rounded-full bg-purple-100 flex items-center justify-center text-purple-600 font-black text-2xl shadow-sm border-[3px] border-white hover:scale-110 transition-transform cursor-pointer select-none overflow-hidden"
+            className="w-14 h-14 rounded-full bg-purple-100 flex items-center justify-center text-purple-600 font-black text-2xl shadow-sm border-4 border-dashed border-purple-300 p-2 hover:scale-110 transition-transform cursor-pointer select-none overflow-hidden"
             title="点击修改个人信息"
           >
             {isCustomImage ? <img src={userProfile.avatar} alt="avatar" className="w-full h-full object-cover" /> : userProfile.avatar}
@@ -530,19 +580,19 @@ export default function StudyRoom() {
             </>
           ) : (
             <div className="flex flex-col items-center justify-center text-gray-400 gap-4 bg-white/50 border-2 border-dashed border-white m-4 rounded-2xl w-[calc(100%-2rem)] h-[calc(100%-2rem)]">
-              <div className="text-8xl mb-4 animate-bounce">🐰</div>
+              <div className="text-8xl mb-4 animate-bounce">{roleEmoji}</div>
               <p className="text-2xl font-black text-indigo-900">我们直接开始畅聊吧！</p>
-              <p className="text-sm font-medium bg-white/60 px-4 py-2 rounded-full border border-white">右侧的星空兔已经准备好啦</p>
+              <p className="text-sm font-medium bg-white/60 px-4 py-2 rounded-full border border-white">右侧的{roleLabel}已经准备好啦</p>
             </div>
           )}
         </div>
 
         <div className="w-[360px] xl:w-[420px] shrink-0 flex flex-col items-center justify-end z-20 gap-6 h-full relative">
           <div className="w-36 h-36 xl:w-44 xl:h-44 shrink-0 rounded-full bg-gradient-to-br from-white to-fuchsia-100 border-4 border-white shadow-[0_15px_40px_rgba(217,70,239,0.25)] flex items-center justify-center text-6xl xl:text-7xl relative z-30 transform transition-transform hover:scale-105 animate-[bounce_4s_ease-in-out_infinite]">
-            🐰
-            <div className="absolute -bottom-3 bg-fuchsia-100 text-fuchsia-600 px-4 py-1.5 rounded-full text-xs font-black shadow-sm border border-white whitespace-nowrap">Live2D 待接入</div>
+            {roleEmoji}
+            <div className="absolute -bottom-3 bg-fuchsia-100 text-fuchsia-600 px-4 py-1.5 rounded-full text-xs font-black shadow-sm border border-white whitespace-nowrap">{roleLabel}</div>
           </div>
-          <InteractionCard state={interactionState} isLoading={isLoading} isRecording={isRecording} onStartRecord={startRecording} onStopRecord={stopRecording} onPlayVoice={handleHoverRead} onSend={handleSendText} />
+          <InteractionCard roleLabel={roleLabel} state={interactionState} isLoading={isLoading} isRecording={isRecording} onStartRecord={startRecording} onStopRecord={stopRecording} onPlayVoice={handleHoverRead} onToggleAudio={handleToggleAudio} ttsStatus={ttsStatus} onSend={handleSendText} />
         </div>
       </main>
 
