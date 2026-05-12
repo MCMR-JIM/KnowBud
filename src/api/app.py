@@ -680,8 +680,8 @@ def _run_resource_ingestion(
 ) -> None:
     backend = get_backend()
     record = backend.get_resource(resource_id)
-    if record is None:
-        logger.warning("ingestion skipped: resource missing", extra={"resource_id": resource_id})
+    if record is None or record.ingestion_status != "processing":
+        logger.warning("ingestion skipped: resource deleted or status changed", extra={"resource_id": resource_id})
         return
 
     logger.info("ingestion started", extra={"resource_id": resource_id, "media_type": record.media_type})
