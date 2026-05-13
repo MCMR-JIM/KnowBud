@@ -90,27 +90,41 @@ export default function KidsLearning() {
 
   useEffect(() => {
     const fetchTopicResources = async () => {
-      if (!todayTopicId) {
-        setTopicResources([]);
-        setPreviewResource(null);
-        return;
-      }
-
       try {
-        const res = await fetch(`${apiBaseUrl}/resource/topics/${todayTopicId}`);
-        if (!res.ok) {
-          return;
+        // 优先尝试获取当前 topic 绑定的资源
+        if (todayTopicId) {
+          const res = await fetch(`${apiBaseUrl}/resource/topics/${todayTopicId}`);
+          if (res.ok) {
+            const data = await res.json();
+            const resources = (data.resources || []) as TopicResource[];
+            if (resources.length > 0) {
+              setTopicResources(resources);
+              const previewable = resources.find((resource) =>
+                ['video', 'image', 'audio', 'pdf'].includes(resource.media_type) ||
+                resource.resource_url.toLowerCase().endsWith('.pdf')
+              );
+              setPreviewResource(previewable || null);
+              return;
+            }
+          }
         }
 
-        const data = await res.json();
-        const resources = (data.resources || []) as TopicResource[];
-        setTopicResources(resources);
+        // 回退：当前 topic 无资源时，显示所有已导入的资源
+        const res = await fetch(`${apiBaseUrl}/resources`);
+        if (res.ok) {
+          const allData = await res.json();
+          const allResources = (Array.isArray(allData) ? allData : allData.resources || []) as TopicResource[];
+          setTopicResources(allResources);
 
-        const previewable = resources.find((resource) =>
-          ['video', 'image', 'audio', 'pdf'].includes(resource.media_type) ||
-          resource.resource_url.toLowerCase().endsWith('.pdf')
-        );
-        setPreviewResource(previewable || null);
+          const previewable = allResources.find((resource: TopicResource) =>
+            ['video', 'image', 'audio', 'pdf'].includes(resource.media_type) ||
+            resource.resource_url.toLowerCase().endsWith('.pdf')
+          );
+          setPreviewResource(previewable || null);
+        } else {
+          setTopicResources([]);
+          setPreviewResource(null);
+        }
       } catch (e) {
         setTopicResources([]);
         setPreviewResource(null);
@@ -360,18 +374,40 @@ export default function KidsLearning() {
             )}
           </h3>
           <div className="w-full flex-1 bg-black/5 rounded-2xl overflow-hidden flex items-center justify-center border-2 border-white/80 relative">
-            {previewResource?.media_type === 'video' ? (
+            {previewResource ? (
+              previewResource.media_type === 'video' ? (
               <video className="w-full h-full object-cover" controls src={resolveResourceUrl(previewResource.resource_url)} />
-            ) : previewResource?.media_type === 'pdf' || previewResource?.resource_url.endsWith('.pdf') ? (
+            ) : previewResource.media_type === 'pdf' || previewResource.resource_url.endsWith('.pdf') ? (
               <PdfViewer
                 url={resolveResourceUrl(previewResource.resource_url)}
                 onRenderComplete={handlePdfPageTurned}
               />
-            ) : previewResource?.media_type === 'image' ? (
+            ) : previewResource.media_type === 'image' ? (
               <img className="w-full h-full object-contain" src={resolveResourceUrl(previewResource.resource_url)} alt={previewResource.resource_name} />
-            ) : previewResource?.media_type === 'audio' ? (
+            ) : previewResource.media_type === 'audio' ? (
               <div className="w-full h-full flex items-center justify-center">
                 <audio controls src={resolveResourceUrl(previewResource.resource_url)} className="w-4/5" />
+              </div>
+            ) : (
+              <div className="text-center text-gray-500 px-6">
+                <p className="text-lg font-medium">{t('learning.noPreview')}</p>
+                <p className="text-sm mt-2">{t('learning.noPreviewHint')}</p>
+              </div>
+            )) : topicResources.length > 0 ? (
+              // 有资源但无可预览类型时，显示第一个资源的概要信息
+              <div className="text-center px-6">
+                <p className="text-3xl mb-3">📄</p>
+                <p className="text-lg font-bold text-gray-700">{topicResources[0].resource_name}</p>
+                <p className="text-sm text-gray-500 mt-1 uppercase">{topicResources[0].media_type}</p>
+                <a
+                  href={resolveResourceUrl(topicResources[0].resource_url)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-block mt-4 px-6 py-2 bg-pink-100 text-pink-700 rounded-full font-bold text-sm hover:bg-pink-200 transition-colors"
+                >
+                  {t('learning.open')}
+                </a>
+                <p className="text-xs text-gray-400 mt-3">{t('learning.noPreviewHint')}</p>
               </div>
             ) : (
               <div className="text-center text-gray-500 px-6">

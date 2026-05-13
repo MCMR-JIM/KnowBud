@@ -61,6 +61,7 @@ export default function SettingsPanel() {
   const [model, setModel] = useState('');
   const [showApiKey, setShowApiKey] = useState(false);
   const [testResult, setTestResult] = useState('');
+  const [skipLocalParsing, setSkipLocalParsing] = useState(false);
   const [gpu, setGpu] = useState<GPUInfo | null>(null);
   const [gpuLoading, setGpuLoading] = useState(false);
   const [localPath, setLocalPath] = useState('');
@@ -91,7 +92,7 @@ export default function SettingsPanel() {
       const data = res.data;
       if (data.mode) setMode(data.mode === 'local' ? 'local' : 'api');
       if (data.provider) setProvider(data.provider);
-      if (data.remote) { setApiKey(data.remote.api_key||''); setBaseUrl(data.remote.base_url||''); setModel(data.remote.model||''); }
+      if (data.remote) { setApiKey(data.remote.api_key||''); setBaseUrl(data.remote.base_url||''); setModel(data.remote.model||''); setSkipLocalParsing(data.remote.skip_local_parsing||false); }
       if (data.local) { setLocalPath(data.local.model_path||''); setLocalModel(data.local.model||''); setLocalPort(data.local.port||8000); setDtype(data.local.precision||'bf16'); setMaxTokens(data.local.max_tokens||500); setTemp(data.local.temperature!=null?data.local.temperature:0.7); setTimeoutSec(data.local.timeout_sec||120); }
       if (data.model_paths) setModelPaths(data.model_paths);
       settingsLoadedRef.current = true;
@@ -168,7 +169,7 @@ export default function SettingsPanel() {
       SettingsAPI.saveSettings({
         mode: mode === 'local' ? 'local' : 'remote',
         provider,
-        remote: { api_key: apiKey, base_url: baseUrl, model },
+        remote: { api_key: apiKey, base_url: baseUrl, model, skip_local_parsing: skipLocalParsing },
         local: {
           model_path: localPath,
           model: localModel,
@@ -181,7 +182,7 @@ export default function SettingsPanel() {
       }).finally(() => setSaving(false));
     }, 300);
     return () => clearTimeout(timer);
-  }, [mode, provider, apiKey, baseUrl, model, localPath, localModel, localPort, dtype, temp, timeoutSec, maxTokens]);
+  }, [mode, provider, apiKey, baseUrl, model, skipLocalParsing, localPath, localModel, localPort, dtype, temp, timeoutSec, maxTokens]);
 
   // Scan when models or paths change
   useEffect(() => {
@@ -416,6 +417,29 @@ export default function SettingsPanel() {
                 placeholder={t('settings.modelPlaceholder')}
                 className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold outline-none transition-all focus:border-blue-300 focus:ring-4 focus:ring-blue-50"
               />
+            )}
+          </div>
+
+          {/* Direct Remote Upload Toggle */}
+          <div className="rounded-2xl border border-amber-100 bg-amber-50/60 p-5 space-y-3">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h4 className="text-sm font-black text-amber-800">📤 直接上传资源至远程API解析</h4>
+                <p className="mt-1 text-xs text-amber-600/80">模型下载失败时，跳过本地解析，将资源文件直接发送给远程 API 进行知识点提取（需要已配置 API Key）</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSkipLocalParsing(v => !v)}
+                className={`relative shrink-0 h-7 w-12 rounded-full transition-colors ${skipLocalParsing ? 'bg-amber-500' : 'bg-gray-300'}`}
+              >
+                <span className={`absolute top-0.5 left-0.5 h-6 w-6 rounded-full bg-white shadow transition-transform ${skipLocalParsing ? 'translate-x-5' : ''}`}></span>
+              </button>
+            </div>
+            {skipLocalParsing && !apiKey.trim() && (
+              <p className="text-xs text-red-600 font-semibold">⚠ 请先在上方配置 API Key，否则上传后解析会失败</p>
+            )}
+            {skipLocalParsing && (
+              <p className="text-xs text-amber-700">已开启：上传资源时将跳过本地 MinerU/OCR 解析，直接使用远程 API 提取知识点</p>
             )}
           </div>
 

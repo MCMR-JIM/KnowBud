@@ -759,6 +759,16 @@ def _run_resource_ingestion(
 
     try:
         topics = backend.load_app_state(include_history=False).curriculum.topics
+
+        # 检查是否开启了"直接上传远程API解析"模式
+        skip_local_parsing = False
+        try:
+            from src.api.settings_routes import _load_settings
+            settings = _load_settings()
+            skip_local_parsing = bool(settings.get("remote", {}).get("skip_local_parsing", False))
+        except Exception:
+            pass
+
         segments = ingest_document_resource(
             backend=backend,
             record=record,
@@ -768,6 +778,7 @@ def _run_resource_ingestion(
             subject=subject, language_id=language_id,
             enable_graph_search=not bool(subject),
             enable_new_pipeline=bool(subject),
+            skip_local_parsing=skip_local_parsing,
         )
         _cancelled_resources.discard(resource_id)
         # Only mark completed if ingestion didn't already fail internally

@@ -113,12 +113,16 @@ def ingest_document_resource(
     enable_new_pipeline: bool = False,
     subject: str | None = None,
     language_id: str | None = None,
+    skip_local_parsing: bool = False,
 ) -> list[ResourceSegment]:
     import os as _os
 
     units: list[TextUnit] | None = None
     parser = _select_parser(record)
-    allow_mineru = _os.getenv("MINERU_ENABLED", "true").strip().lower() != "false"
+    allow_mineru = (
+        _os.getenv("MINERU_ENABLED", "true").strip().lower() != "false"
+        and not skip_local_parsing  # 远程 API 直传模式：跳过本地 ML 模型解析
+    )
 
     if allow_mineru:
         _mineru_result: dict | None = None
