@@ -6,7 +6,7 @@ import * as echarts from 'echarts/core';
 import { BarChart, LineChart, RadarChart } from 'echarts/charts';
 import { GridComponent, LegendComponent, RadarComponent, TooltipComponent } from 'echarts/components';
 import { CanvasRenderer } from 'echarts/renderers';
-import { AlertCircle, BookOpen, CheckCircle2, Clock, FileText, Info, Loader2, Network, Pencil, Plus, Trash2, UploadCloud, Video, X } from 'lucide-react';
+import { AlertCircle, BookOpen, CheckCircle2, Clock, FileText, Loader2, Maximize2, Minimize2, Network, Pencil, Plus, Trash2, UploadCloud, Video, X } from 'lucide-react';
 import { API_BASE } from '../api/config';
 import { KnowledgeAPI, ResourceAPI } from '../api/client';
 import { useAppDialog } from '../components/AppDialog';
@@ -87,12 +87,19 @@ type GraphCanvasNode = SimulationNodeDatum & {
   targetX?: number;
   targetY?: number;
   layoutDepth?: number;
+  layoutOrder?: number;
 };
 
 type GraphCanvasLink = SimulationLinkDatum<GraphCanvasNode> & {
   source: string | GraphCanvasNode;
   target: string | GraphCanvasNode;
   type: 'parent' | 'prereq' | 'both';
+};
+
+type GraphCanvasSelectionMeta = {
+  resourceCount: number;
+  mistakeCount: number;
+  lastReview?: string | null;
 };
 
 const getNodeEdgeCount = (topic: GraphTopic, allTopics: GraphTopic[]) => {
@@ -115,22 +122,101 @@ const getSubjectLanguageId = (tags: string[] = []) => {
 
 const stripFileExtension = (filename: string) => filename.replace(/\.[^.]+$/, '') || filename;
 
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+const linkKeyOf = (sourceId: string, targetId: string) => `${sourceId}->${targetId}`;
+
+const mean = (values: number[]) => {
+  if (values.length === 0) return Number.NaN;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+};
+
+const reorderLayer = (
+  layer: string[],
+  anchorPositions: Map<string, number>,
+  neighborIdsByNode: Map<string, string[]>,
+) => {
+  const previousOrder = new Map(layer.map((id, index) => [id, index]));
+  return layer.slice().sort((leftId, rightId) => {
+    const leftNeighbors = (neighborIdsByNode.get(leftId) || [])
+      .map((id) => anchorPositions.get(id))
+      .filter((value): value is number => value !== undefined);
+    const rightNeighbors = (neighborIdsByNode.get(rightId) || [])
+      .map((id) => anchorPositions.get(id))
+      .filter((value): value is number => value !== undefined);
+    const leftScore = mean(leftNeighbors);
+    const rightScore = mean(rightNeighbors);
+    const normalizedLeft = Number.isNaN(leftScore) ? previousOrder.get(leftId) || 0 : leftScore;
+    const normalizedRight = Number.isNaN(rightScore) ? previousOrder.get(rightId) || 0 : rightScore;
+    if (normalizedLeft !== normalizedRight) return normalizedLeft - normalizedRight;
+    return (previousOrder.get(leftId) || 0) - (previousOrder.get(rightId) || 0);
+  });
+};
+
+const buildShortestParentPath = (
+  selectedId: string,
+  parentIncoming: Map<string, string[]>,
+  nodeById: Map<string, GraphCanvasNode>,
+) => {
+  const queue = [selectedId];
+  const childByParent = new Map<string, string>();
+  const visited = new Set(queue);
+  let reachedRootId: string | null = null;
+
+  while (queue.length > 0) {
+    const currentId = queue.shift() || '';
+    const node = nodeById.get(currentId);
+    const parentIds = parentIncoming.get(currentId) || [];
+    if ((node?.isRoot || parentIds.length === 0) && currentId !== selectedId) {
+      reachedRootId = currentId;
+      break;
+    }
+    for (const parentId of parentIds) {
+      if (visited.has(parentId)) continue;
+      visited.add(parentId);
+      childByParent.set(parentId, currentId);
+      queue.push(parentId);
+    }
+  }
+
+  const pathEdgeKeys = new Set<string>();
+  const pathNodeIds = new Set<string>([selectedId]);
+  if (!reachedRootId) return { pathEdgeKeys, pathNodeIds };
+
+  let currentId = reachedRootId;
+  pathNodeIds.add(currentId);
+  while (childByParent.has(currentId)) {
+    const childId = childByParent.get(currentId) || '';
+    pathNodeIds.add(childId);
+    pathEdgeKeys.add(linkKeyOf(currentId, childId));
+    currentId = childId;
+  }
+
+  return { pathEdgeKeys, pathNodeIds };
+};
+
 function KnowledgeGraphCanvas({
   topics,
   selectedTopicId,
   mistakeTopicIds,
+  nodeMetaByTopicId,
   onSelectNode,
 }: {
   topics: GraphTopic[];
   selectedTopicId?: string;
   mistakeTopicIds: string[];
-  onSelectNode: (topic: GraphTopic) => void;
+  nodeMetaByTopicId: ReadonlyMap<string, GraphCanvasSelectionMeta>;
+  onSelectNode: (topic: GraphTopic | null) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const onSelectNodeRef = useRef(onSelectNode);
-  const selectedTopicIdRef = useRef(selectedTopicId);
+  const selectedTopicIdRef = useRef<string | undefined>(selectedTopicId);
+  const nodeMetaByTopicIdRef = useRef(nodeMetaByTopicId);
   const redrawRef = useRef<(() => void) | null>(null);
+  const transformRef = useRef<ZoomTransform>(d3.zoomIdentity);
+  const positionCacheRef = useRef<Map<string, { x: number; y: number }>>(new Map());
+  const topologySignatureRef = useRef('');
   const mistakeKey = mistakeTopicIds.join('|');
 
   useEffect(() => {
@@ -141,6 +227,11 @@ function KnowledgeGraphCanvas({
     selectedTopicIdRef.current = selectedTopicId;
     redrawRef.current?.();
   }, [selectedTopicId]);
+
+  useEffect(() => {
+    nodeMetaByTopicIdRef.current = nodeMetaByTopicId;
+    redrawRef.current?.();
+  }, [nodeMetaByTopicId]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -165,15 +256,17 @@ function KnowledgeGraphCanvas({
 
       const mistakeSet = new Set(mistakeTopicIds);
       const validIds = new Set(topics.map((topic) => topic.topic_id));
-      const topicCount = Math.max(1, topics.length);
-      const canvasSpan = Math.min(width, height);
-      const nodes: GraphCanvasNode[] = topics.map((topic, index) => {
+      const topologySignature = topics
+        .map((topic) => `${topic.topic_id}|${(topic.parent_ids || []).slice().sort().join(',')}|${(topic.prerequisite_ids || []).slice().sort().join(',')}`)
+        .sort()
+        .join(';');
+      const isSameTopology = topologySignatureRef.current === topologySignature;
+      const cachedPositions = positionCacheRef.current;
+      const nodes: GraphCanvasNode[] = topics.map((topic) => {
         const isRoot = (topic.tags || []).includes('facet:root');
         const edgeWeight = getNodeEdgeCount(topic, topics);
-        const angle = index * Math.PI * (3 - Math.sqrt(5));
-        const initialRadius = canvasSpan * (0.14 + 0.38 * Math.sqrt((index + 1) / topicCount));
         const labelWidth = Math.min(172, Math.max(64, topic.title.length * 11 + 22));
-        const nodeRadius = isRoot ? 22 : 10 + edgeWeight * 1.8;
+        const nodeRadius = isRoot ? 20 : clamp(9 + edgeWeight * 1.55, 9, 18);
         return {
           id: topic.topic_id,
           title: topic.title,
@@ -183,14 +276,15 @@ function KnowledgeGraphCanvas({
           isMistake: mistakeSet.has(topic.topic_id),
           subject: getSubjectTag(topic.tags || []) || 'general',
           radius: nodeRadius,
-          collisionRadius: Math.max(nodeRadius + 34, labelWidth / 2 + 16),
-          x: width / 2 + Math.cos(angle) * initialRadius,
-          y: height / 2 + Math.sin(angle) * initialRadius,
+          collisionRadius: Math.max(nodeRadius + 14, labelWidth / 2 + 8),
+          x: cachedPositions.get(topic.topic_id)?.x ?? width / 2,
+          y: cachedPositions.get(topic.topic_id)?.y ?? height / 2,
         };
       });
+      const nodeById = new Map(nodes.map((node) => [node.id, node]));
       const linkByPair = new Map<string, GraphCanvasLink>();
       const upsertLink = (source: string, target: string, type: 'parent' | 'prereq') => {
-        const key = `${source}->${target}`;
+        const key = linkKeyOf(source, target);
         const existing = linkByPair.get(key);
         if (!existing) {
           linkByPair.set(key, { source, target, type });
@@ -209,118 +303,193 @@ function KnowledgeGraphCanvas({
       }
       const links = Array.from(linkByPair.values());
 
-      const outgoing = new Map<string, string[]>();
+      const allOutgoing = new Map<string, string[]>();
+      const allIncoming = new Map<string, string[]>();
       const parentOutgoing = new Map<string, string[]>();
+      const parentIncoming = new Map<string, string[]>();
+      const incidentLinkKeysByNode = new Map<string, string[]>();
       const incomingCount = new Map(nodes.map((node) => [node.id, 0]));
       for (const link of links) {
         const sourceId = String(link.source);
         const targetId = String(link.target);
-        outgoing.set(sourceId, [...(outgoing.get(sourceId) || []), targetId]);
+        allOutgoing.set(sourceId, [...(allOutgoing.get(sourceId) || []), targetId]);
+        allIncoming.set(targetId, [...(allIncoming.get(targetId) || []), sourceId]);
+        incidentLinkKeysByNode.set(sourceId, [...(incidentLinkKeysByNode.get(sourceId) || []), linkKeyOf(sourceId, targetId)]);
+        incidentLinkKeysByNode.set(targetId, [...(incidentLinkKeysByNode.get(targetId) || []), linkKeyOf(sourceId, targetId)]);
         if (link.type === 'parent' || link.type === 'both') {
           parentOutgoing.set(sourceId, [...(parentOutgoing.get(sourceId) || []), targetId]);
-          incomingCount.set(targetId, (incomingCount.get(targetId) || 0) + 1);
+          parentIncoming.set(targetId, [...(parentIncoming.get(targetId) || []), sourceId]);
         }
+        incomingCount.set(targetId, (incomingCount.get(targetId) || 0) + 1);
       }
 
       const rootNodes = nodes.filter((node) => node.isRoot);
       const layoutRoots = (rootNodes.length ? rootNodes : nodes.filter((node) => (incomingCount.get(node.id) || 0) === 0)).slice();
       if (layoutRoots.length === 0 && nodes[0]) layoutRoots.push(nodes[0]);
 
-      const depthById = new Map<string, number>();
+      const indegree = new Map(nodes.map((node) => [node.id, allIncoming.get(node.id)?.length || 0]));
+      const topoQueue = layoutRoots.map((node) => node.id);
+      const queued = new Set(topoQueue);
+      for (const node of nodes) {
+        if ((indegree.get(node.id) || 0) === 0 && !queued.has(node.id)) {
+          topoQueue.push(node.id);
+          queued.add(node.id);
+        }
+      }
+
+      const topoOrder: string[] = [];
+      while (topoQueue.length > 0) {
+        const currentId = topoQueue.shift() || '';
+        topoOrder.push(currentId);
+        for (const nextId of allOutgoing.get(currentId) || []) {
+          const nextIn = (indegree.get(nextId) || 0) - 1;
+          indegree.set(nextId, nextIn);
+          if (nextIn === 0) topoQueue.push(nextId);
+        }
+      }
+
+      for (const node of nodes) {
+        if (!topoOrder.includes(node.id)) topoOrder.push(node.id);
+      }
+
       const rootById = new Map<string, string>();
-      const queue: string[] = [];
-      for (const root of layoutRoots) {
-        depthById.set(root.id, 0);
-        rootById.set(root.id, root.id);
-        queue.push(root.id);
-      }
-
-      while (queue.length > 0) {
-        const sourceId = queue.shift() || '';
-        const nextDepth = (depthById.get(sourceId) || 0) + 1;
-        for (const targetId of parentOutgoing.get(sourceId) || []) {
-          const currentDepth = depthById.get(targetId);
-          if (currentDepth !== undefined && currentDepth >= nextDepth) continue;
-          depthById.set(targetId, nextDepth);
-          rootById.set(targetId, rootById.get(sourceId) || sourceId);
-          queue.push(targetId);
+      const componentQueue = layoutRoots.map((node) => node.id);
+      for (const rootId of componentQueue) rootById.set(rootId, rootId);
+      while (componentQueue.length > 0) {
+        const currentId = componentQueue.shift() || '';
+        const rootId = rootById.get(currentId) || currentId;
+        for (const targetId of allOutgoing.get(currentId) || []) {
+          if (rootById.has(targetId)) continue;
+          rootById.set(targetId, rootId);
+          componentQueue.push(targetId);
         }
       }
-
       for (const node of nodes) {
-        if (!rootById.has(node.id)) {
-          rootById.set(node.id, node.id);
-          depthById.set(node.id, 0);
-          layoutRoots.push(node);
+        if (!rootById.has(node.id)) rootById.set(node.id, node.id);
+      }
+
+      const depthById = new Map<string, number>(nodes.map((node) => [node.id, 0]));
+      for (const nodeId of topoOrder) {
+        const baseDepth = depthById.get(nodeId) || 0;
+        for (const targetId of allOutgoing.get(nodeId) || []) {
+          depthById.set(targetId, Math.max(depthById.get(targetId) || 0, baseDepth + 1));
         }
       }
 
-      const uniqueRootIds = Array.from(new Set(layoutRoots.map((root) => root.id)));
-      const rootCenters = new Map<string, { x: number; y: number; angle: number }>();
-      const rootOrbitX = width * 0.28;
-      const rootOrbitY = height * 0.24;
-      uniqueRootIds.forEach((rootId, index) => {
-        const angle = uniqueRootIds.length === 1 ? -Math.PI / 2 : -Math.PI / 2 + (Math.PI * 2 * index) / uniqueRootIds.length;
-        rootCenters.set(rootId, {
-          x: uniqueRootIds.length === 1 ? width / 2 : width / 2 + Math.cos(angle) * rootOrbitX,
-          y: uniqueRootIds.length === 1 ? height / 2 : height / 2 + Math.sin(angle) * rootOrbitY,
-          angle,
-        });
+      const componentIds = Array.from(new Set(nodes.map((node) => rootById.get(node.id) || node.id))).sort((leftId, rightId) => {
+        const leftNode = nodeById.get(leftId);
+        const rightNode = nodeById.get(rightId);
+        return (leftNode?.title || leftId).localeCompare(rightNode?.title || rightId, 'zh-CN');
       });
+      const componentLayouts = componentIds.map((componentId) => {
+        const componentNodes = nodes
+          .filter((node) => (rootById.get(node.id) || node.id) === componentId)
+          .sort((left, right) => {
+            const leftIn = allIncoming.get(left.id)?.length || 0;
+            const rightIn = allIncoming.get(right.id)?.length || 0;
+            if (leftIn !== rightIn) return leftIn - rightIn;
+            return left.title.localeCompare(right.title, 'zh-CN');
+          });
+        const componentMaxDepth = Math.max(0, ...componentNodes.map((node) => depthById.get(node.id) || 0));
+        const layers = Array.from({ length: componentMaxDepth + 1 }, () => [] as string[]);
+        componentNodes.forEach((node) => {
+          const depth = depthById.get(node.id) || 0;
+          node.layoutDepth = depth;
+          layers[depth].push(node.id);
+        });
 
-      const groups = new Map<string, GraphCanvasNode[]>();
-      for (const node of nodes) {
-        const rootId = rootById.get(node.id) || node.id;
-        const depth = depthById.get(node.id) || 0;
-        node.layoutDepth = depth;
-        const key = `${rootId}:${depth}`;
-        groups.set(key, [...(groups.get(key) || []), node]);
-      }
-
-      const maxDepth = Math.max(1, ...nodes.map((node) => node.layoutDepth || 0));
-      const singleRootStep = Math.max(92, Math.min(150, canvasSpan / (maxDepth + 1.7)));
-      const multiRootStep = Math.max(72, Math.min(112, canvasSpan / (maxDepth + 2.6)));
-      for (const [key, groupNodes] of groups) {
-        const [rootId, depthValue] = key.split(':');
-        const depth = Number(depthValue || 0);
-        const rootCenter = rootCenters.get(rootId) || { x: width / 2, y: height / 2, angle: -Math.PI / 2 };
-        const ordered = groupNodes.sort((left, right) => left.title.localeCompare(right.title, 'zh-CN'));
-        for (const [index, node] of ordered.entries()) {
-          if (depth === 0) {
-            node.targetX = rootCenter.x;
-            node.targetY = rootCenter.y;
-            continue;
+        for (let iteration = 0; iteration < 8; iteration += 1) {
+          let anchorPositions = new Map(layers[0].map((id, index) => [id, index]));
+          for (let depth = 1; depth < layers.length; depth += 1) {
+            layers[depth] = reorderLayer(layers[depth], anchorPositions, allIncoming);
+            anchorPositions = new Map(layers[depth].map((id, index) => [id, index]));
           }
 
-          const count = ordered.length;
-          const localSpread = uniqueRootIds.length === 1 ? Math.min(Math.PI * 1.3, Math.max(Math.PI * 0.28, count * 0.16)) : Math.min(Math.PI * 0.92, (Math.PI * 2 / uniqueRootIds.length) * 0.78);
-          const baseAngle = uniqueRootIds.length === 1 ? -Math.PI / 2 + depth * 0.42 : rootCenter.angle;
-          const angle = count === 1 ? baseAngle : baseAngle - localSpread / 2 + (localSpread * (index + 0.5)) / count;
-          const ring = (uniqueRootIds.length === 1 ? singleRootStep * 1.12 : multiRootStep) * depth;
-          node.targetX = rootCenter.x + Math.cos(angle) * ring;
-          node.targetY = rootCenter.y + Math.sin(angle) * ring;
+          anchorPositions = new Map(layers[layers.length - 1].map((id, index) => [id, index]));
+          for (let depth = layers.length - 2; depth >= 0; depth -= 1) {
+            layers[depth] = reorderLayer(layers[depth], anchorPositions, allOutgoing);
+            anchorPositions = new Map(layers[depth].map((id, index) => [id, index]));
+          }
         }
-      }
 
-      let transform: ZoomTransform = d3.zoomIdentity;
-      const spread = Math.max(1, Math.min(1.8, Math.sqrt(topicCount / 22)));
+        return {
+          componentId,
+          layers,
+          maxDepth: componentMaxDepth,
+          maxLayerSize: Math.max(1, ...layers.map((layer) => layer.length)),
+        };
+      });
+
+      const graphPadding = { top: 56, right: 72, bottom: 56, left: 48 };
+      const usableWidth = Math.max(320, width - graphPadding.left - graphPadding.right);
+      const usableHeight = Math.max(260, height - graphPadding.top - graphPadding.bottom);
+      const totalWeight = componentLayouts.reduce((sum, layout) => sum + Math.max(3, layout.maxLayerSize + layout.maxDepth * 0.35), 0);
+      const componentGap = clamp(usableHeight * 0.035, 18, 34);
+      const availableHeight = usableHeight - componentGap * Math.max(0, componentLayouts.length - 1);
+      let bandTop = graphPadding.top;
+
+      componentLayouts.forEach((layout, componentIndex) => {
+        const weight = Math.max(3, layout.maxLayerSize + layout.maxDepth * 0.35);
+        const bandHeight = componentLayouts.length === 1
+          ? availableHeight
+          : Math.max(140, availableHeight * (weight / Math.max(1, totalWeight)));
+        const centerY = bandTop + bandHeight / 2;
+        const boxWidth = usableWidth;
+        const rootInset = componentLayouts.length === 1 ? boxWidth * 0.14 : boxWidth * 0.12;
+        const rootX = graphPadding.left + rootInset;
+        const radiusStep = (boxWidth - rootInset - 48) / Math.max(1, layout.maxDepth + 0.65);
+        const verticalRadiusScale = clamp(bandHeight / Math.max(220, boxWidth * 0.78), 0.5, 1.15);
+
+        layout.layers.forEach((layer, depth) => {
+          const spreadBase = layout.layers.length === 1 ? Math.PI * 1.15 : Math.PI * clamp(0.36 + layer.length * 0.045, 0.5, 0.96);
+          const radius = depth === 0 ? 0 : 24 + depth * radiusStep;
+          layer.forEach((nodeId, index) => {
+            const node = nodeById.get(nodeId);
+            if (!node) return;
+            node.layoutOrder = index;
+            if (depth === 0) {
+              node.targetX = rootX;
+              node.targetY = centerY;
+            } else {
+              const angle = layer.length === 1
+                ? 0
+                : -spreadBase / 2 + (spreadBase * (index + 0.5)) / layer.length;
+              node.targetX = rootX + Math.cos(angle) * radius;
+              node.targetY = centerY + Math.sin(angle) * radius * verticalRadiusScale;
+            }
+            if (!isSameTopology || !cachedPositions.has(node.id)) {
+              node.x = node.targetX + (Math.random() - 0.5) * 22;
+              node.y = node.targetY + (Math.random() - 0.5) * 22;
+            }
+          });
+        });
+
+        bandTop += bandHeight + (componentIndex < componentLayouts.length - 1 ? componentGap : 0);
+      });
+
+      let transform: ZoomTransform = transformRef.current;
       const simulation = d3.forceSimulation<GraphCanvasNode>(nodes)
-        .force('link', d3.forceLink<GraphCanvasNode, GraphCanvasLink>(links).id((node) => node.id).distance((link) => {
-          const srcW = ((link.source as GraphCanvasNode).topic.parent_ids?.length || 0) + ((link.source as GraphCanvasNode).topic.prerequisite_ids?.length || 0);
-          const tgtW = ((link.target as GraphCanvasNode).topic.parent_ids?.length || 0) + ((link.target as GraphCanvasNode).topic.prerequisite_ids?.length || 0);
-          return (140 + Math.min(srcW + tgtW, 20) * 12) * spread;
-        }).strength(0.18))
-        .force('charge', d3.forceManyBody<GraphCanvasNode>().strength((node) => {
-          if (node.isRoot) return -720;
-          const w = node.edgeCount;
-          return -(380 + w * 80);
-        }).distanceMin(48).distanceMax(Math.max(width, height) * 0.85))
-        .force('center', d3.forceCenter(width / 2, height / 2))
-        .force('x', d3.forceX<GraphCanvasNode>((node) => node.targetX ?? width / 2).strength((node) => node.isRoot ? 0.25 : 0.08))
-        .force('y', d3.forceY<GraphCanvasNode>((node) => node.targetY ?? height / 2).strength((node) => node.isRoot ? 0.25 : 0.08))
-        .force('collide', d3.forceCollide<GraphCanvasNode>((node) => node.collisionRadius).strength(1.0).iterations(3))
-        .alpha(0.95)
-        .alphaDecay(0.014);
+        .force('link', d3.forceLink<GraphCanvasNode, GraphCanvasLink>(links)
+          .id((node) => node.id)
+          .distance((link) => {
+            const sourceNode = typeof link.source === 'string' ? nodeById.get(link.source) : link.source;
+            const targetNode = typeof link.target === 'string' ? nodeById.get(link.target) : link.target;
+            const depthGap = Math.abs((targetNode?.layoutDepth || 0) - (sourceNode?.layoutDepth || 0));
+            return 48 + depthGap * 34 + (link.type === 'prereq' ? 10 : 0);
+          })
+          .strength((link) => link.type === 'both' ? 0.22 : link.type === 'prereq' ? 0.18 : 0.16)
+          .iterations(4))
+        .force('charge', d3.forceManyBody<GraphCanvasNode>()
+          .strength((node) => node.isRoot ? -140 : -(42 + node.edgeCount * 7))
+          .distanceMin(24)
+          .distanceMax(220))
+        .force('x', d3.forceX<GraphCanvasNode>((node) => node.targetX ?? width / 2).strength(0.62))
+        .force('y', d3.forceY<GraphCanvasNode>((node) => node.targetY ?? height / 2).strength(0.34))
+        .force('collide', d3.forceCollide<GraphCanvasNode>((node) => node.collisionRadius).strength(0.9).iterations(2))
+        .velocityDecay(0.22)
+        .alpha(isSameTopology ? 0.42 : 1)
+        .alphaDecay(isSameTopology ? 0.009 : 0.006)
+        .alphaMin(0.0012);
 
       const drawPill = (x: number, y: number, pillWidth: number, pillHeight: number, radius: number) => {
         ctx.beginPath();
@@ -348,7 +517,93 @@ function KnowledgeGraphCanvas({
         ctx.restore();
       };
 
+      const drawBubble = (node: GraphCanvasNode) => {
+        const meta = nodeMetaByTopicIdRef.current.get(node.id);
+        const nodeX = node.x || 0;
+        const nodeY = node.y || 0;
+        const screenX = transform.applyX(nodeX);
+        const screenY = transform.applyY(nodeY);
+        const anchorOffset = Math.max(24, node.radius * transform.k + 18);
+        const bubbleWidth = 246;
+        const bubbleHeight = 132;
+        let bubbleX = screenX + anchorOffset;
+        if (bubbleX + bubbleWidth > width - 18) {
+          bubbleX = screenX - bubbleWidth - anchorOffset;
+        }
+        const bubbleY = clamp(screenY - bubbleHeight / 2, 18, height - bubbleHeight - 18);
+        const pointerOnRight = bubbleX > screenX;
+        const pointerY = clamp(screenY, bubbleY + 18, bubbleY + bubbleHeight - 18);
+
+        ctx.save();
+        ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+        ctx.shadowColor = 'rgba(2, 6, 23, 0.38)';
+        ctx.shadowBlur = 26;
+        ctx.shadowOffsetY = 12;
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.96)';
+        drawPill(bubbleX, bubbleY, bubbleWidth, bubbleHeight, 18);
+        ctx.fill();
+        ctx.shadowColor = 'transparent';
+
+        ctx.beginPath();
+        if (pointerOnRight) {
+          ctx.moveTo(bubbleX, pointerY - 11);
+          ctx.lineTo(bubbleX - 14, screenY);
+          ctx.lineTo(bubbleX, pointerY + 11);
+        } else {
+          ctx.moveTo(bubbleX + bubbleWidth, pointerY - 11);
+          ctx.lineTo(bubbleX + bubbleWidth + 14, screenY);
+          ctx.lineTo(bubbleX + bubbleWidth, pointerY + 11);
+        }
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.strokeStyle = 'rgba(251, 191, 36, 0.6)';
+        ctx.lineWidth = 1.5;
+        drawPill(bubbleX, bubbleY, bubbleWidth, bubbleHeight, 18);
+        ctx.stroke();
+
+        ctx.fillStyle = '#f8fafc';
+        ctx.font = '800 15px Nunito, Segoe UI, sans-serif';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+        ctx.fillText(node.title, bubbleX + 16, bubbleY + 14);
+
+        ctx.fillStyle = 'rgba(224, 231, 255, 0.82)';
+        ctx.font = '700 11px Nunito, Segoe UI, sans-serif';
+        ctx.fillText('节点信息', bubbleX + 16, bubbleY + 38);
+
+        const metrics = [
+          `绑定资源 ${meta?.resourceCount ?? 0}`,
+          `错题命中 ${meta?.mistakeCount ?? (node.isMistake ? 1 : 0)}`,
+          meta?.lastReview ? `最近错题 ${meta.lastReview}` : '目前掌握稳定，暂无错题记录',
+        ];
+
+        ctx.font = '700 12px Nunito, Segoe UI, sans-serif';
+        metrics.forEach((line, index) => {
+          ctx.fillStyle = index < 2 ? '#fde68a' : 'rgba(226, 232, 240, 0.92)';
+          ctx.fillText(line, bubbleX + 16, bubbleY + 60 + index * 22);
+        });
+        ctx.restore();
+      };
+
+      const findHitNode = (x: number, y: number) => {
+        for (let index = nodes.length - 1; index >= 0; index -= 1) {
+          const node = nodes[index];
+          const dx = x - (node.x || 0);
+          const dy = y - (node.y || 0);
+          if (Math.hypot(dx, dy) <= node.radius + 10) return node;
+        }
+        return undefined;
+      };
+
       const draw = () => {
+        const selectedId = selectedTopicIdRef.current;
+        const selectedNode = selectedId ? nodeById.get(selectedId) : undefined;
+        const { pathEdgeKeys, pathNodeIds } = selectedNode
+          ? buildShortestParentPath(selectedNode.id, parentIncoming, nodeById)
+          : { pathEdgeKeys: new Set<string>(), pathNodeIds: new Set<string>() };
+        const selectedIncidentEdgeKeys = new Set(selectedId ? incidentLinkKeysByNode.get(selectedId) || [] : []);
+
         ctx.save();
         ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
         ctx.clearRect(0, 0, width, height);
@@ -371,51 +626,64 @@ function KnowledgeGraphCanvas({
           const startY = sy + uy * (link.source.radius + 3);
           const endX = tx - ux * (link.target.radius + 6);
           const endY = ty - uy * (link.target.radius + 6);
-          const linkColor = link.type === 'parent'
-            ? 'rgba(244, 114, 182, 0.58)'
-            : link.type === 'both'
-              ? 'rgba(251, 191, 36, 0.68)'
-              : 'rgba(125, 211, 252, 0.58)';
+          const sourceId = typeof link.source === 'string' ? link.source : link.source.id;
+          const targetId = typeof link.target === 'string' ? link.target : link.target.id;
+          const currentLinkKey = linkKeyOf(sourceId, targetId);
+          const isPathLink = pathEdgeKeys.has(currentLinkKey);
+          const isIncidentLink = selectedIncidentEdgeKeys.has(currentLinkKey);
+          const linkColor = isPathLink
+            ? 'rgba(250, 204, 21, 0.96)'
+            : isIncidentLink
+              ? 'rgba(255, 255, 255, 0.88)'
+              : link.type === 'parent'
+                ? 'rgba(244, 114, 182, 0.42)'
+                : link.type === 'both'
+                  ? 'rgba(251, 191, 36, 0.54)'
+                  : 'rgba(125, 211, 252, 0.42)';
+          const controlOffset = clamp(Math.abs(dx) * 0.35, 26, 112);
+          const curveSign = dy >= 0 ? 1 : -1;
+          const curveOffset = link.type === 'prereq'
+            ? clamp(Math.abs(dy) * 0.18 + 16, 18, 52) * curveSign
+            : 0;
+          const endControlX = endX - controlOffset;
+          const endControlY = endY + curveOffset;
+
           ctx.beginPath();
-          if (link.type === 'prereq') {
-            const mx = (startX + endX) / 2;
-            const my = (startY + endY) / 2;
-            const nx = -uy;
-            const ny = ux;
-            const curve = Math.min(42, Math.max(16, length * 0.12));
-            ctx.moveTo(startX, startY);
-            ctx.quadraticCurveTo(mx + nx * curve, my + ny * curve, endX, endY);
-          } else {
-            ctx.moveTo(startX, startY);
-            ctx.lineTo(endX, endY);
-          }
-          if (link.type === 'parent') {
-            ctx.setLineDash([6, 6]);
-            ctx.strokeStyle = linkColor;
-            ctx.lineWidth = 1.25;
+          ctx.moveTo(startX, startY);
+          ctx.bezierCurveTo(
+            startX + controlOffset,
+            startY - curveOffset,
+            endControlX,
+            endControlY,
+            endX,
+            endY,
+          );
+          ctx.strokeStyle = linkColor;
+          ctx.lineWidth = isPathLink ? 3.5 : isIncidentLink ? 2.4 : link.type === 'both' ? 1.6 : 1.35;
+          if (isPathLink) {
+            ctx.setLineDash([]);
+          } else if (link.type === 'parent') {
+            ctx.setLineDash([6, 7]);
           } else if (link.type === 'both') {
-            ctx.setLineDash([10, 4, 2, 4]);
-            ctx.strokeStyle = linkColor;
-            ctx.lineWidth = 1.7;
+            ctx.setLineDash([9, 5, 2, 5]);
           } else {
             ctx.setLineDash([]);
-            ctx.strokeStyle = linkColor;
-            ctx.lineWidth = 1.5;
           }
           ctx.stroke();
           ctx.setLineDash([]);
-          drawArrowHead(endX, endY, Math.atan2(dy, dx), linkColor, link.type === 'both' ? 9 : link.type === 'parent' ? 7 : 8);
+          drawArrowHead(endX, endY, Math.atan2(endY - endControlY, endX - endControlX), linkColor, isPathLink ? 10 : link.type === 'both' ? 8 : 7);
         }
         ctx.setLineDash([]);
 
         for (const node of nodes) {
           const x = node.x || 0;
           const y = node.y || 0;
-          const isSelected = node.id === selectedTopicIdRef.current;
-          const haloRadius = node.radius + (node.isMistake ? 10 : 7);
+          const isSelected = node.id === selectedId;
+          const isOnPath = pathNodeIds.has(node.id);
+          const haloRadius = node.radius + (node.isMistake ? 9 : 6);
 
           const halo = ctx.createRadialGradient(x, y, node.radius * 0.4, x, y, haloRadius);
-          halo.addColorStop(0, node.isMistake ? 'rgba(244, 63, 94, 0.34)' : 'rgba(129, 140, 248, 0.34)');
+          halo.addColorStop(0, isSelected ? 'rgba(250, 204, 21, 0.36)' : node.isMistake ? 'rgba(244, 63, 94, 0.26)' : 'rgba(129, 140, 248, 0.2)');
           halo.addColorStop(1, 'rgba(15, 23, 42, 0)');
           ctx.fillStyle = halo;
           ctx.beginPath();
@@ -426,8 +694,8 @@ function KnowledgeGraphCanvas({
           ctx.arc(x, y, node.radius, 0, Math.PI * 2);
           ctx.fillStyle = node.isRoot ? '#fce7f3' : node.isMistake ? '#ffe4e6' : '#eef2ff';
           ctx.fill();
-          ctx.strokeStyle = isSelected ? '#fbbf24' : node.isMistake ? '#fb7185' : node.isRoot ? '#f472b6' : '#93c5fd';
-          ctx.lineWidth = isSelected ? 3 : 1.8;
+          ctx.strokeStyle = isSelected ? '#facc15' : isOnPath ? '#fbbf24' : node.isMistake ? '#fb7185' : node.isRoot ? '#f472b6' : '#93c5fd';
+          ctx.lineWidth = isSelected ? 3.2 : isOnPath ? 2.4 : 1.6;
           ctx.stroke();
 
           ctx.fillStyle = node.isRoot ? '#be185d' : node.isMistake ? '#be123c' : '#1e3a8a';
@@ -436,22 +704,34 @@ function KnowledgeGraphCanvas({
           ctx.textBaseline = 'middle';
           ctx.fillText(node.isRoot ? 'ROOT' : String(node.edgeCount), x, y);
 
-          const label = node.title.length > 18 ? `${node.title.slice(0, 18)}...` : node.title;
+          const label = node.title.length > 16 ? `${node.title.slice(0, 16)}...` : node.title;
           ctx.font = '700 11px Nunito, Segoe UI, sans-serif';
-          const labelWidth = Math.min(164, ctx.measureText(label).width + 20);
+          const labelWidth = Math.min(156, ctx.measureText(label).width + 18);
           const labelX = x - labelWidth / 2;
-          const labelY = y + node.radius + 9;
-          ctx.fillStyle = isSelected ? 'rgba(251, 191, 36, 0.92)' : 'rgba(15, 23, 42, 0.78)';
-          drawPill(labelX, labelY, labelWidth, 22, 11);
+          const labelY = y + node.radius + 7;
+          ctx.fillStyle = isSelected ? 'rgba(250, 204, 21, 0.92)' : isOnPath ? 'rgba(245, 158, 11, 0.88)' : 'rgba(15, 23, 42, 0.74)';
+          drawPill(labelX, labelY, labelWidth, 20, 10);
           ctx.fill();
           ctx.fillStyle = isSelected ? '#111827' : '#f8fafc';
-          ctx.fillText(label, x, labelY + 11);
+          ctx.fillText(label, x, labelY + 10);
         }
 
         ctx.restore();
+
+        if (selectedNode) {
+          drawBubble(selectedNode);
+        }
       };
 
-      simulation.on('tick', draw);
+      simulation.on('tick', () => {
+        positionCacheRef.current = new Map(nodes.map((node) => [node.id, { x: node.x || 0, y: node.y || 0 }]));
+        draw();
+      });
+      simulation.on('end', () => {
+        positionCacheRef.current = new Map(nodes.map((node) => [node.id, { x: node.x || 0, y: node.y || 0 }]));
+        draw();
+      });
+      topologySignatureRef.current = topologySignature;
       redrawRef.current = draw;
 
       const selection = d3.select<HTMLCanvasElement, unknown>(canvas);
@@ -461,6 +741,7 @@ function KnowledgeGraphCanvas({
         .scaleExtent([0.45, 4.5])
         .on('zoom', (event) => {
           transform = event.transform;
+          transformRef.current = transform;
           draw();
         });
 
@@ -470,14 +751,14 @@ function KnowledgeGraphCanvas({
         .container(canvas)
         .subject((event) => {
           const [x, y] = pointerInGraph(event.sourceEvent);
-          return simulation.find(x, y, 28 / transform.k) || undefined;
+          return simulation.find(x, y, 28 / Math.max(0.85, transform.k)) || findHitNode(x, y) || undefined;
         })
         .on('start', (event) => {
           const subject = event.subject as GraphCanvasNode | undefined;
           if (!subject) return;
-          if (!event.active) simulation.alphaTarget(0.28).restart();
           subject.fx = subject.x;
           subject.fy = subject.y;
+          simulation.alphaTarget(0.03).restart();
         })
         .on('drag', (event) => {
           const subject = event.subject as GraphCanvasNode | undefined;
@@ -485,28 +766,31 @@ function KnowledgeGraphCanvas({
           const [x, y] = pointerInGraph(event.sourceEvent);
           subject.fx = x;
           subject.fy = y;
-          draw();
+          positionCacheRef.current.set(subject.id, { x, y });
         })
         .on('end', (event) => {
           const subject = event.subject as GraphCanvasNode | undefined;
           if (!subject) return;
-          if (!event.active) simulation.alphaTarget(0);
+          simulation.alphaTarget(0);
           subject.fx = null;
           subject.fy = null;
+          simulation.restart();
         });
 
       selection.call(zoom).call(drag);
       selection.on('click', (event) => {
         const [x, y] = pointerInGraph(event);
-        const hit = simulation.find(x, y, 24 / transform.k);
-        if (!hit) return;
-        selectedTopicIdRef.current = hit.id;
-        onSelectNodeRef.current(hit.topic);
+        const hit = simulation.find(x, y, 24 / Math.max(0.85, transform.k)) || findHitNode(x, y);
+        selectedTopicIdRef.current = hit?.id;
+        onSelectNodeRef.current(hit ? hit.topic : null);
         draw();
       });
+      draw();
+      simulation.restart();
 
       stopRender = () => {
         simulation.stop();
+        positionCacheRef.current = new Map(nodes.map((node) => [node.id, { x: node.x || 0, y: node.y || 0 }]));
         if (redrawRef.current === draw) redrawRef.current = null;
         selection.on('.zoom', null).on('.drag', null).on('click', null);
       };
@@ -750,7 +1034,7 @@ export default function AdminDashboard() {
   const [graphNodes, setGraphNodes] = useState<GraphTopic[]>([]);
   const [selectedNode, setSelectedNode] = useState<GraphTopic | null>(null);
   const [selectedGraphRootId, setSelectedGraphRootId] = useState('');
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [graphExpanded, setGraphExpanded] = useState(false);
 
   // 页面加载时自动获取后端数据
   useEffect(() => {
@@ -1299,6 +1583,24 @@ export default function AdminDashboard() {
     [visibleGraphNodes],
   );
   const selectedGraphRoot = subjectRoots.find((topic) => topic.topic_id === selectedGraphRootId);
+  const knowledgePointByTopicId = useMemo(
+    () => new Map<string, GraphCanvasSelectionMeta>(
+      knowledgePoints.map((point) => [point.topicId, {
+        resourceCount: point.resourceCount || 0,
+        mistakeCount: 1,
+        lastReview: point.lastReview || null,
+      }]),
+    ),
+    [knowledgePoints],
+  );
+
+  useEffect(() => {
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setGraphExpanded(false);
+    };
+    window.addEventListener('keydown', handleEscape);
+    return () => window.removeEventListener('keydown', handleEscape);
+  }, []);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-50 to-pink-50 p-6">
@@ -1675,8 +1977,9 @@ export default function AdminDashboard() {
 
         {/* 4. 知识图谱大屏 */}
         {activeTab === 'graph' && (
-          <div className="h-[760px]">
-            <div className="relative flex h-full flex-col overflow-hidden rounded-[2rem] border border-indigo-200/20 bg-slate-950 p-5 shadow-2xl shadow-indigo-950/20">
+          <div className={graphExpanded ? 'fixed inset-0 z-40 p-4' : 'h-[760px]'}>
+            {graphExpanded && <div className="absolute inset-0 bg-slate-950/70 backdrop-blur-sm"></div>}
+            <div className={`relative flex h-full flex-col overflow-hidden border border-indigo-200/20 bg-slate-950 p-5 shadow-2xl shadow-indigo-950/20 ${graphExpanded ? 'rounded-[2.25rem]' : 'rounded-[2rem]'}`}>
               <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_15%_12%,rgba(244,114,182,0.23),transparent_28%),radial-gradient(circle_at_84%_18%,rgba(56,189,248,0.18),transparent_28%),linear-gradient(135deg,rgba(15,23,42,0.94),rgba(49,46,129,0.88))]"></div>
               <div className="relative mb-4 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                 <div className="flex items-start gap-3">
@@ -1685,7 +1988,7 @@ export default function AdminDashboard() {
                   </div>
                   <div>
                     <h2 className="text-xl font-black text-white">知识图谱</h2>
-                    <p className="mt-1 text-xs text-indigo-100/70">D3 力导向结构图，拖拽节点、滚轮缩放，点击查看掌握情况。</p>
+                    <p className="mt-1 text-xs text-indigo-100/70">D3 分层布局图，优先减少交叉；拖拽节点、滚轮缩放，点击后立即高亮路径并在节点右侧显示信息。</p>
                   </div>
                 </div>
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -1696,7 +1999,6 @@ export default function AdminDashboard() {
                       onChange={(e) => {
                         setSelectedGraphRootId(e.target.value);
                         setSelectedNode(null);
-                        setIsModalOpen(false);
                       }}
                       className="min-w-40 rounded-xl border border-white/10 bg-slate-950/80 px-3 py-1.5 text-xs text-white outline-none focus:ring-2 focus:ring-cyan-300/40"
                     >
@@ -1709,6 +2011,14 @@ export default function AdminDashboard() {
                   <div className="flex shrink-0 gap-2 text-[11px] font-bold text-white/80">
                     <span className="rounded-full border border-white/10 bg-white/10 px-3 py-1">{visibleGraphNodes.length} 节点</span>
                     <span className="rounded-full border border-white/10 bg-white/10 px-3 py-1">{visibleGraphEdgeCount} 关系</span>
+                    <button
+                      type="button"
+                      onClick={() => setGraphExpanded((current) => !current)}
+                      className="inline-flex items-center gap-2 rounded-full border border-cyan-300/30 bg-cyan-400/12 px-3 py-1 text-[11px] font-extrabold text-cyan-50 transition hover:bg-cyan-400/18"
+                    >
+                      {graphExpanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+                      {graphExpanded ? '退出页面播放' : '页面播放'}
+                    </button>
                   </div>
                 </div>
               </div>
@@ -1732,9 +2042,9 @@ export default function AdminDashboard() {
                     topics={visibleGraphNodes}
                     selectedTopicId={selectedNode?.topic_id}
                     mistakeTopicIds={mistakeTopicIds}
+                    nodeMetaByTopicId={knowledgePointByTopicId}
                     onSelectNode={(node) => {
                       setSelectedNode(node);
-                      setIsModalOpen(true);
                     }}
                   />
                 )}
@@ -1742,69 +2052,17 @@ export default function AdminDashboard() {
                 <div className="pointer-events-none absolute bottom-4 left-4 flex flex-wrap gap-2 text-[11px] font-bold text-white/80">
                   <span className="rounded-full border border-pink-300/30 bg-pink-500/15 px-3 py-1">虚线：层级归属 parent_ids</span>
                   <span className="rounded-full border border-cyan-300/30 bg-cyan-500/15 px-3 py-1">实线：前置依赖 prerequisite_ids</span>
-                  <span className="rounded-full border border-amber-300/30 bg-amber-500/15 px-3 py-1">黄线：层级 + 前置复合关系</span>
+                  <span className="rounded-full border border-amber-300/30 bg-amber-500/15 px-3 py-1">黄线：点击节点后的上行路径</span>
                   <span className="rounded-full border border-rose-300/30 bg-rose-500/15 px-3 py-1">粉色光晕：错题节点</span>
                 </div>
+
+                {selectedNode && (
+                  <div className="pointer-events-none absolute right-4 top-4 rounded-2xl border border-amber-300/20 bg-slate-950/72 px-4 py-3 text-[11px] font-semibold text-slate-100 shadow-lg shadow-slate-950/25 backdrop-blur">
+                    当前节点「{selectedNode.title}」已选中，路径与说明会直接跟随节点更新。
+                  </div>
+                )}
               </div>
             </div>
-
-            {isModalOpen && selectedNode && (
-              <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-                <div className="bg-white rounded-[28px] shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in duration-200">
-                  <div className="relative overflow-hidden bg-gradient-to-br from-slate-950 via-indigo-900 to-fuchsia-800 p-6 text-white">
-                    <div className="absolute -right-10 -top-12 h-32 w-32 rounded-full bg-cyan-300/20 blur-2xl"></div>
-                    <button 
-                      onClick={() => setIsModalOpen(false)}
-                      className="absolute top-4 right-4 text-white/70 hover:text-white cursor-pointer"
-                    >
-                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
-                    </button>
-                    <div className="flex items-center gap-3">
-                      <div className="bg-white/15 p-2 rounded-xl ring-1 ring-white/15">
-                        <Info size={24} />
-                      </div>
-                      <div>
-                        <p className="text-cyan-100 text-xs font-medium uppercase tracking-wider">Knowledge Node</p>
-                        <h2 className="text-2xl font-bold">{selectedNode.title}</h2>
-                      </div>
-                    </div>
-                  </div>
-                  
-                  <div className="p-6 space-y-4">
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="bg-gray-50 p-4 rounded-xl border border-gray-100 text-center">
-                        <p className="text-xs text-gray-500 mb-1">绑定学习资源</p>
-                        <p className="text-3xl font-black text-gray-800">{knowledgePoints.find(k => k.topicId === selectedNode.topic_id)?.resourceCount || 0}</p>
-                      </div>
-                      <div className="bg-pink-50 p-4 rounded-xl border border-pink-100 text-center">
-                        <p className="text-xs text-pink-600 mb-1">累积错题数</p>
-                        <p className="text-3xl font-black text-pink-600">{knowledgePoints.find(k => k.topicId === selectedNode.topic_id) ? '1' : '0'}</p>
-                      </div>
-                    </div>
-                    
-                    <div className="bg-blue-50/50 border border-blue-100 p-4 rounded-xl">
-                      <h4 className="text-sm font-bold text-gray-700 mb-2 flex items-center gap-2">
-                        <Clock size={16} className="text-blue-500" /> 近期动态
-                      </h4>
-                      <p className="text-sm text-gray-600">
-                        {knowledgePoints.find(k => k.topicId === selectedNode.topic_id) 
-                          ? `最后出错时间: ${knowledgePoints.find(k => k.topicId === selectedNode.topic_id)?.lastReview}`
-                          : "目前掌握良好，暂无报错记录。"}
-                      </p>
-                    </div>
-                  </div>
-                  
-                  <div className="p-4 bg-gray-50 border-t border-gray-100 text-right">
-                    <button 
-                      onClick={() => setIsModalOpen(false)}
-                      className="px-6 py-2 bg-gray-200 text-gray-700 font-medium rounded-lg hover:bg-gray-300 transition-colors cursor-pointer"
-                    >
-                      关闭
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
           </div>
         )}
 

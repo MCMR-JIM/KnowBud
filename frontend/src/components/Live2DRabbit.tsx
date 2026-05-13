@@ -2,10 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import * as PIXI from 'pixi.js';
 import { Live2DModel } from 'pixi-live2d-display';
 
-// 暴露 PIXI 到全局，使用 (window as any) 解决 TypeScript 报错
-(window as any).PIXI = PIXI; 
+(window as any).PIXI = PIXI;
 
-// 解决 Ticker 警告
 Live2DModel.registerTicker(PIXI.Ticker);
 
 // hijiki — 开源免费 Q 版卡通角色，圆润短腿、大眼小嘴，目前免费 CDN 中最接近儿童可爱风格的 Live2D 模型

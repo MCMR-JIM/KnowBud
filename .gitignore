@@ -57,6 +57,7 @@ htmlcov/
 
 # 前端依赖与产物 (Frontend)
 node_modules/
+package-lock.json
 
 # 忽略本地数据库文件
 data/state.db
