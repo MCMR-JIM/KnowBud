@@ -221,6 +221,7 @@ function KnowledgeGraphCanvas({
   const transformRef = useRef<ZoomTransform>(d3.zoomIdentity);
   const positionCacheRef = useRef<Map<string, { x: number; y: number }>>(new Map());
   const topologySignatureRef = useRef('');
+  const hoverNodeIdRef = useRef<string | null>(null);
   const mistakeKey = mistakeTopicIds.join('|');
 
   useEffect(() => {
@@ -608,9 +609,39 @@ function KnowledgeGraphCanvas({
           : { pathEdgeKeys: new Set<string>(), pathNodeIds: new Set<string>() };
         const selectedIncidentEdgeKeys = new Set(selectedId ? incidentLinkKeysByNode.get(selectedId) || [] : []);
 
+        // Hover focus: highlight connected edges/nodes (inspired by agentmemory)
+        const focusNodeId = selectedId || hoverNodeIdRef.current;
+        const connectedNodeIds = new Set<string>();
+        const connectedEdgeKeys = new Set<string>();
+        if (focusNodeId && !selectedId) {
+          connectedNodeIds.add(focusNodeId);
+          for (const link of links) {
+            const sid = typeof link.source === 'string' ? link.source : link.source.id;
+            const tid = typeof link.target === 'string' ? link.target : link.target.id;
+            if (sid === focusNodeId || tid === focusNodeId) {
+              connectedNodeIds.add(sid);
+              connectedNodeIds.add(tid);
+              connectedEdgeKeys.add(linkKeyOf(sid, tid));
+            }
+          }
+        }
+        const hasHoverFocus = focusNodeId && !selectedId;
+
         ctx.save();
         ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
         ctx.clearRect(0, 0, width, height);
+
+        // Subtle background grid (inspired by agentmemory)
+        const gridSize = 28;
+        ctx.strokeStyle = 'rgba(148, 163, 184, 0.07)';
+        ctx.lineWidth = 0.5;
+        for (let gx = 0; gx < width; gx += gridSize) {
+          ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, height); ctx.stroke();
+        }
+        for (let gy = 0; gy < height; gy += gridSize) {
+          ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(width, gy); ctx.stroke();
+        }
+
         ctx.translate(transform.x, transform.y);
         ctx.scale(transform.k, transform.k);
 
@@ -635,35 +666,36 @@ function KnowledgeGraphCanvas({
           const currentLinkKey = linkKeyOf(sourceId, targetId);
           const isPathLink = pathEdgeKeys.has(currentLinkKey);
           const isIncidentLink = selectedIncidentEdgeKeys.has(currentLinkKey);
+          const isHoverConnected = hasHoverFocus && connectedEdgeKeys.has(currentLinkKey);
+          const isDimmedByHover = hasHoverFocus && !isHoverConnected;
           const linkColor = isPathLink
             ? 'rgba(250, 204, 21, 0.96)'
             : isIncidentLink
               ? 'rgba(255, 255, 255, 0.88)'
+            : isHoverConnected
+              ? 'rgba(56, 189, 248, 0.65)'
+            : isDimmedByHover
+              ? 'rgba(148, 163, 184, 0.07)'
               : link.type === 'parent'
                 ? 'rgba(244, 114, 182, 0.42)'
                 : link.type === 'both'
                   ? 'rgba(251, 191, 36, 0.54)'
-                  : 'rgba(125, 211, 252, 0.42)';
-          const controlOffset = clamp(Math.abs(dx) * 0.35, 26, 112);
-          const curveSign = dy >= 0 ? 1 : -1;
-          const curveOffset = link.type === 'prereq'
-            ? clamp(Math.abs(dy) * 0.18 + 16, 18, 52) * curveSign
-            : 0;
-          const endControlX = endX - controlOffset;
-          const endControlY = endY + curveOffset;
+              : 'rgba(125, 211, 252, 0.42)';
+          // Perpendicular edge curvature (inspired by agentmemory):
+          // offset the midpoint perpendicular to the edge direction so
+          // parallel edges fan out instead of overlapping at the midpoint
+          const isDense = nodes.length > 40;
+          const perpCurveOffset = isDense ? 14 : 20;
+          const perpX = -dy / length * perpCurveOffset;
+          const perpY = dx / length * perpCurveOffset;
+          const cpx = (startX + endX) / 2 + perpX;
+          const cpy = (startY + endY) / 2 + perpY;
 
           ctx.beginPath();
           ctx.moveTo(startX, startY);
-          ctx.bezierCurveTo(
-            startX + controlOffset,
-            startY - curveOffset,
-            endControlX,
-            endControlY,
-            endX,
-            endY,
-          );
+          ctx.quadraticCurveTo(cpx, cpy, endX, endY);
           ctx.strokeStyle = linkColor;
-          ctx.lineWidth = isPathLink ? 3.5 : isIncidentLink ? 2.4 : link.type === 'both' ? 1.6 : 1.35;
+          ctx.lineWidth = isPathLink ? 3.8 : isIncidentLink ? 2.6 : link.type === 'both' ? 1.8 : isDense ? 1.0 : 1.4;
           if (isPathLink) {
             ctx.setLineDash([]);
           } else if (link.type === 'parent') {
@@ -675,7 +707,13 @@ function KnowledgeGraphCanvas({
           }
           ctx.stroke();
           ctx.setLineDash([]);
-          drawArrowHead(endX, endY, Math.atan2(endY - endControlY, endX - endControlX), linkColor, isPathLink ? 10 : link.type === 'both' ? 8 : 7);
+
+          // Arrow follows the quadratic curve tangent at the endpoint
+          const tangentAngle = Math.atan2(endY - cpy, endX - cpx);
+          const arrowColor = isDimmedByHover
+            ? 'rgba(148, 163, 184, 0.12)'
+            : linkColor;
+          drawArrowHead(endX, endY, tangentAngle, arrowColor, isPathLink ? 10 : link.type === 'both' ? 8 : 7);
         }
         ctx.setLineDash([]);
 
@@ -684,10 +722,23 @@ function KnowledgeGraphCanvas({
           const y = node.y || 0;
           const isSelected = node.id === selectedId;
           const isOnPath = pathNodeIds.has(node.id);
+          const isHovered = hoverNodeIdRef.current === node.id && !selectedId;
+          const isDimmed = hasHoverFocus && !connectedNodeIds.has(node.id);
+          const nodeAlpha = isDimmed ? 0.22 : 1;
+
+          ctx.save();
+          if (nodeAlpha < 1) ctx.globalAlpha = nodeAlpha;
+
           const haloRadius = node.radius + (node.isMistake ? 9 : 6);
 
           const halo = ctx.createRadialGradient(x, y, node.radius * 0.4, x, y, haloRadius);
-          halo.addColorStop(0, isSelected ? 'rgba(250, 204, 21, 0.36)' : node.isMistake ? 'rgba(244, 63, 94, 0.26)' : 'rgba(129, 140, 248, 0.2)');
+          halo.addColorStop(0, isSelected
+            ? 'rgba(250, 204, 21, 0.36)'
+            : isHovered
+              ? 'rgba(56, 189, 248, 0.34)'
+              : node.isMistake
+                ? 'rgba(244, 63, 94, 0.26)'
+                : 'rgba(129, 140, 248, 0.2)');
           halo.addColorStop(1, 'rgba(15, 23, 42, 0)');
           ctx.fillStyle = halo;
           ctx.beginPath();
@@ -696,10 +747,16 @@ function KnowledgeGraphCanvas({
 
           ctx.beginPath();
           ctx.arc(x, y, node.radius, 0, Math.PI * 2);
-          ctx.fillStyle = node.isRoot ? '#fce7f3' : node.isMistake ? '#ffe4e6' : '#eef2ff';
+
+          // Radial gradient fill for nodes (inspired by agentmemory)
+          const fillBase = node.isRoot ? [252, 231, 243] : node.isMistake ? [255, 228, 230] : [238, 242, 255];
+          const nodeGrad = ctx.createRadialGradient(x - node.radius * 0.3, y - node.radius * 0.3, 0, x, y, node.radius * 1.15);
+          nodeGrad.addColorStop(0, `rgba(${Math.min(255, fillBase[0] + 40)},${Math.min(255, fillBase[1] + 40)},${Math.min(255, fillBase[2] + 40)},0.97)`);
+          nodeGrad.addColorStop(1, `rgba(${fillBase[0]},${fillBase[1]},${fillBase[2]},0.92)`);
+          ctx.fillStyle = nodeGrad;
           ctx.fill();
-          ctx.strokeStyle = isSelected ? '#facc15' : isOnPath ? '#fbbf24' : node.isMistake ? '#fb7185' : node.isRoot ? '#f472b6' : '#93c5fd';
-          ctx.lineWidth = isSelected ? 3.2 : isOnPath ? 2.4 : 1.6;
+          ctx.strokeStyle = isSelected ? '#facc15' : isHovered ? '#38bdf8' : isOnPath ? '#fbbf24' : node.isMistake ? '#fb7185' : node.isRoot ? '#f472b6' : '#93c5fd';
+          ctx.lineWidth = isSelected ? 3.2 : isHovered ? 2.8 : isOnPath ? 2.4 : 1.6;
           ctx.stroke();
 
           ctx.fillStyle = node.isRoot ? '#be185d' : node.isMistake ? '#be123c' : '#1e3a8a';
@@ -718,6 +775,8 @@ function KnowledgeGraphCanvas({
           ctx.fill();
           ctx.fillStyle = isSelected ? '#111827' : '#f8fafc';
           ctx.fillText(label, x, labelY + 10);
+
+          ctx.restore();
         }
 
         ctx.restore();
@@ -782,6 +841,26 @@ function KnowledgeGraphCanvas({
         });
 
       selection.call(zoom).call(drag);
+
+      // Track mouse position for hover focus (inspired by agentmemory)
+      selection.on('mousemove', (event: MouseEvent) => {
+        const [x, y] = pointerInGraph(event);
+        const hit = simulation.find(x, y, 28 / Math.max(0.85, transform.k)) || findHitNode(x, y);
+        const prevHoverId = hoverNodeIdRef.current;
+        hoverNodeIdRef.current = hit?.id ?? null;
+        if (hoverNodeIdRef.current !== prevHoverId) {
+          draw();
+          canvas.style.cursor = hit ? 'pointer' : 'grab';
+        }
+      });
+      selection.on('mouseleave', () => {
+        if (hoverNodeIdRef.current !== null) {
+          hoverNodeIdRef.current = null;
+          draw();
+          canvas.style.cursor = 'grab';
+        }
+      });
+
       selection.on('click', (event) => {
         const [x, y] = pointerInGraph(event);
         const hit = simulation.find(x, y, 24 / Math.max(0.85, transform.k)) || findHitNode(x, y);

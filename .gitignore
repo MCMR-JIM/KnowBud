@@ -64,3 +64,12 @@ data/state.db
 data/state.db-shm
 data/state.db-wal
 *.db
+
+# AGENTS
+.openclaw/
+AGENTS.md
+HEARTBEAT.md
+IDENTITY.md
+SOUL.md
+TOOLS.md
+USER.md
