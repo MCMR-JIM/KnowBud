@@ -1,10 +1,10 @@
-# Sprout — 儿童伴学桌面应用
+# KnowBud — 儿童伴学桌面应用
 
 面向学龄儿童的本机学习伙伴：以有限状态机(FSM)与决策引擎为教学核心，语音对话(ASR/TTS)与大语言模型(LLM)为可替换技能层，提供本地化、无网亦可用的沉浸式伴学体验。
 
 ## English
 
-**Sprout** is a production-grade desktop learning companion for school-age children. The tutoring flow is driven by a Python FSM and decision engine — not an LLM prompt chain. ASR, TTS, and LLM are stateless, pluggable skill modules. The frontend is a React/TypeScript SPA with child-facing and parent-facing views.
+**KnowBud** is a production-grade desktop learning companion for school-age children. The tutoring flow is driven by a Python FSM and decision engine — not an LLM prompt chain. ASR, TTS, and LLM are stateless, pluggable skill modules. The frontend is a React/TypeScript SPA with child-facing and parent-facing views.
 
 ---
 
@@ -119,7 +119,7 @@
 ## 项目结构
 
 ```text
-Sprout/
+KnowBud/
 ├── src/
 │   ├── core/              # 领域模型、FSM 决策引擎、动作定义、安全删除
 │   ├── services/          # 会话编排、文档摄入、图谱操作、LLM 网关
@@ -177,7 +177,7 @@ Sprout/
 
 ```bash
 # 要求 Python 3.11+
-cd Sprout
+cd KnowBud
 python -m venv .venv
 
 # Windows

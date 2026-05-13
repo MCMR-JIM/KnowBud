@@ -1,1 +1,1 @@
-"""Sprout — AI Learning Companion application package."""
+"""KnowBud — AI Learning Companion application package."""

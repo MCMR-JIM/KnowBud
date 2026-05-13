@@ -1,7 +1,7 @@
 services:
   tts:
     build: ./
-    image: sprout/edge-tts-service:latest
+    image: knowbud/edge-tts-service:latest
     container_name: local-edge-tts
     ports:
       - "5501:5501"
