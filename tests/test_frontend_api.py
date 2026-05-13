@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -24,6 +25,7 @@ class FakeBackend:
             ),
         )
         self._events: list[LearningEvent] = []
+        self.last_approve_call: dict[str, object] | None = None
 
     def load_app_state(self, *, include_history: bool = True, history_limit: int | None = None):
         state = self._state.model_copy(deep=True)
@@ -85,6 +87,43 @@ class FakeBackend:
 
     def list_all_resources(self):
         return []
+
+    def create_graph_proposal_from_resource(
+        self,
+        *,
+        title: str,
+        summary: str,
+        tags: list[str] | None = None,
+        parent_node_ids: list[str],
+        edge_type: str,
+        reason: str,
+        pending_parent_proposal_ids: list[str] | None = None,
+        prerequisite_node_ids: list[str] | None = None,
+    ):
+        return SimpleNamespace(
+            proposal_id="proposal_manual_subject",
+            title=title,
+            summary=summary,
+            tags=list(tags or []),
+            parent_node_ids=list(parent_node_ids),
+            edge_type=edge_type,
+            reason=reason,
+            pending_parent_proposal_ids=list(pending_parent_proposal_ids or []),
+            prerequisite_node_ids=list(prerequisite_node_ids or []),
+        )
+
+    def approve_graph_proposal(self, **kwargs):
+        self.last_approve_call = kwargs
+        title = str(kwargs.get("title") or "数学")
+        topic = TopicNode(
+            topic_id="subject_new",
+            title=title,
+            difficulty=1,
+            prerequisite_ids=[],
+            tags=["subject:test", "facet:root"],
+        )
+        self._state.curriculum.topics.append(topic)
+        return self.load_app_state(include_history=False), SimpleNamespace(proposal_id=kwargs["proposal_id"]), topic, 0, 0
 
 
 def make_client(monkeypatch) -> TestClient:
@@ -181,3 +220,20 @@ def test_realtime_stream_and_review_explore(monkeypatch) -> None:
 
     wrong_session = client.get("/v1/sessions/sess_x/state")
     assert wrong_session.status_code == 404
+
+
+def test_create_subject_root_skips_sync_relink_and_rescan(monkeypatch) -> None:
+    client = make_client(monkeypatch)
+
+    response = client.post("/v1/knowledge/subject", data={"title": "数学"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["topic_id"] == "subject_new"
+    assert payload["title"] == "数学"
+
+    backend = app_module.get_backend()
+    assert backend.last_approve_call is not None
+    assert backend.last_approve_call["proposal_id"] == "proposal_manual_subject"
+    assert backend.last_approve_call["relink_segments"] is False
+    assert backend.last_approve_call["rescan_segments"] is False

@@ -1032,6 +1032,8 @@ def create_subject_root(
     _state, _proposal, topic, _, _ = backend.approve_graph_proposal(
         proposal_id=proposal.proposal_id,
         difficulty=1,
+        relink_segments=False,
+        rescan_segments=False,
     )
     return {"topic_id": topic.topic_id, "title": topic.title, "tags": topic.tags}
 

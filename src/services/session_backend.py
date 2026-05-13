@@ -612,6 +612,8 @@ class SessionBackend:
         difficulty: int = 1,
         tags: list[str] | None = None,
         reason: str | None = None,
+        relink_segments: bool = True,
+        rescan_segments: bool = True,
     ) -> tuple[AppState, GraphProposalRecord, TopicNode, int, int]:
         state = self.load_app_state(include_history=False)
         proposal = self._find_graph_proposal(state, proposal_id)
@@ -699,8 +701,12 @@ class SessionBackend:
         )
         self.save_app_state(state)
 
-        relinked_count = self._relink_segments_for_approved_proposal(proposal_id=proposal_id, topic_id=created_topic_id)
-        rescanned_count = self._rescan_segments_for_topic(topic_id=created_topic_id)
+        relinked_count = 0
+        rescanned_count = 0
+        if relink_segments:
+            relinked_count = self._relink_segments_for_approved_proposal(proposal_id=proposal_id, topic_id=created_topic_id)
+        if rescan_segments:
+            rescanned_count = self._rescan_segments_for_topic(topic_id=created_topic_id)
         self.append_learning_event(
             kind="graph_proposal_approved",
             payload={
