@@ -38,6 +38,7 @@ export default function Live2DRabbit({ isSpeaking = false, className, fallbackEm
       antialias: true,
       resolution: window.devicePixelRatio || 1,
       autoDensity: true,
+      autoStart: false, // 先不启动渲染循环，避免 Live2DModel 在事件系统就绪前尝试 registerInteraction
     });
 
     container.appendChild(app.view as HTMLCanvasElement);
@@ -58,6 +59,10 @@ export default function Live2DRabbit({ isSpeaking = false, className, fallbackEm
 
         app.stage.addChild(model);
         setStatus('loaded');
+
+        // 模型加载完毕后才启动渲染循环，确保 PIXI 事件系统已就绪
+        // 避免 Live2DModel._render → registerInteraction 时 manager.on is not a function
+        appRef.current.start();
 
         model.on('hit', () => handleTap(model));
       })
@@ -87,9 +92,30 @@ export default function Live2DRabbit({ isSpeaking = false, className, fallbackEm
     return () => {
       disposed = true;
       ro.disconnect();
-      if (mouthTimerRef.current) clearInterval(mouthTimerRef.current);
+      if (mouthTimerRef.current) {
+        clearInterval(mouthTimerRef.current);
+        mouthTimerRef.current = null;
+      }
+
+      // 先安全清理 Live2D 模型，再销毁 PIXI Application
+      // 避免 PIXI 交互管理器先于模型销毁导致 manager.on/off is not a function
+      if (modelRef.current) {
+        try {
+          const model = modelRef.current;
+          if (model.parent) model.parent.removeChild(model);
+          model.destroy();
+        } catch {
+          // 模型可能已被部分销毁，忽略清理错误
+        }
+        modelRef.current = null;
+      }
+
       if (appRef.current) {
-        appRef.current.destroy(true, { children: true, texture: true });
+        try {
+          appRef.current.destroy(true, { children: true, texture: true });
+        } catch {
+          // Application 销毁过程中的错误不影响后续渲染
+        }
         appRef.current = null;
       }
     };
