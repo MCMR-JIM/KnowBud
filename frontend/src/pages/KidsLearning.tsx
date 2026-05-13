@@ -1,17 +1,20 @@
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { ChevronLeft, Star, Mic, Send, HelpCircle, Loader2, Volume2, Pause } from 'lucide-react';
 import { SessionAPI } from '../api/client';
 import { API_BASE, API_BASE_NO_VERSION } from '../api/config';
 import PdfViewer from "../components/PdfViewer";
 import { useAppDialog } from '../components/AppDialog';
+import LanguageSwitcher from '../i18n/LanguageSwitcher';
 
 const COMPANIONS: Record<string, string> = {
-  "星空兔": "🐰",
-  "小智龙": "🦖"
+  rabbit: "🐰",
+  dinosaur: "🦖"
 };
 
 export default function KidsLearning() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const appDialog = useAppDialog();
   const apiBaseUrl = API_BASE;
@@ -23,11 +26,13 @@ export default function KidsLearning() {
     resource_url: string;
   };
 
-  const [companion, setCompanion] = useState("星空兔");
+  const getCompanionLabel = (key: string) => key === 'rabbit' ? t('roles.starRabbit') : t('roles.littleDino');
+  const getCompanionEmoji = (key: string) => COMPANIONS[key] || '🐰';
+
+  const [companion, setCompanion] = useState("rabbit");
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [speakingText, setSpeakingText] = useState<string | null>(null);
-  // 🌟 新增：记录已经触发过知识点的页码，防止来回翻页重复刷屏
   const triggeredPagesRef = useRef<Set<number>>(new Set());
   const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -37,7 +42,6 @@ export default function KidsLearning() {
     };
   }, []);
 
-  // ================= 🌟 从复习队列/当前主线中同步 topic，并拉取节点资源 =================
   const [todayTopic, setTodayTopic] = useState('恐龙的秘密');
   const [todayTopicId, setTodayTopicId] = useState('');
   const [topicResources, setTopicResources] = useState<TopicResource[]>([]);
@@ -72,7 +76,7 @@ export default function KidsLearning() {
         setTodayTopic(currentTopic?.title || currentTopicId);
         setTodayTopicId(currentTopicId);
       } catch (e) {
-        // 静默失败，不影响其他功能
+        // silent failure
       }
     };
 
@@ -102,7 +106,6 @@ export default function KidsLearning() {
         const resources = (data.resources || []) as TopicResource[];
         setTopicResources(resources);
 
-        // 🌟 把 pdf 加入可预览白名单，并兼容后缀名判断
         const previewable = resources.find((resource) =>
           ['video', 'image', 'audio', 'pdf'].includes(resource.media_type) ||
           resource.resource_url.toLowerCase().endsWith('.pdf')
@@ -117,29 +120,26 @@ export default function KidsLearning() {
     void fetchTopicResources();
   }, [todayTopicId]);
 
+  const companionName = getCompanionLabel(companion);
+
   const [messages, setMessages] = useState([
-    { role: 'assistant', content: `小朋友你好呀！我是你的${companion}，今天我们要探索什么秘密呢？` }
+    { role: 'assistant', content: t('learning.greeting', { companion: companionName }) }
   ]);
 
-  // ================= 🎙️ 状态与引用 =================
   const [isRecording, setIsRecording] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<BlobPart[]>([]);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
 
-  // 🌟 新增：用于聊天区自动滚动的锚点引用
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
-  // 🌟 新增：监听 messages 数组，一有新消息就自动滑到底部
   useEffect(() => {
     if (messagesEndRef.current) {
       messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [messages]);
 
-  // 🌟 修复：对接本地 Docker TTS 服务，支持播放与暂停
   const toggleRead = async (text: string) => {
-    // 1. 如果点击的是当前正在播放/准备播放的文本，则执行暂停并清空状态
     if (speakingText === text) {
       if (ttsAudioRef.current) {
         ttsAudioRef.current.pause();
@@ -149,48 +149,41 @@ export default function KidsLearning() {
       return;
     }
 
-    // 2. 停止当前可能正在播放的其他声音
     if (ttsAudioRef.current) {
       ttsAudioRef.current.pause();
       ttsAudioRef.current = null;
     }
     
-    // 为了防止原来浏览器的声音干扰，保险起见也关掉
     window.speechSynthesis.cancel();
 
     try {
-      // 马上把按钮置为加载/播放状态，提升交互响应感
       setSpeakingText(text);
 
-      // 3. 调用我们刚才在 API 中加的接口，获取音频 Blob
-      // 如果根据不同的 companion 想用不同的音色，可以在第二个参数传
-      const voiceName = companion === "星空兔" ? "zh-CN-XiaoxiaoNeural" : "zh-CN-YunxiNeural";
+      const voiceName = companion === "rabbit" ? "zh-CN-XiaoxiaoNeural" : "zh-CN-YunxiNeural";
       const response = await SessionAPI.synthesizeSpeech(text, voiceName);
       
       const audioBlob = response.data;
       const audioUrl = URL.createObjectURL(audioBlob);
 
-      // 4. 创建新的 Audio 实例并播放
       const audio = new Audio(audioUrl);
       ttsAudioRef.current = audio;
 
       audio.onended = () => {
         setSpeakingText(null);
         ttsAudioRef.current = null;
-        URL.revokeObjectURL(audioUrl); // 释放内存
+        URL.revokeObjectURL(audioUrl);
       };
       
       audio.onerror = () => {
-        console.error("TTS 音频播放失败");
+        console.error(t('learning.audioFailed'));
         setSpeakingText(null);
       };
 
       await audio.play();
 
     } catch (error) {
-      console.error("TTS 语音合成请求失败:", error);
+      console.error("TTS failed:", error);
       setSpeakingText(null);
-      // 如果网络 TTS 挂了，可以选择在这里 fallback 回 window.speechSynthesis
     }
   };
 
@@ -201,7 +194,6 @@ export default function KidsLearning() {
     return `${API_BASE_NO_VERSION}${resourceUrl}`;
   };
 
-  // ================= 🎙️ 录音控制逻辑 =================
   const startRecording = async () => {
     if (currentAudioRef.current) {
       currentAudioRef.current.pause();
@@ -228,8 +220,8 @@ export default function KidsLearning() {
       mediaRecorder.start();
       setIsRecording(true);
     } catch (error) {
-      console.error("麦克风权限被拒绝:", error);
-      await appDialog.alert("星空兔需要你的麦克风权限才能听见你说话哦！", { title: '需要麦克风权限', intent: 'warning' });
+      console.error("Mic permission denied:", error);
+      await appDialog.alert(t('learning.micPermission'), { title: t('learning.micPermissionTitle'), intent: 'warning' });
     }
   };
 
@@ -240,10 +232,9 @@ export default function KidsLearning() {
     }
   };
 
-  // ================= 🚀 发送与流式播放逻辑 =================
   const handleSendAudio = async (blob: Blob) => {
     setIsLoading(true);
-    setMessages(prev => [...prev, { role: 'user', content: '🎤 正在仔细听...' }]);
+    setMessages(prev => [...prev, { role: 'user', content: `🎤 ${t('learning.listening')}` }]);
 
     try {
       const response = await SessionAPI.sendAudio(blob);
@@ -251,24 +242,22 @@ export default function KidsLearning() {
 
       setMessages(prev => {
         const newMsgs = [...prev];
-        newMsgs[newMsgs.length - 1].content = `🎤 ${recognized_text || '录音好像没声音哦'}`;
+        newMsgs[newMsgs.length - 1].content = `🎤 ${recognized_text || t('learning.noSound')}`;
         return [...newMsgs, { role: 'assistant', content: reply_text }];
       });
 
       toggleRead(reply_text);
     } catch (error) {
-      console.error("语音发送失败:", error);
-      setMessages(prev => [...prev, { role: 'assistant', content: '哎呀，语音魔法失效了，请再试一次！' }]);
+      console.error("Voice send failed:", error);
+      setMessages(prev => [...prev, { role: 'assistant', content: t('learning.voiceFailed') }]);
     } finally {
       setIsLoading(false);
     }
   };
 
-  // 🌟 修复方案 2：直接提取后端纯净字段，彻底抛弃带垃圾 OCR 的 knowledge_text
   const handlePdfPageTurned = async (pageNumber: number) => {
     if (!todayTopicId) return;
 
-    // 防重复触发
     if (triggeredPagesRef.current.has(pageNumber)) return;
 
     setIsLoading(true);
@@ -276,16 +265,13 @@ export default function KidsLearning() {
       const response = await SessionAPI.getKnowledgeByPage(todayTopicId, pageNumber);
       const data = response.data;
 
-      // 🚨 核心逻辑：只取干净的“引导问题”和“教学提示”
       const question = data.guiding_question ? data.guiding_question.trim() : "";
       const hint = data.teaching_hint ? data.teaching_hint.trim() : "";
 
-      // 如果这一页既没有预设问题，也没有预设提示，说明是普通页，直接跳过！
       if (!question && !hint) {
         return;
       }
 
-      // 把干净的问题和提示拼起来（如果都有就换行拼接）
       const cleanMessage = [question, hint].filter(Boolean).join("\n");
 
       if (cleanMessage) {
@@ -297,7 +283,7 @@ export default function KidsLearning() {
         triggeredPagesRef.current.add(pageNumber);
       }
     } catch (error) {
-      console.error("获取该页知识点失败:", error);
+      console.error("Failed to get page knowledge:", error);
     } finally {
       setIsLoading(false);
     }
@@ -326,47 +312,48 @@ export default function KidsLearning() {
       currentAudioRef.current = audio;
 
       audio.onended = () => { currentAudioRef.current = null; };
-      audio.play().catch(e => console.error("音频播放被拦截:", e));
+      audio.play().catch(e => console.error("Audio play blocked:", e));
 
     } catch (error) {
-      console.error("请求后端失败:", error);
-      setMessages(prev => [...prev, { role: 'assistant', content: '哎呀，网络好像断开了！' }]);
+      console.error("Backend request failed:", error);
+      setMessages(prev => [...prev, { role: 'assistant', content: t('learning.networkError') }]);
     } finally {
       setIsLoading(false);
     }
   };
 
+  const companionEmoji = getCompanionEmoji(companion);
+
   return (
     <div className="flex flex-col h-screen overflow-hidden p-6 gap-6">
 
-      {/* 顶部导航 */}
       <div className="bg-white/60 backdrop-blur-md rounded-3xl p-4 px-6 flex justify-between items-center shadow-sm border border-white/50">
         <button onClick={() => navigate('/')} className="flex items-center gap-2 text-dark hover:text-primary transition-colors font-bold">
-          <ChevronLeft size={24} /> 返回大厅
+          <ChevronLeft size={24} /> {t('common.backToHall')}
         </button>
         <div className="flex flex-col items-center">
           <div className="flex items-center gap-4 text-xl font-bold text-dark">
             <span className="flex items-center gap-1 text-secondary"><Star fill="currentColor" /> 45</span>
             <span className="text-gray-300">|</span>
             <div className="flex items-center gap-2">
-              <span>伙伴:</span>
+              <span>{t('learning.companion')}:</span>
               <select value={companion} onChange={(e) => setCompanion(e.target.value)} className="bg-transparent text-2xl cursor-pointer outline-none hover:scale-110 transition-transform appearance-none text-center">
-                {Object.keys(COMPANIONS).map(name => <option key={name} value={name}>{COMPANIONS[name]}</option>)}
+                {Object.keys(COMPANIONS).map(key => <option key={key} value={key}>{COMPANIONS[key]}</option>)}
               </select>
             </div>
           </div>
         </div>
-        <div className="w-24"></div>
+        <div className="w-24 flex justify-end">
+          <LanguageSwitcher />
+        </div>
       </div>
 
-      {/* 核心内容区 */}
       <div className="flex flex-1 gap-6 h-[calc(100vh-140px)] min-h-0">
 
-        {/* 左侧：视频区 */}
         <div className="flex-[6] bg-white/60 backdrop-blur-md rounded-[30px] p-6 shadow-sm border border-white/50 flex flex-col">
-          <h3 onClick={() => toggleRead("今日探索：" + todayTopic)} className="text-2xl font-bold text-blue mb-4 cursor-pointer hover:text-primary transition-colors flex items-center gap-2 w-fit select-none">
-            今日探索：{todayTopic} 
-            {speakingText === "今日探索：" + todayTopic ? (
+          <h3 onClick={() => toggleRead(`${t('learning.todayTopic')}: ${todayTopic}`)} className="text-2xl font-bold text-blue mb-4 cursor-pointer hover:text-primary transition-colors flex items-center gap-2 w-fit select-none">
+            {t('learning.todayTopic')}: {todayTopic} 
+            {speakingText === `${t('learning.todayTopic')}: ${todayTopic}` ? (
                <Pause size={20} className="text-primary animate-pulse" />
             ) : (
                <Volume2 size={20} className="opacity-50" />
@@ -376,7 +363,6 @@ export default function KidsLearning() {
             {previewResource?.media_type === 'video' ? (
               <video className="w-full h-full object-cover" controls src={resolveResourceUrl(previewResource.resource_url)} />
             ) : previewResource?.media_type === 'pdf' || previewResource?.resource_url.endsWith('.pdf') ? (
-              // 🌟 引入刚写好的 PdfViewer
               <PdfViewer
                 url={resolveResourceUrl(previewResource.resource_url)}
                 onRenderComplete={handlePdfPageTurned}
@@ -389,18 +375,18 @@ export default function KidsLearning() {
               </div>
             ) : (
               <div className="text-center text-gray-500 px-6">
-                <p className="text-lg font-medium">当前节点暂无可预览媒体</p>
-                <p className="text-sm mt-2">下方资源列表已按知识节点同步，可直接打开文档或切换到其他素材。</p>
+                <p className="text-lg font-medium">{t('learning.noPreview')}</p>
+                <p className="text-sm mt-2">{t('learning.noPreviewHint')}</p>
               </div>
             )}
           </div>
           <div className="mt-4 bg-white/70 rounded-2xl border border-white/70 p-4 max-h-48 overflow-y-auto">
             <div className="flex items-center justify-between mb-3">
-              <p className="text-sm font-bold text-dark">节点资源</p>
-              <p className="text-xs text-gray-500">{topicResources.length} 份</p>
+              <p className="text-sm font-bold text-dark">{t('learning.resources')}</p>
+              <p className="text-xs text-gray-500">{t('learning.resourceCount', { count: topicResources.length })}</p>
             </div>
             {topicResources.length === 0 ? (
-              <p className="text-sm text-gray-400">这个知识节点下还没有上传资源。</p>
+              <p className="text-sm text-gray-400">{t('learning.noResources')}</p>
             ) : (
               <div className="space-y-2">
                 {topicResources.map((resource) => {
@@ -417,7 +403,7 @@ export default function KidsLearning() {
                             onClick={() => setPreviewResource(resource)}
                             className="text-xs px-3 py-1 rounded-full bg-sky-100 text-sky-700 hover:bg-sky-200 transition-colors"
                           >
-                            预览
+                            {t('learning.preview')}
                           </button>
                         )}
                         <a
@@ -426,7 +412,7 @@ export default function KidsLearning() {
                           rel="noreferrer"
                           className="text-xs px-3 py-1 rounded-full bg-pink-100 text-pink-700 hover:bg-pink-200 transition-colors"
                         >
-                          打开
+                          {t('learning.open')}
                         </a>
                       </div>
                     </div>
@@ -437,27 +423,24 @@ export default function KidsLearning() {
           </div>
         </div>
 
-        {/* 右侧：聊天互动区 */}
-        {/* 右侧：聊天互动区 */}
         <div className="flex-[4] bg-white/40 backdrop-blur-md rounded-[30px] p-5 shadow-sm border border-white/50 flex flex-col min-h-0">
           <h3 className="text-xl font-bold text-primary mb-4 flex items-center gap-2">...</h3>
 
           <div className="flex-1 overflow-y-auto pr-2 space-y-4 mb-4 scrollbar-hide min-h-0">
             {messages.map((msg, idx) => (
               <div key={idx} className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
-                <div className="text-2xl">{msg.role === 'user' ? '👦' : COMPANIONS[companion]}</div>
+                <div className="text-2xl">{msg.role === 'user' ? '👦' : companionEmoji}</div>
                 <div
                   className={`p-4 rounded-2xl max-w-[80%] shadow-sm transition-all duration-300 relative group flex items-start gap-2 ${msg.role === 'user' ? 'bg-blue/10 text-dark rounded-tr-sm border border-blue/20' : 'bg-white text-dark rounded-tl-sm border border-white/80'
                     }`}
                 >
                   <span className="flex-1">{msg.content}</span>
 
-                  {/* 🌟 改造为手动点击朗读按钮 */}
                   {msg.role === 'assistant' && (
                     <button
                       onClick={() => toggleRead(msg.content)}
                       className="p-1.5 bg-gray-50 text-gray-400 hover:text-primary hover:bg-pink-50 rounded-lg transition-colors flex-shrink-0 cursor-pointer border border-transparent hover:border-pink-200"
-                      title={speakingText === msg.content ? "停止朗读" : "点击朗读"}
+                      title={speakingText === msg.content ? t('learning.stopReading') : t('learning.clickToRead')}
                     >
                       {speakingText === msg.content ? (
                         <Pause size={16} className="text-primary animate-pulse" />
@@ -471,25 +454,22 @@ export default function KidsLearning() {
             ))}
             {isLoading && (
               <div className="flex gap-3 flex-row">
-                <div className="text-2xl">{COMPANIONS[companion]}</div>
-                <div className="p-4 rounded-2xl bg-white text-dark rounded-tl-sm flex items-center gap-2"><Loader2 className="animate-spin text-primary" size={20} /><span className="text-sm">思考中...</span></div>
+                <div className="text-2xl">{companionEmoji}</div>
+                <div className="p-4 rounded-2xl bg-white text-dark rounded-tl-sm flex items-center gap-2"><Loader2 className="animate-spin text-primary" size={20} /><span className="text-sm">{t('learning.thinking')}</span></div>
               </div>
             )}
-            {/* 🌟 自动滚动的目标锚点 */}
             <div ref={messagesEndRef} />
           </div>
 
-          {/* 底部输入区 */}
           <div className="flex flex-col gap-3 mt-auto">
             <div className="flex gap-2">
-              <input type="text" value={inputText} onChange={(e) => setInputText(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSendText(inputText)} disabled={isLoading} placeholder="或者打字告诉我..." className="flex-1 bg-white/80 border-2 border-white rounded-2xl px-4 py-3 outline-none focus:border-primary shadow-sm disabled:opacity-50" />
+              <input type="text" value={inputText} onChange={(e) => setInputText(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSendText(inputText)} disabled={isLoading} placeholder={t('learning.typePlaceholder')} className="flex-1 bg-white/80 border-2 border-white rounded-2xl px-4 py-3 outline-none focus:border-primary shadow-sm disabled:opacity-50" />
               <button onClick={() => handleSendText(inputText)} disabled={isLoading} className="bg-white/80 text-primary border-2 border-white hover:border-primary hover:bg-primary hover:text-white p-3 rounded-2xl transition-all shadow-sm disabled:opacity-50">
                 <Send size={20} />
               </button>
             </div>
 
             <div className="flex gap-3">
-              {/* 🌟 升级后的录音按钮：带呼吸波纹动画 */}
               <button
                 onMouseDown={startRecording}
                 onMouseUp={stopRecording}
@@ -504,11 +484,11 @@ export default function KidsLearning() {
                   <span className="absolute inset-0 bg-white/20 animate-ping rounded-2xl"></span>
                 )}
                 <Mic size={24} className={isRecording ? "animate-bounce" : ""} />
-                {isRecording ? '正在仔细听...' : '按住说话'}
+                {isRecording ? t('learning.listening') : t('learning.holdToSpeak')}
               </button>
 
-              <button onClick={() => handleSendText("我没听懂，能用更简单的话讲一遍吗？")} disabled={isLoading} className="flex-[1] bg-white/80 text-dark font-bold py-4 rounded-2xl shadow-sm border-2 border-white hover:border-gray-200 transition-colors flex items-center justify-center flex-col text-xs gap-1 disabled:opacity-50">
-                <HelpCircle size={18} className="text-blue" />没听懂
+              <button onClick={() => handleSendText(t('learning.dontUnderstandMsg'))} disabled={isLoading} className="flex-[1] bg-white/80 text-dark font-bold py-4 rounded-2xl shadow-sm border-2 border-white hover:border-gray-200 transition-colors flex items-center justify-center flex-col text-xs gap-1 disabled:opacity-50">
+                <HelpCircle size={18} className="text-blue" />{t('learning.dontUnderstand')}
               </button>
             </div>
           </div>

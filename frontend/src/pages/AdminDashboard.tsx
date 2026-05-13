@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import * as d3 from 'd3';
 import type { SimulationLinkDatum, SimulationNodeDatum, ZoomTransform } from 'd3';
 import * as echarts from 'echarts/core';
@@ -11,6 +12,8 @@ import { API_BASE } from '../api/config';
 import { KnowledgeAPI, ResourceAPI } from '../api/client';
 import { useAppDialog } from '../components/AppDialog';
 import SettingsPanel from '../components/SettingsPanel';
+import LanguageSwitcher from '../i18n/LanguageSwitcher';
+import i18n from '../i18n';
 
 const LLM_NOT_CONFIGURED_MESSAGE = '尚未配置模型，请前往设置页面配置远程 API 或本地模型';
 
@@ -208,6 +211,7 @@ function KnowledgeGraphCanvas({
   nodeMetaByTopicId: ReadonlyMap<string, GraphCanvasSelectionMeta>;
   onSelectNode: (topic: GraphTopic | null) => void;
 }) {
+  const t = i18n.getFixedT(i18n.language);
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const onSelectNodeRef = useRef(onSelectNode);
@@ -570,12 +574,12 @@ function KnowledgeGraphCanvas({
 
         ctx.fillStyle = 'rgba(224, 231, 255, 0.82)';
         ctx.font = '700 11px Nunito, Segoe UI, sans-serif';
-        ctx.fillText('节点信息', bubbleX + 16, bubbleY + 38);
+        ctx.fillText(t('admin.graph.nodeInfo'), bubbleX + 16, bubbleY + 38);
 
         const metrics = [
-          `绑定资源 ${meta?.resourceCount ?? 0}`,
-          `错题命中 ${meta?.mistakeCount ?? (node.isMistake ? 1 : 0)}`,
-          meta?.lastReview ? `最近错题 ${meta.lastReview}` : '目前掌握稳定，暂无错题记录',
+          `${t('admin.graph.boundResources')} ${meta?.resourceCount ?? 0}`,
+          `${t('admin.graph.mistakeHits')} ${meta?.mistakeCount ?? (node.isMistake ? 1 : 0)}`,
+          meta?.lastReview ? `${meta.lastReview}` : t('admin.graph.stable'),
         ];
 
         ctx.font = '700 12px Nunito, Segoe UI, sans-serif';
@@ -814,6 +818,7 @@ function KnowledgeGraphCanvas({
 }
 
 function LearningReportCharts({ data }: { data: LearningDashboardData }) {
+  const { t } = useTranslation();
   const trendRef = useRef<HTMLDivElement>(null);
   const radarRef = useRef<HTMLDivElement>(null);
 
@@ -856,7 +861,7 @@ function LearningReportCharts({ data }: { data: LearningDashboardData }) {
       },
       series: [
         {
-          name: '每日能量',
+          name: t('admin.report.dailyEnergy'),
           type: 'bar',
           data: scores,
           barWidth: 18,
@@ -870,7 +875,7 @@ function LearningReportCharts({ data }: { data: LearningDashboardData }) {
           },
         },
         {
-          name: '趋势曲线',
+          name: t('admin.report.trendCurve'),
           type: 'line',
           data: scores,
           smooth: true,
@@ -928,19 +933,19 @@ function LearningReportCharts({ data }: { data: LearningDashboardData }) {
           },
         },
         indicator: [
-          { name: '提问积极性', max: 100 },
-          { name: '专注度', max: 100 },
-          { name: '思考响应性', max: 100 },
-          { name: '逻辑理解力', max: 100 },
-          { name: '知识掌握度', max: 100 },
+          { name: t('admin.report.radarLabels.questionActiveness'), max: 100 },
+          { name: t('admin.report.radarLabels.focus'), max: 100 },
+          { name: t('admin.report.radarLabels.thinking'), max: 100 },
+          { name: t('admin.report.radarLabels.logic'), max: 100 },
+          { name: t('admin.report.radarLabels.knowledge'), max: 100 },
         ],
       },
       series: [{
-        name: 'AI 多维诊断',
+        name: t('admin.report.aiDiagnosis'),
         type: 'radar',
         data: [{
           value: radarValues,
-          name: '当前画像',
+          name: t('admin.report.currentProfile'),
           symbol: 'circle',
           symbolSize: 7,
           lineStyle: { width: 4, color: '#ec4899' },
@@ -970,9 +975,9 @@ function LearningReportCharts({ data }: { data: LearningDashboardData }) {
         <div className="relative mb-2 flex items-center justify-between">
           <div>
             <p className="text-xs font-black uppercase tracking-[0.18em] text-pink-400">Energy Trend</p>
-            <h3 className="mt-1 text-lg font-black text-gray-800">近期积分获取趋势</h3>
+            <h3 className="mt-1 text-lg font-black text-gray-800">{t('admin.report.scoreTrend')}</h3>
           </div>
-          <span className="rounded-full bg-pink-50 px-3 py-1 text-xs font-bold text-pink-600">周视图</span>
+          <span className="rounded-full bg-pink-50 px-3 py-1 text-xs font-bold text-pink-600">{t('admin.report.weekly')}</span>
         </div>
         <div ref={trendRef} className="h-72 w-full" />
       </div>
@@ -981,7 +986,7 @@ function LearningReportCharts({ data }: { data: LearningDashboardData }) {
         <div className="absolute -left-10 -bottom-12 h-36 w-36 rounded-full bg-cyan-200/40 blur-3xl"></div>
         <div className="relative mb-2">
           <p className="text-xs font-black uppercase tracking-[0.18em] text-indigo-400">Learning Profile</p>
-          <h3 className="mt-1 text-lg font-black text-gray-800">AI 多维学情诊断</h3>
+          <h3 className="mt-1 text-lg font-black text-gray-800">{t('admin.report.aiDiagnosis')}</h3>
         </div>
         <div ref={radarRef} className="h-72 w-full" />
       </div>
@@ -990,6 +995,7 @@ function LearningReportCharts({ data }: { data: LearningDashboardData }) {
 }
 
 export default function AdminDashboard() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const appDialog = useAppDialog();
   const apiBaseUrl = API_BASE;
@@ -1017,7 +1023,7 @@ export default function AdminDashboard() {
     todayStar: 0,
     todayStarIncrease: 0,
     focusTime: 0,
-    questionActiveness: '待获取',
+    questionActiveness: t('admin.report.activenessLabels.pending'),
     progressData: [] as { day: string, score: number }[],
     radarData: {
       questionActiveness: 0,
@@ -1110,43 +1116,37 @@ export default function AdminDashboard() {
         const userInputCount = todayEvents.filter((e: any) => 
           e.kind === 'user_input' || e.kind === 'user_audio'
         ).length;
-        let activenessLabel = '良好';
-        if (userInputCount >= 10) activenessLabel = '极佳';
-        else if (userInputCount >= 5) activenessLabel = '良好';
-        else if (userInputCount >= 1) activenessLabel = '一般';
-        else activenessLabel = '待观察';
+        let activenessLabel = t('admin.report.activenessLabels.good');
+        if (userInputCount >= 10) activenessLabel = t('admin.report.activenessLabels.excellent');
+        else if (userInputCount >= 5) activenessLabel = t('admin.report.activenessLabels.good');
+        else if (userInputCount >= 1) activenessLabel = t('admin.report.activenessLabels.fair');
+        else activenessLabel = t('admin.report.activenessLabels.toObserve');
 
         // ================= 🌟 最终修复：完整显示周一到周日七天，再也不会少任何一天 =================
         // 固定显示完整一周七天
-        const weekDays = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+        const weekDays = [
+          t('admin.report.days.monday'),
+          t('admin.report.days.tuesday'),
+          t('admin.report.days.wednesday'),
+          t('admin.report.days.thursday'),
+          t('admin.report.days.friday'),
+          t('admin.report.days.saturday'),
+          t('admin.report.days.sunday'),
+        ];
         // 初始化所有七天，默认得分0，确保100%显示，不会丢失任何一天
-        const dailyScores: Record<string, number> = {
-          '周一': 0,
-          '周二': 0,
-          '周三': 0,
-          '周四': 0,
-          '周五': 0,
-          '周六': 0,
-          '周日': 0
-        };
+        const dailyScores: Record<string, number> = {};
+        weekDays.forEach(d => { dailyScores[d] = 0; });
 
         // 🌟 100%正确的周几映射：JS里getDay() 0=周日，1=周一，2=周二，3=周三，4=周四，5=周五，6=周六
         events.forEach((event: any) => {
           if (event.kind === 'score_change') {
             const eventDate = new Date(event.ts);
             const eventDayNum = eventDate.getDay();
-            // 把数字精准转成对应的周几名称
-            let dayName = '';
-            if (eventDayNum === 1) dayName = '周一';
-            else if (eventDayNum === 2) dayName = '周二';
-            else if (eventDayNum === 3) dayName = '周三';
-            else if (eventDayNum === 4) dayName = '周四';
-            else if (eventDayNum === 5) dayName = '周五';
-            else if (eventDayNum === 6) dayName = '周六';
-            else if (eventDayNum === 0) dayName = '周日'; // 周日完整启用
+            const dayIdx = eventDayNum === 0 ? 6 : eventDayNum - 1; // 0=Sun→6, 1=Mon→0, ...
+            const dayName = weekDays[dayIdx] || '';
 
             // 统计所有七天的得分
-            if (dayName && dailyScores.hasOwnProperty(dayName)) {
+            if (dayName && dayName in dailyScores) {
               dailyScores[dayName] += event.payload.delta || 0;
             }
           }
@@ -1224,12 +1224,12 @@ export default function AdminDashboard() {
     const isAllowed = allowedTypes.includes(file.type) || allowedExtensions.some((ext) => lowerName.endsWith(ext));
 
     if (!isAllowed) {
-      void appDialog.alert("仅支持视频、音频、图片、PDF、Word、PPT、TXT等学习常用格式", { title: '文件格式不支持', intent: 'warning' });
+      void appDialog.alert(t('admin.subject.fileFormatUnsupported'), { title: t('admin.subject.fileFormatTitle'), intent: 'warning' });
       return false;
     }
 
     if (file.size > 500 * 1024 * 1024) {
-      void appDialog.alert("文件大小不能超过 500MB", { title: '文件过大', intent: 'warning' });
+      void appDialog.alert(t('admin.subject.fileTooLarge'), { title: t('admin.subject.fileTooLargeTitle'), intent: 'warning' });
       return false;
     }
 
@@ -1327,7 +1327,7 @@ export default function AdminDashboard() {
         const err = statusRes.data?.error || '';
         if (status === 'failed' && err.includes('LLM not configured')) {
           window.clearInterval(intervalId);
-          await appDialog.alert(LLM_NOT_CONFIGURED_MESSAGE, { title: '模型未配置', intent: 'warning' });
+          await appDialog.alert(LLM_NOT_CONFIGURED_MESSAGE, { title: t('admin.settings.notConfigured'), intent: 'warning' });
           void fetchAllData();
           return;
         }
@@ -1389,17 +1389,17 @@ export default function AdminDashboard() {
       .catch(async (error) => {
         console.error('学科资源上传失败', error);
         if (isLlmNotConfiguredError(error)) {
-          await appDialog.alert(LLM_NOT_CONFIGURED_MESSAGE, { title: '模型未配置', intent: 'warning' });
+          await appDialog.alert(LLM_NOT_CONFIGURED_MESSAGE, { title: t('admin.settings.notConfigured'), intent: 'warning' });
           return;
         }
-        await appDialog.alert('学科已创建，但资源上传失败，请稍后重试', { title: '资源上传失败', intent: 'error' });
+        await appDialog.alert(t('admin.subject.uploadFailed'), { title: t('admin.subject.uploadFailedTitle'), intent: 'error' });
       });
   };
 
   const handleSaveSubject = async () => {
     const normalizedName = subjectName.trim();
     if (!normalizedName) {
-      await appDialog.alert('请输入学科名', { title: '缺少学科名', intent: 'warning' });
+      await appDialog.alert(t('admin.subject.nameRequired'), { title: t('admin.subject.nameMissing'), intent: 'warning' });
       return;
     }
 
@@ -1428,17 +1428,17 @@ export default function AdminDashboard() {
     } catch (error) {
       console.error('保存学科失败', error);
       if (isLlmNotConfiguredError(error)) {
-        await appDialog.alert(LLM_NOT_CONFIGURED_MESSAGE, { title: '模型未配置', intent: 'warning' });
+        await appDialog.alert(LLM_NOT_CONFIGURED_MESSAGE, { title: t('admin.settings.notConfigured'), intent: 'warning' });
         return;
       }
-      await appDialog.alert('保存失败，请检查后端服务', { title: '保存失败', intent: 'error' });
+      await appDialog.alert(t('admin.subject.saveFailed'), { title: t('admin.subject.saveFailedTitle'), intent: 'error' });
     } finally {
       setModalSaving(false);
     }
   };
 
   const handleDeleteSubject = async (topic: GraphTopic) => {
-    if (!(await appDialog.confirm(`确定删除「${topic.title}」以及其下的知识节点和资源吗？`, { title: '删除学科', intent: 'danger', confirmText: '删除' }))) return;
+    if (!(await appDialog.confirm(t('admin.confirm.deleteSubject', { title: topic.title }), { title: t('admin.subject.deleteSubject'), intent: 'danger', confirmText: t('common.delete') }))) return;
 
     setDeletingSubjectId(topic.topic_id);
     try {
@@ -1447,14 +1447,14 @@ export default function AdminDashboard() {
       await fetchAllData();
     } catch (error) {
       console.error('删除学科失败', error);
-      await appDialog.alert('删除失败，请检查后端服务', { title: '删除失败', intent: 'error' });
+      await appDialog.alert(t('admin.subject.deleteFailed'), { title: t('admin.subject.deleteFailedTitle'), intent: 'error' });
     } finally {
       setDeletingSubjectId('');
     }
   };
 
   const handleDeleteExistingResource = async (resource: TopicResource) => {
-    if (!(await appDialog.confirm(`确定删除资源「${resource.resource_name}」吗？`, { title: '删除资源', intent: 'danger', confirmText: '删除' }))) return;
+    if (!(await appDialog.confirm(t('admin.confirm.deleteResource', { title: resource.resource_name }), { title: t('admin.subject.deleteResource'), intent: 'danger', confirmText: t('common.delete') }))) return;
 
     setDeletingResourceId(resource.resource_id);
     try {
@@ -1463,7 +1463,7 @@ export default function AdminDashboard() {
       void fetchAllData();
     } catch (error) {
       console.error('删除资源失败', error);
-      await appDialog.alert('删除资源失败，请检查后端服务', { title: '删除资源失败', intent: 'error' });
+      await appDialog.alert(t('admin.subject.deleteResourceFailed'), { title: t('admin.subject.deleteResourceFailedTitle'), intent: 'error' });
     } finally {
       setDeletingResourceId('');
     }
@@ -1491,7 +1491,7 @@ export default function AdminDashboard() {
     for (const res of allResources) {
       if (res.topic_id !== rootId) continue;
       if (res.ingestion_status !== 'processing') continue;
-      return res.ingestion_stage || '处理中';
+      return res.ingestion_stage || t('admin.resourceStatus.processing');
     }
     return null;
   };
@@ -1508,13 +1508,13 @@ export default function AdminDashboard() {
 
   const pipelineStageToLabel = (stage?: string): string => {
     switch (stage) {
-      case 'parsing': return '文档解析中';
-      case 'candidate_extraction': return '候选结构生成中';
-      case 'review': return '审核中';
-      case 'compiling': return '编译入图中';
-      case 'completed': return '已完成';
-      case 'failed': return '解析失败';
-      default: return '等待中';
+      case 'parsing': return t('admin.resourceStatus.parsing');
+      case 'candidate_extraction': return t('admin.resourceStatus.candidateExtraction');
+      case 'review': return t('admin.resourceStatus.reviewing');
+      case 'compiling': return t('admin.resourceStatus.compiling');
+      case 'completed': return t('admin.resourceStatus.completed');
+      case 'failed': return t('admin.resourceStatus.failed');
+      default: return t('admin.resourceStatus.waiting');
     }
   };
 
@@ -1545,7 +1545,7 @@ export default function AdminDashboard() {
   // 任务推送功能
   const handlePushTask = async () => {
     if (!selectedPushTopicId) {
-      await appDialog.alert("请先选择要推送的知识节点！", { title: '请选择知识节点', intent: 'warning' });
+      await appDialog.alert(t('admin.task.noNodeSelected'), { title: t('admin.task.noNodeTitle'), intent: 'warning' });
       return;
     }
     setIsLoading(true);
@@ -1556,14 +1556,14 @@ export default function AdminDashboard() {
         body: JSON.stringify({ topic_id: selectedPushTopicId })
       });
       if (res.ok) {
-        await appDialog.alert("任务已成功推送至魔法舱！", { title: '推送成功', intent: 'success' });
+        await appDialog.alert(t('admin.task.pushSuccess'), { title: t('admin.task.pushSuccessTitle'), intent: 'success' });
         fetchAllData();
       } else {
-        await appDialog.alert("推送失败，请检查后端服务是否启动", { title: '推送失败', intent: 'error' });
+        await appDialog.alert(t('admin.task.pushFailed'), { title: t('admin.task.pushFailedTitle'), intent: 'error' });
       }
     } catch (error) {
       console.error(error);
-      await appDialog.alert("无法连接后端服务", { title: '连接失败', intent: 'error' });
+      await appDialog.alert(t('admin.task.connectionFailed'), { title: t('admin.task.connectionFailedTitle'), intent: 'error' });
     } finally {
       setIsLoading(false);
     }
@@ -1614,10 +1614,13 @@ export default function AdminDashboard() {
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
             </svg>
-            <span className="text-lg font-medium">返回大厅</span>
+            <span className="text-lg font-medium">{t('common.backToHall')}</span>
           </button>
-          <h1 className="text-lg font-semibold">家长控制台</h1>
-          <div className="w-8"></div>
+          <h1 className="text-lg font-semibold">{t('admin.title')}</h1>
+          <div className="flex items-center gap-3">
+            <LanguageSwitcher />
+            <div className="w-8"></div>
+          </div>
         </div>
       </div>
 
@@ -1628,37 +1631,37 @@ export default function AdminDashboard() {
             onClick={() => setActiveTab('task')}
             className={`px-6 py-3 text-sm font-medium cursor-pointer transition-all ${activeTab === 'task' ? 'text-pink-600 border-b-2 border-pink-500' : 'text-gray-500 hover:text-gray-700'}`}
           >
-            📁 任务配置
+            📁 {t('admin.tabs.task')}
           </button>
           <button
             onClick={() => setActiveTab('report')}
             className={`px-6 py-3 text-sm font-medium cursor-pointer transition-all ${activeTab === 'report' ? 'text-pink-600 border-b-2 border-pink-500' : 'text-gray-500 hover:text-gray-700'}`}
           >
-            📊 AI 学情报告
+            📊 {t('admin.tabs.report')}
           </button>
           <button
             onClick={() => setActiveTab('mistake')}
             className={`px-6 py-3 text-sm font-medium cursor-pointer transition-all ${activeTab === 'mistake' ? 'text-pink-600 border-b-2 border-pink-500' : 'text-gray-500 hover:text-gray-700'}`}
           >
-            📝 错题本与回放
+            📝 {t('admin.tabs.mistake')}
           </button>
           <button
             onClick={() => setActiveTab('graph')}
             className={`px-6 py-3 text-sm font-medium cursor-pointer transition-all ${activeTab === 'graph' ? 'text-pink-600 border-b-2 border-pink-500' : 'text-gray-500 hover:text-gray-700'}`}
           >
-            🕸️ 知识图谱
+            🕸️ {t('admin.tabs.graph')}
           </button>
           <button
             onClick={() => setActiveTab('debug')}
             className={`px-6 py-3 text-sm font-medium cursor-pointer transition-all ${activeTab === 'debug' ? 'text-pink-600 border-b-2 border-pink-500' : 'text-gray-500 hover:text-gray-700'}`}
           >
-            ⚙️ 系统调试
+            ⚙️ {t('admin.tabs.debug')}
           </button>
           <button
             onClick={() => setActiveTab('settings')}
             className={`px-6 py-3 text-sm font-medium cursor-pointer transition-all ${activeTab === 'settings' ? 'text-pink-600 border-b-2 border-pink-500' : 'text-gray-500 hover:text-gray-700'}`}
           >
-            🔧 设置
+            🔧 {t('admin.tabs.settings')}
           </button>
         </div>
       </div>
@@ -1671,11 +1674,11 @@ export default function AdminDashboard() {
             <div>
               <div className="mb-5 flex items-start justify-between gap-4">
                 <div>
-                  <h2 className="text-xl font-black text-gray-800">学科资源配置</h2>
-                  <p className="mt-1 text-xs text-gray-400">两列卡片管理学科；新建或编辑时上传学习资源，单文件最大 500MB。</p>
+                  <h2 className="text-xl font-black text-gray-800">{t('admin.subject.title')}</h2>
+                  <p className="mt-1 text-xs text-gray-400">{t('admin.subject.description')}</p>
                 </div>
                 <span className="rounded-full border border-pink-100 bg-pink-50 px-3 py-1 text-xs font-semibold text-pink-600">
-                  {subjectRoots.length} 个学科
+                  {t('admin.subject.count', { count: subjectRoots.length })}
                 </span>
               </div>
 
@@ -1693,7 +1696,7 @@ export default function AdminDashboard() {
                       <div className="absolute -right-10 -top-12 h-32 w-32 rounded-full bg-pink-200/30 blur-2xl transition-transform group-hover:scale-125"></div>
                       <div className="relative flex items-start justify-between gap-3">
                         <div className="pt-1">
-                          <span className="rounded-full bg-white/80 px-2.5 py-1 text-[11px] font-bold text-pink-500 shadow-sm">已配置</span>
+                          <span className="rounded-full bg-white/80 px-2.5 py-1 text-[11px] font-bold text-pink-500 shadow-sm">{t('admin.subject.configured')}</span>
                           <h3 className="mt-4 max-w-[14rem] truncate text-2xl font-black tracking-tight text-gray-800">{root.title}</h3>
                         </div>
                         <div className="flex shrink-0 gap-2">
@@ -1726,16 +1729,16 @@ export default function AdminDashboard() {
                       <div className="relative mt-8 grid grid-cols-3 gap-2 text-xs text-gray-500">
                         <div className="rounded-2xl border border-white/80 bg-white/70 p-2">
                           <p className="font-bold text-gray-700">{nodeCount}</p>
-                          <p>知识节点</p>
+                          <p>{t('admin.subject.nodes')}</p>
                         </div>
                         <div className="rounded-2xl border border-white/80 bg-white/70 p-2">
                           <p className="font-bold text-gray-700">{resourceCount}</p>
-                          <p>资源数量</p>
+                          <p>{t('admin.subject.resourceCount')}</p>
                           {(() => { const label = getPipelineStageLabel(root.topic_id); return label ? <p className="mt-0.5 text-[10px] text-amber-600 font-semibold">{label}</p> : getIngestionStageLabel(root.topic_id) ? <p className="mt-0.5 text-[10px] text-amber-600 font-semibold">{getIngestionStageLabel(root.topic_id)}</p> : null; })()}
                         </div>
                         <div className="rounded-2xl border border-white/80 bg-white/70 p-2">
                           <p className="font-bold text-gray-700">{getSubjectTag(root.tags || []) || 'custom'}</p>
-                          <p>学科标识</p>
+                          <p>{t('admin.subject.subjectTag')}</p>
                         </div>
                       </div>
                     </div>
@@ -1752,8 +1755,8 @@ export default function AdminDashboard() {
                       <Plus size={34} strokeWidth={2.8} />
                     </div>
                     <div>
-                      <p className="text-base font-black text-gray-800">新建学科</p>
-                      <p className="mt-1 text-xs text-gray-400">添加名称并导入资源</p>
+                      <p className="text-base font-black text-gray-800">{t('admin.subject.newSubject')}</p>
+                      <p className="mt-1 text-xs text-gray-400">{t('admin.subject.newSubjectDesc')}</p>
                     </div>
                   </div>
                 </button>
@@ -1762,7 +1765,7 @@ export default function AdminDashboard() {
 
             {allResources.length > 0 && (
               <div className="rounded-[24px] border border-gray-100 bg-white/70 p-5">
-                <h2 className="text-sm font-black text-gray-700 mb-4">资源解析状态</h2>
+                <h2 className="text-sm font-black text-gray-700 mb-4">{t('admin.resourceStatus.title')}</h2>
                 <div className="space-y-2 max-h-80 overflow-y-auto">
                   {allResources.map((res) => {
                     const status = res.ingestion_status || 'unknown';
@@ -1800,7 +1803,7 @@ export default function AdminDashboard() {
                           {isProcessing && (res.pipeline_stage ? `${pipelineStageToLabel(res.pipeline_stage)} · ` : res.ingestion_stage ? `${res.ingestion_stage} · ` : '')}
                           {res.media_type && `${res.media_type} `}
                           {res.size_bytes && ` ${(res.size_bytes / 1024 / 1024).toFixed(2)} MB`}
-                          {res.extracted_node_count !== undefined && res.extracted_node_count > 0 && ` · 候选节点 ${res.extracted_node_count}`}
+                          {res.extracted_node_count !== undefined && res.extracted_node_count > 0 && <>{` · ${t('admin.resourceStatus.candidateNodes')} ${res.extracted_node_count}`}</>}
                         </p>
                       </div>
                       <span className={[
@@ -1810,7 +1813,7 @@ export default function AdminDashboard() {
                         isFailed ? 'bg-red-100 text-red-700' :
                         'bg-gray-100 text-gray-500'
                       ].join(' ')}>
-                        {isProcessing ? pipelineStageToLabel(res.pipeline_stage || 'parsing') : isCompleted ? '已完成' : isFailed ? '失败' : '等待'}
+                        {isProcessing ? pipelineStageToLabel(res.pipeline_stage || 'parsing') : isCompleted ? t('admin.resourceStatus.completed') : isFailed ? t('admin.resourceStatus.failed') : t('admin.resourceStatus.waiting')}
                       </span>
                     </div>
                   )})}
@@ -1819,15 +1822,15 @@ export default function AdminDashboard() {
             )}
 
             <div className="rounded-[24px] border border-gray-100 bg-white/70 p-5">
-              <h2 className="text-lg font-semibold text-gray-700 mb-4">派发学习任务</h2>
+              <h2 className="text-lg font-semibold text-gray-700 mb-4">{t('admin.task.title')}</h2>
               <div className="mb-3">
-                <label className="text-sm text-gray-500 mb-1 block">知识节点</label>
+                <label className="text-sm text-gray-500 mb-1 block">{t('admin.task.label')}</label>
                 <select
                   value={selectedPushTopicId}
                   onChange={(e) => setSelectedPushTopicId(e.target.value)}
                   className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-pink-200"
                 >
-                  <option value="">请选择知识节点</option>
+                  <option value="">{t('admin.task.placeholder')}</option>
                   {knowledgeTopics.map((topic) => (
                     <option key={topic.topicId} value={topic.topicId}>{topic.title}</option>
                   ))}
@@ -1838,7 +1841,7 @@ export default function AdminDashboard() {
                 disabled={isLoading}
                 className="w-full py-3 bg-gray-800 text-white font-bold rounded-lg disabled:opacity-50 cursor-pointer hover:bg-gray-700 transition-colors"
               >
-                {isLoading ? "推送中..." : "推送至魔法舱"}
+                {isLoading ? t('admin.task.pushing') : t('admin.task.pushBtn')}
               </button>
             </div>
 
@@ -1851,51 +1854,51 @@ export default function AdminDashboard() {
             <div className="pointer-events-none absolute -right-20 -top-24 h-56 w-56 rounded-full bg-pink-200/45 blur-3xl"></div>
             <div className="pointer-events-none absolute -left-24 bottom-8 h-56 w-56 rounded-full bg-sky-200/45 blur-3xl"></div>
             {dataLoading ? (
-              <div className="relative text-center py-10 text-gray-500">加载真实学情数据中...</div>
+              <div className="relative text-center py-10 text-gray-500">{t('admin.report.loadingData')}</div>
             ) : (
               <div className="relative space-y-6">
                 <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
                   <div>
                     <p className="text-xs font-black uppercase tracking-[0.24em] text-pink-400">Learning Report</p>
-                    <h2 className="mt-1 text-2xl font-black text-gray-900">AI 学情报告</h2>
-                    <p className="mt-1 text-xs text-gray-500">基于真实事件流、积分变化和互动状态生成。</p>
+                    <h2 className="mt-1 text-2xl font-black text-gray-900">{t('admin.report.title')}</h2>
+                    <p className="mt-1 text-xs text-gray-500">{t('admin.report.subtitle')}</p>
                   </div>
                   <div className="rounded-full border border-pink-100 bg-white/80 px-4 py-2 text-xs font-bold text-pink-600 shadow-sm">
-                    自动同步 · 周期视图
+                    {t('admin.report.autoSync')}
                   </div>
                 </div>
 
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
                   <div className="relative overflow-hidden rounded-[26px] border border-pink-100 bg-gradient-to-br from-white to-pink-50 p-5 shadow-sm">
                     <div className="absolute right-4 top-4 h-12 w-12 rounded-2xl bg-pink-100"></div>
-                    <p className="text-sm font-bold text-gray-500">今日获智智慧星</p>
+                    <p className="text-sm font-bold text-gray-500">{t('admin.report.todayStars')}</p>
                     <div className="mt-3 flex items-end gap-2">
                       <p className="text-4xl font-black text-gray-900">{learningData.todayStar}</p>
                       {learningData.todayStarIncrease > 0 && (
                         <span className="mb-1 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-black text-emerald-600">+{learningData.todayStarIncrease}</span>
                       )}
                     </div>
-                    <p className="mt-2 text-xs text-gray-400">累计积分与今日增量</p>
+                    <p className="mt-2 text-xs text-gray-400">{t('admin.report.description')}</p>
                   </div>
 
                   <div className="relative overflow-hidden rounded-[26px] border border-sky-100 bg-gradient-to-br from-white to-sky-50 p-5 shadow-sm">
                     <div className="absolute right-4 top-4 h-12 w-12 rounded-2xl bg-sky-100"></div>
-                    <p className="text-sm font-bold text-gray-500">当前专注时长</p>
+                    <p className="text-sm font-bold text-gray-500">{t('admin.report.focusTime')}</p>
                     <div className="mt-3 flex items-end gap-2">
                       <p className="text-4xl font-black text-gray-900">{learningData.focusTime}</p>
-                      <span className="mb-1 text-sm font-black text-sky-600">分钟</span>
+                      <span className="mb-1 text-sm font-black text-sky-600">{t('admin.report.minutes')}</span>
                     </div>
-                    <p className="mt-2 text-xs text-gray-400">{learningData.focusTime > 0 ? '今日学习中' : '等待今日学习事件'}</p>
+                    <p className="mt-2 text-xs text-gray-400">{learningData.focusTime > 0 ? t('admin.report.todayStudying') : t('admin.report.waitingEvents')}</p>
                   </div>
 
                   <div className="relative overflow-hidden rounded-[26px] border border-indigo-100 bg-gradient-to-br from-white to-indigo-50 p-5 shadow-sm">
                     <div className="absolute right-4 top-4 h-12 w-12 rounded-2xl bg-indigo-100"></div>
-                    <p className="text-sm font-bold text-gray-500">提问积极性</p>
+                    <p className="text-sm font-bold text-gray-500">{t('admin.report.questionActiveness')}</p>
                     <div className="mt-3 flex items-end gap-2">
                       <p className="text-4xl font-black text-gray-900">{learningData.questionActiveness}</p>
-                      <span className="mb-1 text-xs font-black text-indigo-500">互动画像</span>
+                      <span className="mb-1 text-xs font-black text-indigo-500">{t('admin.report.interactionProfile')}</span>
                     </div>
-                    <p className="mt-2 text-xs text-gray-400">基于今日用户输入次数</p>
+                    <p className="mt-2 text-xs text-gray-400">{t('admin.report.basedOnInputs')}</p>
                   </div>
                 </div>
 
@@ -1913,19 +1916,19 @@ export default function AdminDashboard() {
             <div className="bg-white/80 backdrop-blur rounded-2xl p-6 shadow-sm flex flex-col h-full border-t-4 border-pink-400">
               <div className="flex items-center gap-2 mb-2">
                 <BookOpen className="text-pink-500" size={24} />
-                <h2 className="text-xl font-bold text-gray-800">智能错题流</h2>
+                <h2 className="text-xl font-bold text-gray-800">{t('admin.mistake.title')}</h2>
               </div>
               <p className="text-xs text-gray-500 mb-6 pb-4 border-b border-gray-100">
-                系统依据 FSM 状态机自动抓取，拒绝无效刷题
+                {t('admin.mistake.description')}
               </p>
               
               <div className="flex-1 overflow-y-auto space-y-4 pr-2 scrollbar-hide">
                 {dataLoading ? (
-                  <div className="text-center py-6 text-gray-400 animate-pulse">正在从底层读取错题本...</div>
+                  <div className="text-center py-6 text-gray-400 animate-pulse">{t('admin.mistake.loading')}</div>
                 ) : knowledgePoints.length === 0 ? (
                   <div className="text-center py-10 bg-gray-50 rounded-xl border border-dashed border-gray-200">
                     <span className="text-4xl block mb-2">🏆</span>
-                    <p className="text-gray-500 font-medium">太棒了，暂无错题记录！</p>
+                    <p className="text-gray-500 font-medium">{t('admin.mistake.noMistakes')}</p>
                   </div>
                 ) : (
                   knowledgePoints.map((kp) => (
@@ -1934,18 +1937,18 @@ export default function AdminDashboard() {
                       <div className="flex justify-between items-start mb-3">
                         <h3 className="font-bold text-gray-800 text-base">{kp.name}</h3>
                         <span className="bg-pink-50 text-pink-600 text-xs px-2 py-1 rounded-md font-medium flex items-center gap-1">
-                          <AlertCircle size={12} /> 待攻克
+                          <AlertCircle size={12} /> {t('admin.mistake.toConquer')}
                         </span>
                       </div>
                       
                       <div className="grid grid-cols-2 gap-2 mb-4">
                         <div className="flex items-center gap-2 text-xs text-gray-500 bg-gray-50 p-2 rounded-lg">
                           <Video size={14} className="text-blue-400" />
-                          <span>相关视频: <strong className="text-gray-700">{kp.resourceCount}</strong></span>
+                          <span>{t('admin.mistake.relatedVideo')} <strong className="text-gray-700">{kp.resourceCount}</strong></span>
                         </div>
                         <div className="flex items-center gap-2 text-xs text-gray-500 bg-gray-50 p-2 rounded-lg">
                           <Clock size={14} className="text-orange-400" />
-                          <span className="truncate" title={kp.lastReview}>首错: {kp.lastReview.split(' ')[0]}</span>
+                          <span className="truncate" title={kp.lastReview}>{t('admin.mistake.firstMistake')} {kp.lastReview.split(' ')[0]}</span>
                         </div>
                       </div>
                       
@@ -1957,14 +1960,14 @@ export default function AdminDashboard() {
                               headers: { "Content-Type": "application/json" },
                               body: JSON.stringify({ topic_id: kp.topicId })
                             });
-                            await appDialog.alert("任务已推送到孩子的魔法舱！", { title: '推送成功', intent: 'success' });
+                            await appDialog.alert(t('admin.mistake.pushRetestSuccess'), { title: t('admin.task.pushSuccessTitle'), intent: 'success' });
                           } catch (e) {
-                            await appDialog.alert("推送失败，请检查网络", { title: '推送失败', intent: 'error' });
+                            await appDialog.alert(t('admin.mistake.pushRetestFailed'), { title: t('admin.task.pushFailedTitle'), intent: 'error' });
                           }
                         }}
                         className="w-full py-2.5 bg-gray-900 text-white text-sm font-bold rounded-lg hover:bg-pink-500 transition-colors cursor-pointer"
                       >
-                        ⚡ 立即派发重测任务
+                        ⚡ {t('admin.mistake.pushRetest')}
                       </button>
                     </div>
                   ))
@@ -1987,13 +1990,13 @@ export default function AdminDashboard() {
                     <Network size={23} />
                   </div>
                   <div>
-                    <h2 className="text-xl font-black text-white">知识图谱</h2>
-                    <p className="mt-1 text-xs text-indigo-100/70">D3 分层布局图，优先减少交叉；拖拽节点、滚轮缩放，点击后立即高亮路径并在节点右侧显示信息。</p>
+                    <h2 className="text-xl font-black text-white">{t('admin.graph.title')}</h2>
+                    <p className="mt-1 text-xs text-indigo-100/70">{t('admin.graph.description')}</p>
                   </div>
                 </div>
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
                   <label className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/10 px-3 py-2 text-xs font-bold text-white/80">
-                    根节点
+                    {t('admin.graph.rootNode')}
                     <select
                       value={selectedGraphRootId}
                       onChange={(e) => {
@@ -2002,22 +2005,22 @@ export default function AdminDashboard() {
                       }}
                       className="min-w-40 rounded-xl border border-white/10 bg-slate-950/80 px-3 py-1.5 text-xs text-white outline-none focus:ring-2 focus:ring-cyan-300/40"
                     >
-                      <option value="">全部图谱</option>
+                      <option value="">{t('admin.graph.allGraph')}</option>
                       {subjectRoots.map((root) => (
                         <option key={root.topic_id} value={root.topic_id}>{root.title}</option>
                       ))}
                     </select>
                   </label>
                   <div className="flex shrink-0 gap-2 text-[11px] font-bold text-white/80">
-                    <span className="rounded-full border border-white/10 bg-white/10 px-3 py-1">{visibleGraphNodes.length} 节点</span>
-                    <span className="rounded-full border border-white/10 bg-white/10 px-3 py-1">{visibleGraphEdgeCount} 关系</span>
+                    <span className="rounded-full border border-white/10 bg-white/10 px-3 py-1">{t('admin.graph.nodes', { count: visibleGraphNodes.length })}</span>
+                    <span className="rounded-full border border-white/10 bg-white/10 px-3 py-1">{t('admin.graph.edges', { count: visibleGraphEdgeCount })}</span>
                     <button
                       type="button"
                       onClick={() => setGraphExpanded((current) => !current)}
                       className="inline-flex items-center gap-2 rounded-full border border-cyan-300/30 bg-cyan-400/12 px-3 py-1 text-[11px] font-extrabold text-cyan-50 transition hover:bg-cyan-400/18"
                     >
                       {graphExpanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
-                      {graphExpanded ? '退出页面播放' : '页面播放'}
+                      {graphExpanded ? t('admin.graph.exitFullscreen') : t('admin.graph.fullscreen')}
                     </button>
                   </div>
                 </div>
@@ -2025,7 +2028,7 @@ export default function AdminDashboard() {
 
               {selectedGraphRoot && (
                 <div className="relative mb-3 rounded-2xl border border-cyan-300/20 bg-cyan-400/10 px-4 py-2 text-xs font-semibold text-cyan-50">
-                  当前只看「{selectedGraphRoot.title}」根节点下的子图。切回“全部图谱”可查看完整结构。
+                  {t('admin.graph.currentSubgraph', { title: selectedGraphRoot.title })}
                 </div>
               )}
 
@@ -2034,8 +2037,8 @@ export default function AdminDashboard() {
                 {visibleGraphNodes.length === 0 ? (
                   <div className="relative flex h-full flex-col items-center justify-center text-center text-indigo-100/70">
                     <Network size={44} className="mb-3 text-indigo-200/60" />
-                    <p className="text-sm font-bold">知识图谱生成中...</p>
-                    <p className="mt-1 text-xs">上传学科资源后会自动扩展节点关系。</p>
+                    <p className="text-sm font-bold">{t('admin.graph.generating')}</p>
+                    <p className="mt-1 text-xs">{t('admin.graph.generatingHint')}</p>
                   </div>
                 ) : (
                   <KnowledgeGraphCanvas
@@ -2050,15 +2053,15 @@ export default function AdminDashboard() {
                 )}
 
                 <div className="pointer-events-none absolute bottom-4 left-4 flex flex-wrap gap-2 text-[11px] font-bold text-white/80">
-                  <span className="rounded-full border border-pink-300/30 bg-pink-500/15 px-3 py-1">虚线：层级归属 parent_ids</span>
-                  <span className="rounded-full border border-cyan-300/30 bg-cyan-500/15 px-3 py-1">实线：前置依赖 prerequisite_ids</span>
-                  <span className="rounded-full border border-amber-300/30 bg-amber-500/15 px-3 py-1">黄线：点击节点后的上行路径</span>
-                  <span className="rounded-full border border-rose-300/30 bg-rose-500/15 px-3 py-1">粉色光晕：错题节点</span>
+                  <span className="rounded-full border border-pink-300/30 bg-pink-500/15 px-3 py-1">{t('admin.graph.legend.dashedParent')}</span>
+                  <span className="rounded-full border border-cyan-300/30 bg-cyan-500/15 px-3 py-1">{t('admin.graph.legend.solidPrereq')}</span>
+                  <span className="rounded-full border border-amber-300/30 bg-amber-500/15 px-3 py-1">{t('admin.graph.legend.yellowPath')}</span>
+                  <span className="rounded-full border border-rose-300/30 bg-rose-500/15 px-3 py-1">{t('admin.graph.legend.pinkMistake')}</span>
                 </div>
 
                 {selectedNode && (
                   <div className="pointer-events-none absolute right-4 top-4 rounded-2xl border border-amber-300/20 bg-slate-950/72 px-4 py-3 text-[11px] font-semibold text-slate-100 shadow-lg shadow-slate-950/25 backdrop-blur">
-                    当前节点「{selectedNode.title}」已选中，路径与说明会直接跟随节点更新。
+                    {t('admin.graph.selectedNode', { title: selectedNode.title })}
                   </div>
                 )}
               </div>
@@ -2069,37 +2072,37 @@ export default function AdminDashboard() {
         {/* 5. 系统调试 */}
         {activeTab === 'debug' && (
           <div className="bg-white/80 backdrop-blur rounded-2xl p-6 shadow-sm">
-            <h2 className="text-lg font-semibold text-gray-700 mb-4">引擎决策日志</h2>
-            <p className="text-xs text-gray-400 mb-4">直接读取 logs/ 目录下的数据</p>
+            <h2 className="text-lg font-semibold text-gray-700 mb-4">{t('admin.debug.title')}</h2>
+            <p className="text-xs text-gray-400 mb-4">{t('admin.debug.description')}</p>
             {dataLoading ? (
-              <div className="text-center py-6 text-gray-500">加载日志中...</div>
+              <div className="text-center py-6 text-gray-500">{t('admin.debug.loading')}</div>
             ) : (
               <div className="bg-gray-900 rounded-lg p-4 font-mono text-xs text-green-400 mb-6 max-h-60 overflow-y-auto">
                 {engineLogs.length === 0 ? (
-                  <p>[INFO] 暂无日志数据，等待系统事件...</p>
+                  <p>[INFO] {t('admin.debug.noLogs')}</p>
                 ) : (
                   engineLogs.map((log, i) => <p key={i}>{log}</p>)
                 )}
               </div>
             )}
             <div className="bg-red-50 rounded-lg p-4 border border-red-200">
-              <p className="text-sm text-red-600 font-medium mb-2">⚠️ 危险操作区</p>
-              <p className="text-xs text-gray-500 mb-3">这里的操作将直接影响底层状态，无法撤销。</p>
+              <p className="text-sm text-red-600 font-medium mb-2">⚠️ {t('admin.debug.dangerZone')}</p>
+              <p className="text-xs text-gray-500 mb-3">{t('admin.debug.dangerDescription')}</p>
               <button 
                 onClick={async () => {
-                  if(await appDialog.confirm("确定要清空本地上下文状态吗？此操作无法撤销！", { title: '清空本地上下文', intent: 'danger', confirmText: '清空' })) {
+                  if(await appDialog.confirm(t('admin.debug.clearContextConfirm'), { title: t('admin.debug.clearContextTitle'), intent: 'danger', confirmText: t('common.clear') })) {
                     try {
                       await fetch(`${apiBaseUrl}/session/reset`, { method: "POST" });
-                      await appDialog.alert("已清空本地上下文状态", { title: '已清空', intent: 'success' });
+                      await appDialog.alert(t('admin.debug.cleared'), { title: t('admin.debug.clearedTitle'), intent: 'success' });
                       fetchAllData();
                     } catch (e) {
-                      await appDialog.alert("操作失败", { title: '操作失败', intent: 'error' });
+                      await appDialog.alert(t('admin.debug.operationFailed'), { title: t('admin.debug.operationFailed'), intent: 'error' });
                     }
                   }
                 }}
                 className="bg-white text-gray-700 border border-gray-200 px-3 py-1 rounded text-xs hover:bg-gray-100 cursor-pointer"
               >
-                清空本地上下文状态
+                {t('admin.debug.clearContext')}
               </button>
             </div>
           </div>
@@ -2122,9 +2125,9 @@ export default function AdminDashboard() {
                 <div>
                   <p className="text-xs font-bold uppercase tracking-[0.28em] text-white/75">Subject Studio</p>
                   <h2 className="mt-2 text-2xl font-black">
-                    {subjectModalMode === 'create' ? '新建学科' : '编辑学科'}
+                    {subjectModalMode === 'create' ? t('admin.subject.newSubjectTitle') : t('admin.subject.editSubject')}
                   </h2>
-                  <p className="mt-1 text-sm text-white/80">填写学科名，并把课件、文档、音视频资料放入下方列表。</p>
+                  <p className="mt-1 text-sm text-white/80">{t('admin.subject.subjectDesc')}</p>
                 </div>
                 <button
                   type="button"
@@ -2140,12 +2143,12 @@ export default function AdminDashboard() {
 
             <div className="space-y-5 p-6">
               <div>
-                <label className="mb-2 block text-sm font-bold text-gray-700">学科名</label>
+                <label className="mb-2 block text-sm font-bold text-gray-700">{t('admin.subject.subjectName')}</label>
                 <input
                   type="text"
                   value={subjectName}
                   onChange={(e) => setSubjectName(e.target.value)}
-                  placeholder="例如：数学、英语阅读、物理实验"
+                  placeholder={t('admin.subject.subjectNamePlaceholder')}
                   className="w-full rounded-2xl border border-pink-100 bg-pink-50/40 px-4 py-3 text-base font-semibold text-gray-800 shadow-inner outline-none transition-all placeholder:text-gray-400 focus:border-pink-300 focus:bg-white focus:ring-4 focus:ring-pink-100"
                 />
               </div>
@@ -2162,8 +2165,8 @@ export default function AdminDashboard() {
 
                 <div className="mb-3 flex items-center justify-between gap-3">
                   <div>
-                    <h3 className="text-sm font-black text-gray-800">资源列表</h3>
-                    <p className="text-xs text-gray-400">拖入文件直接导入，也可以使用右侧加号选择。</p>
+                    <h3 className="text-sm font-black text-gray-800">{t('admin.subject.resourceList')}</h3>
+                    <p className="text-xs text-gray-400">{t('admin.subject.resourceHint')}</p>
                   </div>
                   <button
                     type="button"
@@ -2185,7 +2188,7 @@ export default function AdminDashboard() {
                   <div className={`max-h-72 space-y-2 overflow-y-auto pr-1 transition-all ${modalDragging ? 'blur-[2px]' : ''}`}>
                     {modalResourceLoading && (
                       <div className="rounded-2xl border border-dashed border-gray-200 bg-white p-5 text-center text-sm text-gray-400">
-                        正在读取已有资源...
+                        {t('admin.subject.loadingResources')}
                       </div>
                   )}
 
@@ -2222,7 +2225,7 @@ export default function AdminDashboard() {
                         </div>
                         <div className="min-w-0">
                           <p className="truncate text-sm font-bold text-gray-800">{file.name}</p>
-                          <p className="text-xs text-amber-700/70">待上传 · {(file.size / 1024 / 1024).toFixed(2)} MB</p>
+                          <p className="text-xs text-amber-700/70">{t('admin.subject.pendingUploadLabel')} · {(file.size / 1024 / 1024).toFixed(2)} MB</p>
                         </div>
                       </div>
                       <button
@@ -2239,8 +2242,8 @@ export default function AdminDashboard() {
                   {!modalResourceLoading && existingSubjectResources.length === 0 && pendingResourceFiles.length === 0 && (
                     <div className="rounded-2xl border border-dashed border-gray-200 bg-white p-8 text-center">
                       <UploadCloud className="mx-auto text-gray-300" size={42} />
-                      <p className="mt-3 text-sm font-semibold text-gray-500">还没有资源</p>
-                      <p className="mt-1 text-xs text-gray-400">拖入文件，或点击右上角加号导入。</p>
+                      <p className="mt-3 text-sm font-semibold text-gray-500">{t('admin.subject.noResources')}</p>
+                      <p className="mt-1 text-xs text-gray-400">{t('admin.subject.noResourcesHint')}</p>
                     </div>
                   )}
                 </div>
@@ -2248,8 +2251,8 @@ export default function AdminDashboard() {
                 {modalDragging && (
                   <div className="absolute inset-0 z-10 flex flex-col items-center justify-center rounded-[20px] border-2 border-dashed border-pink-300 bg-white/80 text-pink-600 shadow-2xl backdrop-blur-md">
                     <UploadCloud size={58} strokeWidth={1.8} />
-                    <p className="mt-3 text-lg font-black">松开导入资源</p>
-                    <p className="mt-1 text-xs text-pink-400">支持视频、音频、图片、PDF、Word、PPT、TXT</p>
+                    <p className="mt-3 text-lg font-black">{t('admin.subject.dropImport')}</p>
+                    <p className="mt-1 text-xs text-pink-400">{t('admin.subject.dropSupport')}</p>
                   </div>
                 )}
                 </div>
@@ -2258,7 +2261,7 @@ export default function AdminDashboard() {
 
             <div className="flex items-center justify-between gap-3 border-t border-gray-100 bg-gray-50 px-6 py-4">
               <p className="text-xs text-gray-400">
-                {pendingResourceFiles.length > 0 ? `${pendingResourceFiles.length} 个资源等待上传` : '保存后会刷新学科卡片'}
+                {pendingResourceFiles.length > 0 ? t('admin.subject.pendingUpload', { count: pendingResourceFiles.length }) : t('admin.subject.saveHint')}
               </p>
               <div className="flex gap-3">
                 <button
@@ -2267,7 +2270,7 @@ export default function AdminDashboard() {
                   disabled={modalSaving}
                   className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-600 transition-colors hover:bg-gray-100 disabled:opacity-50"
                 >
-                  取消
+                  {t('common.cancel')}
                 </button>
                 <button
                   type="button"
@@ -2275,7 +2278,7 @@ export default function AdminDashboard() {
                   disabled={modalSaving || !subjectName.trim()}
                   className="rounded-xl bg-gray-900 px-5 py-2 text-sm font-bold text-white shadow-lg shadow-gray-200 transition-colors hover:bg-pink-600 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {modalSaving ? '保存中...' : subjectModalMode === 'create' ? '创建并导入' : '保存修改'}
+                  {modalSaving ? t('admin.subject.saving') : subjectModalMode === 'create' ? t('admin.subject.createAndImport') : t('admin.subject.saveChanges')}
                 </button>
               </div>
             </div>

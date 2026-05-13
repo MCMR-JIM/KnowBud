@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { SettingsAPI } from '../api/client';
 import { X } from 'lucide-react';
 
@@ -52,6 +53,7 @@ function InfoTooltip({ text }: { text: string }) {
 }
 
 export default function SettingsPanel() {
+  const { t } = useTranslation();
   const [mode, setMode] = useState<'api' | 'local'>('api');
   const [provider, setProvider] = useState<string>('deepseek');
   const [apiKey, setApiKey] = useState('');
@@ -130,9 +132,9 @@ export default function SettingsPanel() {
   }
 
   async function testConnection() {
-    setTestResult('检测中...');
-    try { await SettingsAPI.getModels(); setTestResult('✓ 连接成功'); }
-    catch { setTestResult('✗ 连接失败'); }
+    setTestResult(t('settings.testing'));
+    try { await SettingsAPI.getModels(); setTestResult(t('settings.connectionSuccess')); }
+    catch { setTestResult(t('settings.connectionFailed')); }
   }
 
   // Scan existing model paths to detect already-downloaded models
@@ -226,9 +228,9 @@ export default function SettingsPanel() {
   const handleCancel = useCallback(async (modelKey: string) => {
     const p = modelPaths[modelKey] || '';
     setConfirmModal({
-      open: true, title: '确认取消',
-      message: `将取消下载。\n路径: ${p}\n\n是否同时清理已下载的部分文件？`,
-      confirmText: '取消并清理', onConfirm: async () => {
+      open: true, title: t('settings.confirmCancelTitle'),
+      message: `${t('settings.confirmCancelMsg')}\n${t('settings.path')}: ${p}\n\n${t('settings.confirmCancelCleanup')}`,
+      confirmText: t('settings.cancelAndClean'), onConfirm: async () => {
         setConfirmModal(null);
         await SettingsAPI.cancelDownload(modelKey);
         if (p) await SettingsAPI.deleteModel(modelKey).catch(() => {});
@@ -240,12 +242,12 @@ export default function SettingsPanel() {
 
   const handleDelete = useCallback(async (modelKey: string) => {
     const path = modelPaths[modelKey]?.trim();
-    if (!path) return alert('请填写路径');
+    if (!path) return alert(t('settings.pleaseFillPath'));
     try {
       await SettingsAPI.deleteModel(modelKey);
       setDownloadStates((prev) => { const copy = { ...prev }; delete copy[modelKey]; return copy; });
     } catch (err: unknown) {
-      alert('删除失败: ' + (err instanceof Error ? err.message : String(err)));
+      alert(t('settings.deleteFailed') + ': ' + (err instanceof Error ? err.message : String(err)));
     }
   }, [modelPaths]);
 
@@ -274,29 +276,29 @@ export default function SettingsPanel() {
             <h4 className="text-base font-black text-gray-800">{m.label}</h4>
             <p className="mt-1 text-xs text-gray-400">{m.description}</p>
           </div>
-          {isDownloading && <span className="rounded-full bg-blue-50 px-2 py-0.5 text-xs font-black text-blue-600">下载中</span>}
-          {ds?.status === 'paused' && <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-black text-amber-600">已暂停</span>}
-          {isDone && <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-black text-emerald-600">已下载</span>}
+          {isDownloading && <span className="rounded-full bg-blue-50 px-2 py-0.5 text-xs font-black text-blue-600">{t('settings.downloading')}</span>}
+          {ds?.status === 'paused' && <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-black text-amber-600">{t('settings.paused')}</span>}
+          {isDone && <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-black text-emerald-600">{t('settings.downloaded')}</span>}
         </div>
         <div className="mb-3 grid grid-cols-2 gap-1 text-xs text-gray-400">
-          <span>大小: <strong className="text-gray-700">{m.size}</strong></span>
-          {!isParser && <span>显存: <strong className="text-gray-700">{m.vram}</strong></span>}
-          {!isParser && m.context_limit && <span>上下文: <strong className="text-gray-700">{parseInt(m.context_limit) >= 1000 ? `${(parseInt(m.context_limit)/1000).toFixed(0)}K` : m.context_limit}</strong></span>}
-          <span className={isParser ? 'col-span-2' : !m.context_limit ? 'col-span-2' : ''}>推荐: <strong className="text-gray-700">{m.gpu}</strong></span>
+          <span>{t('settings.size')}: <strong className="text-gray-700">{m.size}</strong></span>
+          {!isParser && <span>{t('settings.vram')}: <strong className="text-gray-700">{m.vram}</strong></span>}
+          {!isParser && m.context_limit && <span>{t('settings.context')}: <strong className="text-gray-700">{parseInt(m.context_limit) >= 1000 ? `${(parseInt(m.context_limit)/1000).toFixed(0)}K` : m.context_limit}</strong></span>}
+          <span className={isParser ? 'col-span-2' : !m.context_limit ? 'col-span-2' : ''}>{t('settings.recommended')}: <strong className="text-gray-700">{m.gpu}</strong></span>
         </div>
         <div className="w-full h-3 bg-gray-200 rounded-full overflow-hidden mb-1">
           <div className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 transition-all duration-500 ease-out" style={{ width: `${progress}%` }}/>
         </div>
         <span className="text-sm text-gray-500">
-          {isDownloading ? `${Math.round(progress)}%` + (ds?.speed ? ` · ${ds.speed.toFixed(1)} MB/s` : '') : isDone ? '已完成 ✓' : ds?.status === 'error' ? '下载失败 ✗' : ds?.status === 'paused' ? '已暂停' : '等待下载'}
+          {isDownloading ? `${Math.round(progress)}%` + (ds?.speed ? ` · ${ds.speed.toFixed(1)} MB/s` : '') : isDone ? t('settings.completed') : ds?.status === 'error' ? t('settings.downloadFailed') : ds?.status === 'paused' ? t('settings.paused') : t('settings.waitingDownload')}
         </span>
         <div className="mt-3 flex flex-wrap justify-end gap-2">
           {isDone ? (
-            <button onClick={() => { const p = modelPaths[m.key]||''; setConfirmModal({open:true,title:'确认删除',message:`删除: ${p}`,confirmText:'确认删除',onConfirm:()=>{setConfirmModal(null);handleDelete(m.key);}});}} className="rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100">删除</button>
-          ) : isDownloading ? (<><button onClick={()=>handlePause(m.key)} className="rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-bold text-gray-600 hover:bg-gray-200">暂停</button><button onClick={()=>handleCancel(m.key)} className="rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100">取消</button></>) : ds?.status==='paused' ? (<><button onClick={()=>handleResume(m.key)} className="rounded-lg bg-blue-500 px-3 py-1.5 text-xs font-bold text-gray-900 hover:bg-blue-600">继续</button><button onClick={()=>handleCancel(m.key)} className="rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100">取消</button></>) : (
-            <button onClick={async()=>{try{const r=await SettingsAPI.browseFolder();if(!r.data?.path)return;const path=r.data.path;setModelPaths(prev=>({...prev,[m.key]:path}));const v=await SettingsAPI.validatePath(m.key,path);if(v.data?.files?.length){const ok=await new Promise(r=>{setConfirmModal({open:true,title:'文件夹不为空',message:`${path}\n此文件夹已有文件，是否继续？`,confirmText:'仍然下载',onConfirm:()=>{setConfirmModal(null);r(true)}})});if(!ok)return}await SettingsAPI.downloadModel(m.key,path);setDownloadStates(prev=>({...prev,[m.key]:{progress:0,status:'downloading'}}))}catch{}}} className="rounded-lg bg-blue-500 px-4 py-1.5 text-xs font-bold text-gray-900 hover:bg-blue-600">下载</button>
+            <button onClick={() => { const p = modelPaths[m.key]||''; setConfirmModal({open:true,title:t('settings.confirmDeleteTitle'),message:`${t('settings.deletePath')}: ${p}`,confirmText:t('settings.confirmDelete'),onConfirm:()=>{setConfirmModal(null);handleDelete(m.key);}});}} className="rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100">{t('settings.delete')}</button>
+          ) : isDownloading ? (<><button onClick={()=>handlePause(m.key)} className="rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-bold text-gray-600 hover:bg-gray-200">{t('settings.pause')}</button><button onClick={()=>handleCancel(m.key)} className="rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100">{t('settings.cancel')}</button></>) : ds?.status==='paused' ? (<><button onClick={()=>handleResume(m.key)} className="rounded-lg bg-blue-500 px-3 py-1.5 text-xs font-bold text-gray-900 hover:bg-blue-600">{t('settings.resume')}</button><button onClick={()=>handleCancel(m.key)} className="rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-100">{t('settings.cancel')}</button></>) : (
+            <button onClick={async()=>{try{const r=await SettingsAPI.browseFolder();if(!r.data?.path)return;const path=r.data.path;setModelPaths(prev=>({...prev,[m.key]:path}));const v=await SettingsAPI.validatePath(m.key,path);if(v.data?.files?.length){const ok=await new Promise(r=>{setConfirmModal({open:true,title:t('settings.folderNotEmptyTitle'),message:`${path}\n${t('settings.folderNotEmptyMsg')}`,confirmText:t('settings.stillDownload'),onConfirm:()=>{setConfirmModal(null);r(true)}})});if(!ok)return}await SettingsAPI.downloadModel(m.key,path);setDownloadStates(prev=>({...prev,[m.key]:{progress:0,status:'downloading'}}))}catch{}}} className="rounded-lg bg-blue-500 px-4 py-1.5 text-xs font-bold text-gray-900 hover:bg-blue-600">{t('settings.download')}</button>
           )}
-          <button onClick={async()=>{try{const r=await SettingsAPI.browseFolder();if(!r.data?.path)return;const path=r.data.path;setModelPaths(prev=>({...prev,[m.key]:path}));const v=await SettingsAPI.validatePath(m.key,path);if(v.data?.valid)setDownloadStates(prev=>({...prev,[m.key]:{progress:100,status:'done'}}))}catch{}}} className="rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-bold text-gray-600 hover:bg-gray-200">浏览</button>
+          <button onClick={async()=>{try{const r=await SettingsAPI.browseFolder();if(!r.data?.path)return;const path=r.data.path;setModelPaths(prev=>({...prev,[m.key]:path}));const v=await SettingsAPI.validatePath(m.key,path);if(v.data?.valid)setDownloadStates(prev=>({...prev,[m.key]:{progress:100,status:'done'}}))}catch{}}} className="rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-bold text-gray-600 hover:bg-gray-200">{t('settings.browse')}</button>
         </div>
       </div>
     );
@@ -305,17 +307,17 @@ export default function SettingsPanel() {
   return (
     <div className="bg-white/80 rounded-[32px] p-8 shadow-sm space-y-6">
       <div>
-        <h2 className="text-2xl font-black text-gray-800">系统设置</h2>
-        <p className="mt-1 text-sm text-gray-400">配置 LLM 模型服务，管理本地模型下载。</p>
+        <h2 className="text-2xl font-black text-gray-800">{t('settings.title')}</h2>
+        <p className="mt-1 text-sm text-gray-400">{t('settings.description')}</p>
       </div>
 
       {/* ===== Parser Models: Required ===== */}
       <div className="rounded-[24px] border border-rose-100 bg-gradient-to-br from-rose-50/60 to-amber-50/40 p-6">
-        <h3 className="mb-1 text-sm font-black uppercase tracking-[0.14em] text-rose-600">文档解析前置依赖（必需下载）</h3>
-        <p className="mb-4 text-xs text-gray-400">MinerU 解析 PDF/PPTX/DOCX 需要这些模型</p>
+        <h3 className="mb-1 text-sm font-black uppercase tracking-[0.14em] text-rose-600">{t('settings.parserTitle')}</h3>
+        <p className="mb-4 text-xs text-gray-400">{t('settings.parserDesc')}</p>
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           {parserModels.map((m) => renderCard(m, true))}
-          {parserModels.length === 0 && <div className="col-span-2 rounded-2xl border border-dashed border-rose-200 bg-white/60 py-10 text-center text-sm text-gray-400">加载中...</div>}
+          {parserModels.length === 0 && <div className="col-span-2 rounded-2xl border border-dashed border-rose-200 bg-white/60 py-10 text-center text-sm text-gray-400">{t('settings.parserLoading')}</div>}
         </div>
       </div>
 
@@ -326,7 +328,7 @@ export default function SettingsPanel() {
           {(['api', 'local'] as const).map((m) => (
             <button key={m} type="button" onClick={() => setMode(m)}
               className={`flex-1 rounded-xl px-4 py-2.5 text-sm font-bold transition-all ${mode === m ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
-              {m === 'api' ? '远程 API' : '本地模型'}
+              {m === 'api' ? t('settings.api') : t('settings.local')}
             </button>
           ))}
         </div>
@@ -336,14 +338,14 @@ export default function SettingsPanel() {
         <div className="space-y-5">
           {!apiKey.trim() && (
             <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
-              当前未填写 API Key。可以先保存配置，但使用依赖 LLM 的功能时会提示前往设置页完成配置。
+              {t('settings.noApiKey')}
             </div>
           )}
           {/* Provider Selection Cards */}
           <div>
             <div className="mb-3 flex items-center gap-1">
-              <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">供应商选择</span>
-              <InfoTooltip text="选择已预设的 API 供应商，或使用自定义 Base URL" />
+              <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">{t('settings.providerSelection')}</span>
+              <InfoTooltip text={t('settings.providerTooltip')} />
             </div>
             <div className="grid grid-cols-2 gap-3">
               {PROVIDERS.map((p) => (
@@ -353,8 +355,8 @@ export default function SettingsPanel() {
                   onClick={() => handleProviderChange(p)}
                   className={`rounded-2xl border-2 p-4 text-left transition-all ${provider === p.key ? 'border-blue-400 bg-blue-50/50 shadow-md ring-4 ring-blue-100' : 'border-gray-200 bg-white hover:border-gray-300'}`}
                 >
-                  <div className="text-sm font-black text-gray-800">{p.label}{p.contextLimit ? <span className="ml-1 text-[10px] font-normal text-gray-400">{parseInt(p.contextLimit) >= 1000 ? `${(parseInt(p.contextLimit)/1000).toFixed(0)}K 上下文` : ''}</span> : ''}</div>
-                  <div className="mt-1 text-xs text-gray-400">{p.key === 'custom' ? '手动填写配置' : '预设 API'}</div>
+                  <div className="text-sm font-black text-gray-800">{p.key === 'custom' ? t('settings.customProvider') : p.label}{p.contextLimit ? <span className="ml-1 text-[10px] font-normal text-gray-400">{parseInt(p.contextLimit) >= 1000 ? `${(parseInt(p.contextLimit)/1000).toFixed(0)}K ${t('settings.context')}` : ''}</span> : ''}</div>
+                  <div className="mt-1 text-xs text-gray-400">{p.key === 'custom' ? t('settings.customConfig') : t('settings.presetApi')}</div>
                 </button>
               ))}
             </div>
@@ -363,10 +365,10 @@ export default function SettingsPanel() {
           {/* API Key */}
           <div>
             <div className="mb-2 flex items-center gap-1">
-              <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">API Key</span>
-              <InfoTooltip text="用于身份认证的密钥，在供应商网站获取" />
+              <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">{t('settings.apiKey')}</span>
+              <InfoTooltip text={t('settings.apiKeyTooltip')} />
               {PROVIDERS.find((p) => p.key === provider)?.helpUrl && (
-                <a href={PROVIDERS.find((p) => p.key === provider)!.helpUrl} target="_blank" className="ml-auto text-xs font-bold text-blue-500 hover:underline">如何获取？</a>
+                <a href={PROVIDERS.find((p) => p.key === provider)!.helpUrl} target="_blank" className="ml-auto text-xs font-bold text-blue-500 hover:underline">{t('settings.howToGet')}</a>
               )}
             </div>
             <div className="relative">
@@ -384,8 +386,8 @@ export default function SettingsPanel() {
           {/* Base URL */}
           <div>
             <div className="mb-2 flex items-center gap-1">
-              <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">Base URL</span>
-              <InfoTooltip text="API 服务地址，DeepSeek 等预设供应商自动填写" />
+              <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">{t('settings.baseUrl')}</span>
+              <InfoTooltip text={t('settings.baseUrlTooltip')} />
             </div>
             <input
               type="text" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)}
@@ -398,8 +400,8 @@ export default function SettingsPanel() {
           {/* Model */}
           <div>
             <div className="mb-2 flex items-center gap-1">
-              <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">Model</span>
-              <InfoTooltip text="模型名称，DeepSeek 预设可选 deepseek-v4-flash 和 deepseek-v4-pro" />
+              <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">{t('settings.model')}</span>
+              <InfoTooltip text={t('settings.modelTooltip')} />
             </div>
             {providerModels.length > 0 ? (
               <select
@@ -411,7 +413,7 @@ export default function SettingsPanel() {
             ) : (
               <input
                 type="text" value={model} onChange={(e) => setModel(e.target.value)}
-                placeholder="例如 gpt-4o"
+                placeholder={t('settings.modelPlaceholder')}
                 className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold outline-none transition-all focus:border-blue-300 focus:ring-4 focus:ring-blue-50"
               />
             )}
@@ -423,7 +425,7 @@ export default function SettingsPanel() {
             onClick={testConnection}
             className="rounded-xl bg-blue-500 px-5 py-2.5 text-sm font-bold text-gray-900 shadow-lg shadow-blue-200 transition-colors hover:bg-blue-600"
           >
-            {testResult || '测试连接'}
+            {testResult || t('settings.testConnection')}
           </button>
         </div>
       )}
@@ -435,42 +437,42 @@ export default function SettingsPanel() {
           <div className="rounded-2xl border border-gray-200 bg-white p-5">
             <div className="mb-2 flex items-center justify-between">
               <div className="flex items-center gap-1">
-                <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">GPU 检测结果</span>
-                <InfoTooltip text="检测到的显卡设备。模型加载使用普通 GPU 内存，非专用显存" />
+                <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">{t('settings.gpuDetection')}</span>
+                <InfoTooltip text={t('settings.gpuDetectionTooltip')} />
               </div>
               <button
                 type="button" onClick={detectGPU} disabled={gpuLoading}
                 className="rounded-lg bg-gray-100 px-3 py-1 text-xs font-bold text-gray-600 hover:bg-gray-200 disabled:opacity-50"
               >
-                重新检测
+                {t('settings.reDetect')}
               </button>
             </div>
             {gpu && gpu.cuda_available ? (
               <div className="mt-3 grid grid-cols-3 gap-3 text-sm">
-                <div><span className="text-gray-400">设备</span><div className="font-bold text-gray-800">{gpu.gpu_name}</div></div>
-                <div><span className="text-gray-400">总显存</span><div className="font-bold text-gray-800">{gpu.vram_total_gb} GB</div></div>
-                <div><span className="text-gray-400">可用</span><div className="font-bold text-gray-800">{gpu.vram_free_gb} GB</div></div>
+                <div><span className="text-gray-400">{t('settings.device')}</span><div className="font-bold text-gray-800">{gpu.gpu_name}</div></div>
+                <div><span className="text-gray-400">{t('settings.totalVram')}</span><div className="font-bold text-gray-800">{gpu.vram_total_gb} GB</div></div>
+                <div><span className="text-gray-400">{t('settings.available')}</span><div className="font-bold text-gray-800">{gpu.vram_free_gb} GB</div></div>
               </div>
             ) : gpuLoading ? (
-              <p className="mt-3 text-sm text-gray-400">检测中...</p>
+              <p className="mt-3 text-sm text-gray-400">{t('settings.detecting')}</p>
             ) : (
-              <p className="mt-3 text-sm text-gray-400">未检测到可用 GPU</p>
+              <p className="mt-3 text-sm text-gray-400">{t('settings.noGpu')}</p>
             )}
           </div>
 
           {/* Recommended */}
           {recommended && (
             <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm">
-              <span className="font-bold text-amber-700">推荐模型: </span>
-              <span className="text-amber-600">{recommended.label}（需 {recommended.vram} 显存，建议 {recommended.gpu}）</span>
+              <span className="font-bold text-amber-700">{t('settings.recommendedModel')}: </span>
+              <span className="text-amber-600">{recommended.label}{t('settings.recommendedVramDesc', { vram: recommended.vram, gpu: recommended.gpu })}</span>
             </div>
           )}
 
           {/* Select downloaded model to use */}
           <div>
             <div className="mb-2 flex items-center gap-1">
-              <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">选择使用模型</span>
-              <InfoTooltip text="从已下载的模型中选择一个作为当前推理引擎" />
+              <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">{t('settings.selectModel')}</span>
+              <InfoTooltip text={t('settings.selectModelTooltip')} />
             </div>
             <select
               value={localModel}
@@ -481,7 +483,7 @@ export default function SettingsPanel() {
               }}
               className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold outline-none transition-all focus:border-blue-300 focus:ring-4 focus:ring-blue-50"
             >
-              <option value="">未选择</option>
+              <option value="">{t('settings.unselected')}</option>
               {Object.entries(downloadStates).filter(([, ds]) => ds.status === 'done').map(([key]) => {
                 const m = models.find((mod) => mod.key === key);
                 if (!m) return null;
@@ -494,8 +496,8 @@ export default function SettingsPanel() {
           <div className="grid grid-cols-2 gap-4">
             <div>
               <div className="mb-2 flex items-center gap-1">
-                <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">精度</span>
-                <InfoTooltip text="bf16 推荐用于 RTX 30 系列及以上；如模型不支持可切换 fp16、fp32 或 auto" />
+                <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">{t('settings.precision')}</span>
+                <InfoTooltip text={t('settings.precisionTooltip')} />
               </div>
               <select value={dtype} onChange={(e) => setDtype(e.target.value)}
                 className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold outline-none transition-all focus:border-blue-300 focus:ring-4 focus:ring-blue-50">
@@ -507,8 +509,8 @@ export default function SettingsPanel() {
             </div>
             <div>
               <div className="mb-2 flex items-center gap-1">
-                <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">最大 Token</span>
-                <InfoTooltip text="每次推理最大输出的 token 数量，越大回答越详细但越慢" />
+                <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">{t('settings.maxTokens')}</span>
+                <InfoTooltip text={t('settings.maxTokensTooltip')} />
               </div>
               <input
                 type="number" value={maxTokens} onChange={(e) => setMaxTokens(Number(e.target.value))}
@@ -517,15 +519,15 @@ export default function SettingsPanel() {
             </div>
             <div>
               <div className="mb-2 flex items-center gap-1">
-                <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">温度 ({temp})</span>
-                <InfoTooltip text="0=确定性输出，1=更随机有创意，推荐 0.7" />
+                <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">{t('settings.temperature')} ({temp})</span>
+                <InfoTooltip text={t('settings.temperatureTooltip')} />
               </div>
               <input type="range" min="0" max="2" step="0.05" value={temp} onChange={(e) => setTemp(Number(e.target.value))} className="w-full accent-blue-500" />
             </div>
             <div>
               <div className="mb-2 flex items-center gap-1">
-                <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">本地端口</span>
-                <InfoTooltip text="仅保存本地模型验证端口，不会由主后端自动拉起或接管。" />
+                <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">{t('settings.localPort')}</span>
+                <InfoTooltip text={t('settings.localPortTooltip')} />
               </div>
               <input
                 type="number" value={localPort} onChange={(e) => setLocalPort(Number(e.target.value) || 8000)}
@@ -534,8 +536,8 @@ export default function SettingsPanel() {
             </div>
             <div>
               <div className="mb-2 flex items-center gap-1">
-                <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">超时 (秒)</span>
-                <InfoTooltip text="单次模型调用最大等待时间，超时则返回错误" />
+                <span className="text-xs font-black uppercase tracking-[0.14em] text-gray-500">{t('settings.timeout')}</span>
+                <InfoTooltip text={t('settings.timeoutTooltip')} />
               </div>
               <input
                 type="number" value={timeoutSec} onChange={(e) => setTimeoutSec(Number(e.target.value))}
@@ -546,12 +548,12 @@ export default function SettingsPanel() {
 
           {/* ===== Model Download Cards ===== */}
           <div className="mb-6">
-            <h3 className="mb-3 text-sm font-black uppercase tracking-[0.14em] text-gray-500">可选模型</h3>
+            <h3 className="mb-3 text-sm font-black uppercase tracking-[0.14em] text-gray-500">{t('settings.optionalModels')}</h3>
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               {models.map((m) => renderCard(m, false))}
               {models.length === 0 && (
                 <div className="col-span-2 rounded-2xl border border-dashed border-gray-200 bg-gray-50 py-10 text-center text-sm text-gray-400">
-                  加载模型列表中...
+                   {t('settings.loadingModels')}
                 </div>
               )}
             </div>
@@ -562,7 +564,7 @@ export default function SettingsPanel() {
 
       {/* ===== Save Button ===== */}
       <div className="sticky bottom-0 border-t border-gray-100 bg-white/90 pt-6 backdrop-blur flex items-center gap-2">
-        <span className="text-xs text-gray-400">{saving ? '保存中...' : '已自动保存'}</span>
+        <span className="text-xs text-gray-400">{saving ? t('settings.saving') : t('settings.autoSaved')}</span>
         <span className="text-xs text-emerald-500">{saving ? '' : '✓'}</span>
       </div>
 
@@ -574,10 +576,10 @@ export default function SettingsPanel() {
               <div className="absolute -right-12 -top-16 h-44 w-44 rounded-full bg-white/20 blur-2xl"></div>
               <div className="relative flex items-start justify-between gap-4">
                 <div>
-                  <p className="text-xs font-bold uppercase tracking-[0.28em] text-white/75">操作确认</p>
+                  <p className="text-xs font-bold uppercase tracking-[0.28em] text-white/75">{t('settings.confirmTitle')}</p>
                   <h2 className="mt-2 text-2xl font-black">{confirmModal.title}</h2>
                 </div>
-                <button type="button" onClick={() => setConfirmModal(null)} className="rounded-full bg-white/15 p-2 text-white transition-colors hover:bg-white/25" aria-label="关闭弹窗"><X size={20} /></button>
+                <button type="button" onClick={() => setConfirmModal(null)} className="rounded-full bg-white/15 p-2 text-white transition-colors hover:bg-white/25" aria-label={t('settings.closeModal')}><X size={20} /></button>
               </div>
             </div>
             <div className="space-y-4 p-6">
@@ -586,7 +588,7 @@ export default function SettingsPanel() {
               </div>
             </div>
             <div className="flex justify-end gap-3 border-t border-gray-100 bg-gray-50 px-6 py-4">
-              <button onClick={() => setConfirmModal(null)} className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-bold text-gray-600 hover:bg-gray-100">取消</button>
+              <button onClick={() => setConfirmModal(null)} className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-bold text-gray-600 hover:bg-gray-100">{t('settings.cancel')}</button>
               <button onClick={confirmModal.onConfirm} className="rounded-xl bg-gray-900 px-5 py-2 text-sm font-black text-white shadow-lg shadow-gray-200 hover:bg-pink-600 transition-colors">{confirmModal.confirmText}</button>
             </div>
           </div>

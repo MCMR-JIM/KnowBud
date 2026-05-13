@@ -1,69 +1,73 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { ArrowLeft, BookOpen, Search, Smile, Mic, Send, Zap, Loader2, Volume2, Pause, Check, MessageCircle, Camera } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import { ArrowLeft, BookOpen, Mic, Send, Zap, Loader2, Volume2, Pause, Check, MessageCircle, Camera, Smile } from 'lucide-react';
 import PdfViewer from '../components/PdfViewer';
 import CelebrationModal from '../components/CelebrationModal';
 import { SessionAPI, apiClient } from '../api/client';
 import { useAppDialog } from '../components/AppDialog';
+import LanguageSwitcher from '../i18n/LanguageSwitcher';
 
-// ================= 模块一：数据卡片 =================
-const UserStatsCard = ({ totalScore = 0 }) => {
+const UserStatsCard = ({ totalScore = 0 }: { totalScore?: number }) => {
+  const { t } = useTranslation();
   const maxScore = 500;
   const pct = Math.min(Math.round((totalScore / maxScore) * 100), 100);
   return (
     <div className="w-full flex flex-col items-center justify-center gap-3 bg-white/60 backdrop-blur-xl p-6 rounded-[2.5rem] shadow-lg border-2 border-white pointer-events-auto hover:-translate-y-1 transition-all cursor-pointer">
       <div className="flex items-center gap-2">
         <Zap size={32} className="text-fuchsia-400 fill-fuchsia-400 animate-pulse shrink-0" />
-        <span className="text-indigo-950 font-black text-3xl tracking-tight">{totalScore} 能量</span>
+        <span className="text-indigo-950 font-black text-3xl tracking-tight">{totalScore} {t('study.energy')}</span>
       </div>
       <div className="w-full bg-gray-200 rounded-full h-4 overflow-hidden shadow-inner">
         <div className="bg-gradient-to-r from-yellow-300 to-orange-400 h-full rounded-full transition-all duration-700 ease-out" style={{ width: `${pct}%` }} />
       </div>
       <div className="bg-white/60 px-4 py-1.5 rounded-full border border-white shadow-sm mt-1">
-        <span className="text-gray-600 text-sm font-bold">坚持学习，继续加油！</span>
+        <span className="text-gray-600 text-sm font-bold">{t('study.keepLearning')}</span>
       </div>
     </div>
   );
 };
 
-// ================= 模块二：知识星图 =================
-const InlineKnowledgeMap = ({ nodes, onSelectNode }: { nodes: any[], onSelectNode: (id: string) => void }) => (
-  <div className="w-full flex-1 min-h-0 flex flex-col bg-white/60 backdrop-blur-xl p-5 rounded-[2rem] shadow-lg border-2 border-white pointer-events-auto overflow-hidden">
-    <div className="bg-purple-100 text-purple-800 px-4 py-1.5 rounded-full font-black text-xs mb-4 flex items-center justify-center gap-2 border border-purple-200 shrink-0 mx-auto w-fit">
-      <span className="text-lg font-bold">🗺️ 探索星图</span>
-    </div>
-    <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar">
-      {nodes.length === 0 ? (
-        <div className="text-center text-gray-400 text-sm mt-10">这里暂时没有任务哦</div>
-      ) : (
-        <div className="flex flex-col items-start relative w-full pl-4 py-2">
-          <div className="absolute left-[31px] top-4 bottom-4 w-1 bg-gray-200/60 rounded-full z-0" />
-          {nodes.map((node) => {
-            const isCompleted = node.status === 'completed';
-            const isCurrent = node.status === 'current';
+const InlineKnowledgeMap = ({ nodes, onSelectNode }: { nodes: any[], onSelectNode: (id: string) => void }) => {
+  const { t } = useTranslation();
+  return (
+    <div className="w-full flex-1 min-h-0 flex flex-col bg-white/60 backdrop-blur-xl p-5 rounded-[2rem] shadow-lg border-2 border-white pointer-events-auto overflow-hidden">
+      <div className="bg-purple-100 text-purple-800 px-4 py-1.5 rounded-full font-black text-xs mb-4 flex items-center justify-center gap-2 border border-purple-200 shrink-0 mx-auto w-fit">
+        <span className="text-lg font-bold">🗺️ {t('study.exploreMap')}</span>
+      </div>
+      <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar">
+        {nodes.length === 0 ? (
+          <div className="text-center text-gray-400 text-sm mt-10">{t('study.noTasks')}</div>
+        ) : (
+          <div className="flex flex-col items-start relative w-full pl-4 py-2">
+            <div className="absolute left-[31px] top-4 bottom-4 w-1 bg-gray-200/60 rounded-full z-0" />
+            {nodes.map((node) => {
+              const isCompleted = node.status === 'completed';
+              const isCurrent = node.status === 'current';
 
-            return (
-              <div key={node.id} onClick={() => onSelectNode(node.id)} className="flex flex-row items-center w-full mb-5 relative z-10 cursor-pointer hover:opacity-75 transition-all hover:translate-x-1">
-                <div className={`w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-sm border-2 transition-all duration-300 ${isCompleted ? 'bg-indigo-100 border-indigo-300 text-indigo-600 shadow-sm' : isCurrent ? 'bg-gradient-to-tr from-purple-400 to-fuchsia-400 border-white text-white shadow-md animate-pulse' : 'bg-gray-100 border-gray-200 text-gray-400 grayscale opacity-60'}`}>
-                  {isCompleted ? <Check size={16} strokeWidth={4} /> : (isCurrent ? '📍' : '🔒')}
+              return (
+                <div key={node.id} onClick={() => onSelectNode(node.id)} className="flex flex-row items-center w-full mb-5 relative z-10 cursor-pointer hover:opacity-75 transition-all hover:translate-x-1">
+                  <div className={`w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-sm border-2 transition-all duration-300 ${isCompleted ? 'bg-indigo-100 border-indigo-300 text-indigo-600 shadow-sm' : isCurrent ? 'bg-gradient-to-tr from-purple-400 to-fuchsia-400 border-white text-white shadow-md animate-pulse' : 'bg-gray-100 border-gray-200 text-gray-400 grayscale opacity-60'}`}>
+                    {isCompleted ? <Check size={16} strokeWidth={4} /> : (isCurrent ? '📍' : '🔒')}
+                  </div>
+                  <div className="ml-4 flex flex-col">
+                    <span className={`font-bold text-sm ${isCompleted ? 'text-indigo-600' : isCurrent ? 'text-fuchsia-600' : 'text-gray-400'}`}>{node.title}</span>
+                    {isCurrent && <span className="text-[10px] text-fuchsia-500 font-black mt-0.5">{t('study.currentPosition')}</span>}
+                  </div>
                 </div>
-                <div className="ml-4 flex flex-col">
-                  <span className={`font-bold text-sm ${isCompleted ? 'text-indigo-600' : isCurrent ? 'text-fuchsia-600' : 'text-gray-400'}`}>{node.title}</span>
-                  {isCurrent && <span className="text-[10px] text-fuchsia-500 font-black mt-0.5">当前位置</span>}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
-// ================= 模块三：右侧对话卡片 =================
 type ChatMessage = { id: number; role: 'ai' | 'user'; content: string };
 
-const InteractionCard = ({ messages, onSend, isLoading, isRecording, onStartRecord, onStopRecord, onPlayVoice, onToggleAudio, roleLabel = '星空兔', ttsStatus = 'idle' }: any) => {
+const InteractionCard = ({ messages, onSend, isLoading, isRecording, onStartRecord, onStopRecord, onPlayVoice, onToggleAudio, roleLabel = '', ttsStatus = 'idle' }: any) => {
+  const { t } = useTranslation();
   const [inputText, setInputText] = useState('');
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -76,12 +80,12 @@ const InteractionCard = ({ messages, onSend, isLoading, isRecording, onStartReco
       <div className="p-5 border-b-2 border-white/50 flex items-center justify-between bg-gradient-to-r from-purple-50/50 to-fuchsia-50/50">
         <div className="flex items-center gap-2 pl-2">
           <MessageCircle className="text-purple-500" size={24} />
-          <span className="font-black text-indigo-950 text-xl tracking-tight">{roleLabel}伴学</span>
+          <span className="font-black text-indigo-950 text-xl tracking-tight">{t('study.companionLabel', { role: roleLabel })}</span>
         </div>
       </div>
       <div className="flex-1 p-6 overflow-y-auto custom-scrollbar flex flex-col gap-4">
         {messages.length === 0 && !isLoading && (
-          <div className="m-auto text-gray-400 text-sm text-center">你可以随时按住麦克风和我聊天，或者翻开资料哦！</div>
+          <div className="m-auto text-gray-400 text-sm text-center">{t('media.waiting')}</div>
         )}
         {messages.map((msg: ChatMessage) => (
           <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
@@ -110,7 +114,7 @@ const InteractionCard = ({ messages, onSend, isLoading, isRecording, onStartReco
         ))}
         {isLoading && (
            <div className="flex items-center gap-3 text-purple-500 font-bold ml-2 bg-purple-50 w-fit px-4 py-2 rounded-full shadow-sm">
-             <Loader2 className="animate-spin" size={20} /> {roleLabel}思考中...
+             <Loader2 className="animate-spin" size={20} /> {t('learning.aiThinking', { role: roleLabel })}
            </div>
         )}
         <div ref={chatEndRef} />
@@ -118,29 +122,28 @@ const InteractionCard = ({ messages, onSend, isLoading, isRecording, onStartReco
       <div className="p-6 bg-white/50 backdrop-blur-md border-t-2 border-white flex flex-col gap-4">
         <div className="flex items-center gap-3 bg-white/80 rounded-2xl px-5 py-4 border-2 border-purple-50 focus-within:border-purple-300 transition-colors">
           <Smile size={28} className="text-purple-300 cursor-pointer hover:text-purple-500" />
-          <input type="text" value={inputText} onChange={(e) => setInputText(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleSendClick(); } }} disabled={isLoading} placeholder="打字告诉兔兔..." className="flex-1 min-w-0 bg-transparent text-lg outline-none text-indigo-900 font-medium disabled:opacity-50" />
+          <input type="text" value={inputText} onChange={(e) => setInputText(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleSendClick(); } }} disabled={isLoading} placeholder={t('study.chatPlaceholder', { role: roleLabel })} className="flex-1 min-w-0 bg-transparent text-lg outline-none text-indigo-900 font-medium disabled:opacity-50" />
           <Send onClick={handleSendClick} size={28} className={`shrink-0 cursor-pointer transition-colors hover:scale-110 ${inputText && !isLoading ? 'text-purple-500' : 'text-purple-200'}`} />
         </div>
         <button onMouseDown={onStartRecord} onMouseUp={onStopRecord} onMouseLeave={onStopRecord} disabled={isLoading} className={`w-full py-5 text-white rounded-2xl font-black text-xl transition-all flex items-center justify-center gap-3 cursor-pointer relative overflow-hidden disabled:opacity-50 ${isRecording ? 'bg-fuchsia-400 shadow-[0_0_25px_rgba(232,121,249,0.6)]' : 'bg-gradient-to-r from-purple-400 to-fuchsia-500 shadow-lg hover:shadow-xl'}`}>
-          <Mic size={26} className={isRecording ? "animate-bounce" : ""} /> {isRecording ? '正在仔细听...' : '按住说话'}
+          <Mic size={26} className={isRecording ? "animate-bounce" : ""} /> {isRecording ? t('study.listeningBtn') : t('study.holdToSpeakBtn')}
         </button>
       </div>
     </div>
   );
 };
 
-// ================= 模块四：儿童信息弹窗 (支持真实图片上传) =================
 const ProfileModal = ({ profile, onSave, onClose }: any) => {
+  const { t } = useTranslation();
   const [formData, setFormData] = useState(profile);
   const avatars = ['🐰', '👦', '👧', '🦖', '🐼'];
 
-  // 🌟 图片上传处理逻辑
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       const reader = new FileReader();
       reader.onloadend = () => {
-        setFormData({ ...formData, avatar: reader.result as string }); // 保存为 base64
+        setFormData({ ...formData, avatar: reader.result as string });
       };
       reader.readAsDataURL(file);
     }
@@ -151,9 +154,8 @@ const ProfileModal = ({ profile, onSave, onClose }: any) => {
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-indigo-950/40 backdrop-blur-sm transition-all">
       <div className="bg-white/90 backdrop-blur-2xl rounded-[2.5rem] p-8 shadow-2xl flex flex-col w-full max-w-sm mx-4 relative border-4 border-white animate-[bounce_0.5s_ease-out_1]">
-        <h2 className="text-2xl font-black text-indigo-950 mb-6 text-center">我的名片</h2>
+        <h2 className="text-2xl font-black text-indigo-950 mb-6 text-center">{t('profileModal.title')}</h2>
 
-        {/* 🌟 升级版头像选择区 */}
         <div className="flex flex-col items-center mb-6">
           <label className="cursor-pointer relative group flex flex-col items-center">
             <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
@@ -167,7 +169,7 @@ const ProfileModal = ({ profile, onSave, onClose }: any) => {
             <div className="absolute bottom-6 right-0 bg-fuchsia-500 text-white p-2 rounded-full shadow-md z-20 group-hover:scale-110 transition-transform">
                <Camera size={16} />
             </div>
-            <span className="text-xs text-gray-400 mt-3 font-bold group-hover:text-purple-500">点击上传专属照片</span>
+            <span className="text-xs text-gray-400 mt-3 font-bold group-hover:text-purple-500">{t('profileModal.uploadPhoto')}</span>
           </label>
         </div>
 
@@ -179,31 +181,30 @@ const ProfileModal = ({ profile, onSave, onClose }: any) => {
           ))}
         </div>
 
-        {/* 资料表单 */}
         <div className="space-y-4 mb-8">
           <div>
-            <label className="block text-sm font-bold text-gray-600 mb-1 ml-1">名字</label>
+            <label className="block text-sm font-bold text-gray-600 mb-1 ml-1">{t('profileModal.name')}</label>
             <input type="text" value={formData.name} onChange={e => setFormData({ ...formData, name: e.target.value })} className="w-full bg-white/80 border-2 border-purple-100 rounded-xl px-4 py-2 outline-none focus:border-purple-400 font-bold text-indigo-900 transition-colors" />
           </div>
           <div className="flex gap-4">
             <div className="flex-1">
-              <label className="block text-sm font-bold text-gray-600 mb-1 ml-1">年龄</label>
+              <label className="block text-sm font-bold text-gray-600 mb-1 ml-1">{t('profileModal.age')}</label>
               <input type="number" value={formData.age} onChange={e => setFormData({ ...formData, age: e.target.value })} className="w-full bg-white/80 border-2 border-purple-100 rounded-xl px-4 py-2 outline-none focus:border-purple-400 font-bold text-indigo-900 transition-colors" />
             </div>
             <div className="flex-1">
-              <label className="block text-sm font-bold text-gray-600 mb-1 ml-1">性别</label>
+              <label className="block text-sm font-bold text-gray-600 mb-1 ml-1">{t('profileModal.gender')}</label>
               <select value={formData.gender} onChange={e => setFormData({ ...formData, gender: e.target.value })} className="w-full bg-white/80 border-2 border-purple-100 rounded-xl px-4 py-2 outline-none focus:border-purple-400 font-bold text-indigo-900 transition-colors appearance-none cursor-pointer">
-                <option value="boy">男生</option>
-                <option value="girl">女生</option>
-                <option value="secret">保密</option>
+                <option value="boy">{t('profileModal.boy')}</option>
+                <option value="girl">{t('profileModal.girl')}</option>
+                <option value="secret">{t('profileModal.secret')}</option>
               </select>
             </div>
           </div>
         </div>
 
         <div className="flex gap-4">
-          <button onClick={onClose} className="flex-1 py-3 bg-gray-100 text-gray-600 font-bold rounded-2xl hover:bg-gray-200 transition-colors cursor-pointer">取消</button>
-          <button onClick={() => { onSave(formData); onClose(); }} className="flex-[2] py-3 bg-gradient-to-r from-purple-500 to-fuchsia-500 text-white font-bold rounded-2xl hover:scale-105 active:scale-95 transition-all shadow-md cursor-pointer">保存修改</button>
+          <button onClick={onClose} className="flex-1 py-3 bg-gray-100 text-gray-600 font-bold rounded-2xl hover:bg-gray-200 transition-colors cursor-pointer">{t('common.cancel')}</button>
+          <button onClick={() => { onSave(formData); onClose(); }} className="flex-[2] py-3 bg-gradient-to-r from-purple-500 to-fuchsia-500 text-white font-bold rounded-2xl hover:scale-105 active:scale-95 transition-all shadow-md cursor-pointer">{t('profileModal.saveChanges')}</button>
         </div>
       </div>
     </div>
@@ -211,20 +212,18 @@ const ProfileModal = ({ profile, onSave, onClose }: any) => {
 };
 
 
-// ================= 主容器 =================
 export default function StudyRoom() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
   const appDialog = useAppDialog();
 
-  // 🌟 核心：解析 URL 中的 mode 参数
   const searchParams = new URLSearchParams(location.search);
-  const playMode = searchParams.get('mode') || 'learn'; // 'learn' 或 'review'
+  const playMode = searchParams.get('mode') || 'learn';
 
-  // 读取身份选择界面的角色状态
   const savedRole = (localStorage.getItem('knowbud_role') as 'rabbit' | 'dinosaur') || 'rabbit';
   const roleEmoji = savedRole === 'rabbit' ? '🐰' : '🦖';
-  const roleLabel = savedRole === 'rabbit' ? '星空兔' : '小恐龙';
+  const roleLabel = savedRole === 'rabbit' ? t('roles.starRabbit') : t('roles.littleDino');
 
   const [userProfile, setUserProfile] = useState(() => {
     const saved = localStorage.getItem('knowbud_profile');
@@ -236,7 +235,7 @@ export default function StudyRoom() {
   const [activeSubjectId, setActiveSubjectId] = useState<string>('');
   const [allTopics, setAllTopics] = useState<any[]>([]);
   const [treeNodes, setTreeNodes] = useState<any[]>([]);
-  const [reviewQueueTopics, setReviewQueueTopics] = useState<string[]>([]); // 🌟 存储复习队列 ID
+  const [reviewQueueTopics, setReviewQueueTopics] = useState<string[]>([]);
   
   const [currentTopicId, setCurrentTopicId] = useState('');
   const [pdfResourceUrl, setPdfResourceUrl] = useState<string | null>(null);
@@ -261,7 +260,6 @@ export default function StudyRoom() {
   const ttsBlobUrlRef = useRef<string | null>(null);
   const [ttsStatus, setTtsStatus] = useState<'idle' | 'loading' | 'playing' | 'paused'>('idle');
 
-  // 始终保持 ref 与 state 同步，消除闭包陷阱
   useEffect(() => { currentTopicIdRef.current = currentTopicId; }, [currentTopicId]);
   useEffect(() => {
     allTopicsRef.current = allTopics;
@@ -273,12 +271,11 @@ export default function StudyRoom() {
     setMessages(prev => [...prev, { id: Date.now(), role, content }]);
   };
 
-  // 🌟 新增：如果处于复习模式，拉取后端的复习队列
   useEffect(() => {
     if (playMode === 'review') {
       apiClient.get('/session/review-queue').then(res => {
         setReviewQueueTopics(res.data.topics || []);
-      }).catch(e => console.error("获取复习队列失败", e));
+      }).catch(e => console.error("Failed to get review queue", e));
     }
   }, [playMode]);
 
@@ -305,7 +302,7 @@ export default function StudyRoom() {
       }
       setPrevMastery(newMasteryRecord);
     } catch (e) {
-      console.error("同步后端状态失败", e);
+      console.error("Failed to sync backend state", e);
     }
   };
 
@@ -316,10 +313,8 @@ export default function StudyRoom() {
       const rootSubjects = topics.filter((t: any) => t.tags?.includes('facet:root'));
       const normalNodes = topics.filter((t: any) => !t.tags?.includes('facet:root'));
       
-      // 🌟 核心分流逻辑：复习模式 VS 学习模式
       if (playMode === 'review') {
-        // 复习模式下，强行捏造一个“复习任务”大类
-        setSubjects([{ topic_id: 'review_root', title: '复习任务' }]);
+        setSubjects([{ topic_id: 'review_root', title: t('select.review') }]);
         setActiveSubjectId('review_root');
       } else {
         setSubjects(rootSubjects);
@@ -329,7 +324,7 @@ export default function StudyRoom() {
       setAllTopics(normalNodes);
       setMasteryList(data?.mastery || []);
       setTotalScore(data?.learning?.total_score || 0);
-    }).catch(e => console.error("获取图谱状态失败", e));
+    }).catch(e => console.error("Failed to get graph state", e));
   }, [playMode]);
 
   useEffect(() => {
@@ -337,7 +332,6 @@ export default function StudyRoom() {
 
     let subjectTopics = [];
 
-    // 🌟 过滤节点：复习模式只显示队列里的节点
     if (playMode === 'review') {
       subjectTopics = allTopics.filter(t => reviewQueueTopics.includes(t.topic_id));
     } else {
@@ -403,16 +397,16 @@ export default function StudyRoom() {
           setCurrentResourceName('');
           
           const topicNode = allTopicsRef.current.find(t => t.topic_id === currentTopicId);
-          const topicTitle = topicNode ? topicNode.title : "新知识";
-          const greeting = `${userProfile.name}，我们现在来探索关于【${topicTitle}】的奥秘吧，你可以按住麦克风问我任何问题哦！`;
+          const topicTitle = topicNode ? topicNode.title : t('study.energy');
+          const greeting = t('study.noPdfIntro', { name: userProfile.name, topic: topicTitle });
           addMessage('ai', greeting);
           fetchTTSAudio(greeting);
         }
-      }).catch(e => console.error("获取资源失败:", e));
+      }).catch(e => console.error("Failed to get resources:", e));
     });
   }, [currentTopicId, userProfile.name]);
 
-  const handlePageChange = async (p: number, totalPages: number = 0) => {
+  const handlePageChange = async (p: number, _totalPages: number = 0) => {
     if (!currentTopicId) return;
     if (triggeredPagesRef.current.has(p)) return; 
 
@@ -435,13 +429,12 @@ export default function StudyRoom() {
         triggeredPagesRef.current.add(p);
       }
     } catch (error) {
-      console.error("AI 巡场提问失败:", error);
+      console.error("AI patrol question failed:", error);
     } finally {
       setIsLoading(false);
     }
   };
 
-  // 仅拉取 TTS 音频并缓存（AI 回复时静默调用，不播放）
   const fetchTTSAudio = async (text: string) => {
     try {
       const res = await fetch('http://127.0.0.1:5501/tts', {
@@ -451,7 +444,6 @@ export default function StudyRoom() {
       });
       if (!res.ok) throw new Error(`TTS ${res.status}`);
       const blob = await res.blob();
-      // 释放上一次的 blob URL
       if (ttsBlobUrlRef.current) URL.revokeObjectURL(ttsBlobUrlRef.current);
       const blobUrl = URL.createObjectURL(blob);
       ttsBlobUrlRef.current = blobUrl;
@@ -460,11 +452,10 @@ export default function StudyRoom() {
       audio.onerror = () => setTtsStatus('idle');
       ttsAudioRef.current = audio;
     } catch (e) {
-      console.error('TTS 预加载失败:', e);
+      console.error('TTS preload failed:', e);
     }
   };
 
-  // 用户点击喇叭按钮时：拉取 + 播放
   const handlePlayVoice = async (text: string) => {
     if (ttsAudioRef.current) ttsAudioRef.current.pause();
     setTtsStatus('loading');
@@ -486,7 +477,7 @@ export default function StudyRoom() {
       await audio.play();
       setTtsStatus('playing');
     } catch (e) {
-      console.error('TTS 请求失败:', e);
+      console.error('TTS request failed:', e);
       setTtsStatus('idle');
     }
   };
@@ -508,15 +499,14 @@ export default function StudyRoom() {
     addMessage('user', textToSend);
     setIsLoading(true);
     try {
-      // 注入最新知识点上下文，避免闭包陷阱
       const topicTitle = currentTopicTitleRef.current;
-      const enriched = topicTitle ? `【正在学习：${topicTitle}】\n${textToSend}` : textToSend;
+      const enriched = topicTitle ? `【${t('learning.todayTopic')}:${topicTitle}】\n${textToSend}` : textToSend;
       const res = await SessionAPI.sendTextRealtime(enriched);
       addMessage('ai', res.data.reply_text);
       fetchTTSAudio(res.data.reply_text);
       await syncBackendState(true);
     } catch (error) {
-      addMessage('ai', '哎呀，网络好像断开了！');
+      addMessage('ai', t('study.networkError'));
     } finally {
       setIsLoading(false);
     }
@@ -538,7 +528,7 @@ export default function StudyRoom() {
       mediaRecorder.start();
       setIsRecording(true);
     } catch (error) {
-      await appDialog.alert("星空兔需要你的麦克风权限！");
+      await appDialog.alert(t('study.micPermission'));
     }
   };
 
@@ -557,7 +547,7 @@ export default function StudyRoom() {
       fetchTTSAudio(response.data.reply_text);
       await syncBackendState(true);
     } catch (error) {
-      addMessage('ai', '哎呀，语音魔法失效了！');
+      addMessage('ai', t('study.voiceFailed'));
     } finally {
       setIsLoading(false);
     }
@@ -571,7 +561,7 @@ export default function StudyRoom() {
       <header className="w-full max-w-[1800px] mx-auto h-20 md:h-24 bg-white/50 backdrop-blur-2xl border-2 border-white/70 rounded-3xl flex items-center justify-between px-8 shadow-sm shrink-0 z-50">
         <div className="flex items-center gap-6">
           <button onClick={() => navigate(-1)} className="flex items-center gap-2 px-5 py-2.5 bg-white/70 text-indigo-900 rounded-full font-black text-lg hover:bg-white active:scale-[0.96] transition-all cursor-pointer border border-white shadow-sm">
-            <ArrowLeft size={20} strokeWidth={3} /> 返回上一页
+            <ArrowLeft size={20} strokeWidth={3} /> {t('learning.backToPrevious')}
           </button>
           
           {subjects.length > 0 && (
@@ -594,11 +584,11 @@ export default function StudyRoom() {
         </div>
 
         <div className="flex items-center gap-6">
-          {/* 🌟 右上角渲染自定义头像 */}
+          <LanguageSwitcher />
           <div 
             onClick={() => setShowProfileModal(true)}
             className="w-14 h-14 rounded-full bg-purple-100 flex items-center justify-center text-purple-600 font-black text-2xl shadow-sm border-4 border-dashed border-purple-300 p-2 hover:scale-110 transition-transform cursor-pointer select-none overflow-hidden"
-            title="点击修改个人信息"
+            title={t('profileModal.title')}
           >
             {isCustomImage ? <img src={userProfile.avatar} alt="avatar" className="w-full h-full object-cover" /> : userProfile.avatar}
           </div>
@@ -618,7 +608,7 @@ export default function StudyRoom() {
               <div className="w-full bg-white/70 backdrop-blur-md px-6 py-3 border-b border-white/50 flex items-center justify-between z-20 shadow-sm shrink-0">
                 <div className="flex items-center gap-2">
                   <span className="bg-purple-100 text-purple-600 p-1.5 rounded-lg"><BookOpen size={16} /></span>
-                  <span className="font-bold text-indigo-900 text-sm">关联教材：{currentResourceName || '学习课件'}</span>
+                  <span className="font-bold text-indigo-900 text-sm">{t('study.associatedTextbook')}: {currentResourceName || t('study.learningMaterial')}</span>
                 </div>
               </div>
               <div className="flex-1 w-full relative p-4">
@@ -628,8 +618,8 @@ export default function StudyRoom() {
           ) : (
             <div className="flex flex-col items-center justify-center text-gray-400 gap-4 bg-white/50 border-2 border-dashed border-white m-4 rounded-2xl w-[calc(100%-2rem)] h-[calc(100%-2rem)]">
               <div className="text-8xl mb-4 animate-bounce">{roleEmoji}</div>
-              <p className="text-2xl font-black text-indigo-900">我们直接开始畅聊吧！</p>
-              <p className="text-sm font-medium bg-white/60 px-4 py-2 rounded-full border border-white">右侧的{roleLabel}已经准备好啦</p>
+              <p className="text-2xl font-black text-indigo-900">{t('study.letsChat')}</p>
+              <p className="text-sm font-medium bg-white/60 px-4 py-2 rounded-full border border-white">{t('study.companionReady', { role: roleLabel })}</p>
             </div>
           )}
         </div>
@@ -645,8 +635,7 @@ export default function StudyRoom() {
 
       {showCelebration && (
         <CelebrationModal 
-          topicTitle={treeNodes.find(n => n.id === currentTopicId)?.title || "新知识"} 
-          topicIcon={treeNodes.find(n => n.id === currentTopicId)?.icon || "🌟"}
+          subjectName={treeNodes.find(n => n.id === currentTopicId)?.title || t('study.energy')}
           onClose={() => setShowCelebration(false)} 
         />
       )}

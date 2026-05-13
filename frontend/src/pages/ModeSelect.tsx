@@ -1,7 +1,9 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { ArrowLeft, RefreshCw, Rocket, Sparkles, Repeat } from 'lucide-react';
 import Live2DRabbit from '../components/Live2DRabbit';
+import LanguageSwitcher from '../i18n/LanguageSwitcher';
 
 const ROLE_KEY = 'knowbud_role';
 type Role = 'rabbit' | 'dinosaur';
@@ -10,10 +12,9 @@ function getSavedRole(): Role {
   return (localStorage.getItem(ROLE_KEY) as Role) || 'rabbit';
 }
 function getRoleEmoji(role: Role) { return role === 'rabbit' ? '🐰' : '🦖'; }
-function getRoleLabel(role: Role) { return role === 'rabbit' ? '星空兔' : '小恐龙'; }
-function getCompanionText(role: Role) { return role === 'rabbit' ? '兔兔陪你学' : '恐龙陪你学'; }
 
 export default function ModeSelect() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const [role, setRole] = useState<Role>(getSavedRole);
 
@@ -24,8 +25,9 @@ export default function ModeSelect() {
   };
 
   const emoji = getRoleEmoji(role);
-  const label = getRoleLabel(role);
-  const companion = getCompanionText(role);
+  const label = role === 'rabbit' ? t('roles.starRabbit') : t('roles.littleDino');
+  const companion = role === 'rabbit' ? t('roles.rabbitCompany') : t('roles.dinoCompany');
+  const switchLabel = role === 'rabbit' ? `🦖 ${t('roles.littleDino')}` : `🐰 ${t('roles.starRabbit')}`;
 
   return (
     <div className="w-screen h-screen overflow-hidden bg-gradient-to-br from-indigo-50 via-purple-50 to-fuchsia-50 flex flex-col py-6 px-6 md:px-10 gap-6">
@@ -35,11 +37,15 @@ export default function ModeSelect() {
           onClick={() => navigate('/')}
           className="flex items-center gap-2 px-5 py-2.5 bg-white/70 backdrop-blur-2xl text-indigo-900 rounded-full font-black text-lg hover:bg-white active:scale-[0.96] transition-all cursor-pointer border border-white shadow-sm"
         >
-          <ArrowLeft size={20} strokeWidth={3} /> 返回身份选择
+          <ArrowLeft size={20} strokeWidth={3} /> {t('common.backToIdentity')}
         </button>
       </header>
 
       <main className="flex-1 w-full max-w-[1800px] mx-auto bg-white/40 backdrop-blur-2xl border-[6px] border-purple-300 rounded-[2.5rem] shadow-sm flex flex-col items-center justify-center p-6 xl:p-8 relative overflow-hidden">
+
+        <div className="absolute top-3 right-4 z-30">
+          <LanguageSwitcher />
+        </div>
 
         <div className="absolute top-8 left-16 text-6xl opacity-80 animate-[bounce_4s_infinite]">🌸</div>
         <div className="absolute top-12 right-24 text-7xl opacity-80 animate-[pulse_4s_infinite]">🌺</div>
@@ -49,7 +55,7 @@ export default function ModeSelect() {
 
         <div className="flex flex-col items-center mb-16 relative z-10 -mt-10">
           <h1 className="text-5xl md:text-6xl font-black text-indigo-950 mb-6 tracking-widest drop-shadow-sm">
-            今天想开启什么冒险？
+            {t('select.title')}
           </h1>
           <div className="flex items-center gap-3 bg-white/60 backdrop-blur-xl px-6 py-2.5 rounded-full border-2 border-white shadow-md animate-[bounce_4s_ease-in-out_infinite]">
             <div className="w-10 h-10 rounded-full bg-gradient-to-br from-purple-100 to-fuchsia-100 flex items-center justify-center text-2xl shadow-inner border-2 border-white transition-all duration-300">
@@ -67,9 +73,9 @@ export default function ModeSelect() {
             <div className="w-24 h-24 rounded-full bg-gradient-to-br from-indigo-100 to-purple-100 flex items-center justify-center mb-6 shadow-inner border-4 border-white group-hover:scale-110 transition-transform duration-300">
               <RefreshCw size={40} className="text-purple-500" strokeWidth={2.5} />
             </div>
-            <h2 className="text-2xl font-black text-indigo-950 mb-3 group-hover:text-purple-600 transition-colors">温故知新</h2>
+            <h2 className="text-2xl font-black text-indigo-950 mb-3 group-hover:text-purple-600 transition-colors">{t('select.review')}</h2>
             <p className="text-gray-500 font-bold text-sm bg-white/50 px-4 py-1.5 rounded-full border border-white shadow-sm">
-              复习学过的知识
+              {t('select.reviewDesc')}
             </p>
           </button>
 
@@ -79,17 +85,16 @@ export default function ModeSelect() {
           >
             <div className="absolute inset-0 rounded-[2.5rem] border-[6px] border-fuchsia-300/30 opacity-50 animate-ping pointer-events-none" style={{ animationDuration: '3s' }}></div>
             <div className="absolute -top-4 right-4 bg-gradient-to-r from-purple-400 to-fuchsia-500 text-white px-4 py-1.5 rounded-full font-black text-xs shadow-md border-2 border-white flex items-center gap-1 z-20">
-              <Sparkles size={14} /> 推荐
+              <Sparkles size={14} /> {t('select.recommended')}
             </div>
             <div className="w-24 h-24 rounded-full bg-gradient-to-br from-purple-100 to-fuchsia-100 flex items-center justify-center mb-6 shadow-inner border-4 border-white group-hover:scale-110 transition-transform duration-300 relative z-10">
               <Rocket size={40} className="text-fuchsia-500" strokeWidth={2.5} />
             </div>
-            <h2 className="text-2xl font-black text-indigo-950 mb-3 group-hover:text-fuchsia-600 transition-colors relative z-10">探索新世界</h2>
-            <p className="text-gray-500 font-bold text-sm bg-white/70 px-4 py-1.5 rounded-full border border-white shadow-sm relative z-10">学习家长发送的新卷轴</p>
+            <h2 className="text-2xl font-black text-indigo-950 mb-3 group-hover:text-fuchsia-600 transition-colors relative z-10">{t('select.explore')}</h2>
+            <p className="text-gray-500 font-bold text-sm bg-white/70 px-4 py-1.5 rounded-full border border-white shadow-sm relative z-10">{t('select.exploreDesc')}</p>
           </button>
         </div>
 
-        {/* 🌟 右下角：角色占位 + 切换按钮（垂直布局） */}
         <div className="absolute bottom-0 right-0 z-30 flex flex-col items-center gap-2">
           <div className="w-[350px] h-[350px] xl:w-[450px] xl:h-[450px] flex items-center justify-center group">
             <div className="w-full h-full rounded-full bg-gradient-to-br from-white to-fuchsia-100 border-[10px] border-white shadow-[0_15px_40px_rgba(217,70,239,0.25)] flex flex-col items-center justify-center relative">
@@ -104,11 +109,10 @@ export default function ModeSelect() {
             className="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-yellow-200 to-purple-200 text-indigo-900 rounded-full font-black text-sm hover:scale-105 active:scale-95 transition-transform cursor-pointer border-2 border-white shadow-md"
           >
             <Repeat size={16} strokeWidth={2.5} />
-            换成{role === 'rabbit' ? '🦖 小恐龙' : '🐰 星空兔'}
+            {t('select.switchTo')} {switchLabel}
           </button>
         </div>
 
-        {/* 🐱 左下角黑猫宠物（hijiki Live2D） */}
         <div className="absolute left-24 bottom-12 z-10 w-[300px] h-[300px]">
           <Live2DRabbit fallbackEmoji={emoji} />
         </div>

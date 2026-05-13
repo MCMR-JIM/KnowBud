@@ -4,6 +4,7 @@ import { ZoomIn, ZoomOut, ChevronLeft, ChevronRight, Loader2 } from 'lucide-reac
 
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
+import { useTranslation } from 'react-i18next';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 
@@ -17,6 +18,7 @@ interface PdfViewerProps {
 // 只需要调用 onRenderComplete(pageNumber, numPages) 即可，不要在里面写 if(page === total)
 
 export default function PdfViewer({ url, onRenderComplete }: PdfViewerProps) {
+  const { t } = useTranslation();
   const [numPages, setNumPages] = useState<number>(0);
   const [pageNumber, setPageNumber] = useState<number>(1);
   const [scale, setScale] = useState<number>(1.0);
@@ -59,14 +61,14 @@ export default function PdfViewer({ url, onRenderComplete }: PdfViewerProps) {
         <button
           onClick={() => setScale(s => Math.max(0.5, s - 0.2))}
           className="w-14 h-14 bg-white/95 text-purple-500 rounded-full shadow-lg border-4 border-purple-100 flex items-center justify-center hover:bg-purple-500 hover:text-white hover:scale-110 active:scale-90 transition-all cursor-pointer"
-          title="变小一点"
+          title={t('pdf.zoomOut')}
         >
           <ZoomOut size={32} strokeWidth={3} />
         </button>
         <button
           onClick={() => setScale(s => Math.min(2.5, s + 0.2))}
           className="w-14 h-14 bg-white/95 text-purple-500 rounded-full shadow-lg border-4 border-purple-100 flex items-center justify-center hover:bg-purple-500 hover:text-white hover:scale-110 active:scale-90 transition-all cursor-pointer"
-          title="变大一点"
+          title={t('pdf.zoomIn')}
         >
           <ZoomIn size={32} strokeWidth={3} />
         </button>
@@ -91,8 +93,8 @@ export default function PdfViewer({ url, onRenderComplete }: PdfViewerProps) {
         <Document
           file={url}
           onLoadSuccess={onDocumentLoadSuccess}
-          loading={<div className="flex flex-col items-center"><Loader2 className="animate-spin text-purple-400 mb-4" size={64} /><span className="text-purple-500 font-bold text-2xl">正在召唤知识卷轴...</span></div>}
-          error={<div className="flex flex-col items-center text-red-500 bg-red-50 p-8 rounded-3xl border border-red-100"><span className="text-6xl mb-4">📄</span><span className="font-bold text-2xl">卷轴打开失败</span></div>}
+          loading={<div className="flex flex-col items-center"><Loader2 className="animate-spin text-purple-400 mb-4" size={64} /><span className="text-purple-500 font-bold text-2xl">{t('pdf.loading')}</span></div>}
+          error={<div className="flex flex-col items-center text-red-500 bg-red-50 p-8 rounded-3xl border border-red-100"><span className="text-6xl mb-4">📄</span><span className="font-bold text-2xl">{t('pdf.loadFailed')}</span></div>}
         >
           <Page
             pageNumber={pageNumber} scale={scale}

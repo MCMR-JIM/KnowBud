@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 
 interface CelebrationModalProps {
   subjectName: string; // 比如：数学、自然科学
@@ -6,6 +7,7 @@ interface CelebrationModalProps {
 }
 
 export default function CelebrationModal({ subjectName, onClose }: CelebrationModalProps) {
+  const { t } = useTranslation();
   const [showTree, setShowTree] = useState(false);
 
   // 模拟撒花 2.5 秒后，浮现知识树网络
@@ -22,7 +24,7 @@ export default function CelebrationModal({ subjectName, onClose }: CelebrationMo
         <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none overflow-hidden animate-pulse">
           <div className="text-9xl animate-bounce mb-8">🎉🏆✨</div>
           <h2 className="text-4xl font-black text-white text-center drop-shadow-lg">
-            太棒啦！卷轴学习完成！
+            {t('celebration.title')}
           </h2>
         </div>
       )}
@@ -31,7 +33,7 @@ export default function CelebrationModal({ subjectName, onClose }: CelebrationMo
       <div className={`bg-white/95 backdrop-blur-xl w-[850px] h-[550px] rounded-[3rem] shadow-2xl border-8 border-indigo-100 p-10 flex flex-col transition-all duration-1000 transform ${showTree ? 'translate-y-0 opacity-100 scale-100' : 'translate-y-20 opacity-0 scale-95'}`}>
         
         <h2 className="text-3xl font-black text-indigo-900 text-center mb-12">
-          你点亮了【{subjectName}】的新节点！
+          {t('celebration.nodeUnlocked', { subject: subjectName })}
         </h2>
 
         {/* 树状网络展示区 */}
@@ -45,7 +47,7 @@ export default function CelebrationModal({ subjectName, onClose }: CelebrationMo
             <span className="mt-4 font-bold text-orange-600 text-xl">恐龙时代</span>
             {/* 节点气泡提示 */}
             <div className="absolute -top-12 bg-yellow-100 text-yellow-800 px-4 py-1.5 rounded-full text-sm font-bold animate-bounce shadow-md">
-              本次点亮！
+               {t('celebration.thisTime')}
             </div>
           </div>
 
@@ -78,7 +80,7 @@ export default function CelebrationModal({ subjectName, onClose }: CelebrationMo
             onClick={onClose} 
             className="px-10 py-4 bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-full font-black text-xl shadow-[0_10px_20px_rgba(99,102,241,0.3)] hover:shadow-[0_15px_30px_rgba(99,102,241,0.4)] hover:-translate-y-1 active:translate-y-0 transition-all cursor-pointer"
           >
-            太酷了，返回大厅！
+            {t('celebration.backToHall')}
           </button>
         </div>
       </div>

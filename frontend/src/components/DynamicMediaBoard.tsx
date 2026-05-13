@@ -1,9 +1,12 @@
+import { useTranslation } from 'react-i18next';
+
 interface MediaBoardProps {
   type: 'video' | 'iframe' | 'whiteboard';
   url?: string;
 }
 
 export default function DynamicMediaBoard({ type, url }: MediaBoardProps) {
+  const { t } = useTranslation();
   return (
     <div className="w-full flex-1 bg-black/5 rounded-2xl overflow-hidden flex flex-col border-2 border-white/80 relative">
       {/* 1. 视频模式 */}
@@ -26,7 +29,7 @@ export default function DynamicMediaBoard({ type, url }: MediaBoardProps) {
         <div className="relative w-full h-full bg-white">
           <canvas id="ai-whiteboard" className="w-full h-full touch-none" />
           <div className="absolute inset-0 flex items-center justify-center text-gray-400 pointer-events-none text-sm">
-            大模型老师正在准备白板...
+            {t('media.whiteboard')}
           </div>
         </div>
       )}
@@ -34,7 +37,7 @@ export default function DynamicMediaBoard({ type, url }: MediaBoardProps) {
       {/* 兜底状态：无资源时显示 */}
       {!url && type !== 'whiteboard' && (
         <div className="flex-1 flex items-center justify-center text-gray-400 p-10 text-center text-sm">
-          等待老师分享学习资源...
+          {t('media.waiting')}
         </div>
       )}
     </div>

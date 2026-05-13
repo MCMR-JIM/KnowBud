@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { ReactNode } from 'react';
 
 type DialogIntent = 'info' | 'success' | 'warning' | 'error' | 'danger';
@@ -31,16 +32,17 @@ const intentStyles: Record<DialogIntent, { badge: string; button: string; icon: 
   danger: { badge: 'bg-red-50 text-red-600 border-red-100', button: 'bg-red-600 hover:bg-red-700', icon: '!' },
 };
 
-function defaultTitle(intent: DialogIntent) {
-  if (intent === 'success') return '操作成功';
-  if (intent === 'warning') return '需要注意';
-  if (intent === 'error') return '操作失败';
-  if (intent === 'danger') return '确认危险操作';
-  return '提示';
-}
-
 export function AppDialogProvider({ children }: { children: ReactNode }) {
+  const { t } = useTranslation();
   const [dialog, setDialog] = useState<DialogRequest | null>(null);
+
+  function defaultTitle(intent: DialogIntent) {
+    if (intent === 'success') return t('dialog.success');
+    if (intent === 'warning') return t('dialog.warning');
+    if (intent === 'error') return t('dialog.error');
+    if (intent === 'danger') return t('dialog.danger');
+    return t('dialog.info');
+  }
 
   const openDialog = useCallback((mode: 'alert' | 'confirm', message: string, options: DialogOptions = {}) => {
     const intent = options.intent || (mode === 'confirm' ? 'warning' : 'info');
@@ -51,8 +53,8 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
         resolve,
         intent,
         title: options.title || defaultTitle(intent),
-        confirmText: options.confirmText || (mode === 'confirm' ? '确认' : '知道了'),
-        cancelText: options.cancelText || '取消',
+        confirmText: options.confirmText || (mode === 'confirm' ? t('dialog.confirm') : t('dialog.gotIt')),
+        cancelText: options.cancelText || t('dialog.cancel'),
       });
     });
   }, []);

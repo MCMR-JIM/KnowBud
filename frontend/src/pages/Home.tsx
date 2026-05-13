@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
 import { Rocket, Users } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { SessionAPI } from '../api/client';
+import LanguageSwitcher from '../i18n/LanguageSwitcher';
 
 const FALLBACK_WORDS = ['拼音', '算术', 'ABC', '科学', '古诗', '美术'];
 
@@ -37,6 +39,7 @@ function pickRandom(arr: string[], count: number): string[] {
 }
 
 export default function Home() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const [words, setWords] = useState<string[]>(FALLBACK_WORDS);
 
@@ -110,6 +113,10 @@ export default function Home() {
       {/* ── 主卡片 ── */}
       <div className="relative z-10 border-[6px] border-purple-200/70 rounded-[2.5rem] bg-white/50 backdrop-blur-xl p-12 flex flex-col items-center w-[92vw] max-w-5xl shadow-2xl ring-4 ring-purple-100/40">
 
+        <div className="absolute -top-3 right-4 z-20">
+          <LanguageSwitcher />
+        </div>
+
         <span className="absolute -top-5 -left-5 text-3xl select-none">✨</span>
         <span className="absolute -top-5 -right-5 text-3xl select-none">✨</span>
         <span className="absolute -bottom-5 -left-5 text-3xl select-none">✨</span>
@@ -117,9 +124,9 @@ export default function Home() {
 
         <div className="text-center mb-12">
           <h1 className="text-5xl md:text-6xl font-sans font-black tracking-widest mb-4 text-transparent bg-clip-text bg-gradient-to-r from-purple-500 via-fuchsia-500 to-pink-500">
-            🌟 欢迎来到星梦乐园 🎈
+            🌟 {t('home.title')} 🎈
           </h1>
-          <p className="text-gray-500 text-lg font-bold">请选择你的身份，开启奇妙旅程</p>
+          <p className="text-gray-500 text-lg font-bold">{t('home.subtitle')}</p>
         </div>
 
         <div className="flex flex-col md:flex-row gap-8 justify-center relative">
@@ -127,13 +134,13 @@ export default function Home() {
             <div className="w-20 h-20 mx-auto mb-6 rounded-full bg-white/90 shadow-md flex items-center justify-center text-primary">
               <Rocket size={40} />
             </div>
-            <h2 className="text-2xl font-bold text-dark mb-2">我是小朋友</h2>
-            <p className="text-gray-500 mb-8">进入魔法学习舱，看动画闯关</p>
+            <h2 className="text-2xl font-bold text-dark mb-2">{t('home.kid')}</h2>
+            <p className="text-gray-500 mb-8">{t('home.kidDesc')}</p>
             <button
               onClick={() => navigate('/select')}
               className="w-full py-3 px-6 bg-white/90 border-2 border-primary text-primary font-bold rounded-2xl shadow-sm hover:bg-primary hover:text-white transition-all"
             >
-              启动学习舱
+              {t('home.kidBtn')}
             </button>
           </div>
 
@@ -141,13 +148,13 @@ export default function Home() {
             <div className="w-20 h-20 mx-auto mb-6 rounded-full bg-white/90 shadow-md flex items-center justify-center text-blue">
               <Users size={40} />
             </div>
-            <h2 className="text-2xl font-bold text-dark mb-2">我是家长</h2>
-            <p className="text-gray-500 mb-8">查看学习报告，配置课程内容</p>
+            <h2 className="text-2xl font-bold text-dark mb-2">{t('home.parent')}</h2>
+            <p className="text-gray-500 mb-8">{t('home.parentDesc')}</p>
             <button
               onClick={() => navigate('/admin')}
               className="w-full py-3 px-6 bg-white/90 border-2 border-blue text-blue font-bold rounded-2xl shadow-sm hover:bg-blue hover:text-white transition-all"
             >
-              进入控制台
+              {t('home.parentBtn')}
             </button>
           </div>
         </div>

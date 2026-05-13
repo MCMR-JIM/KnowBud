@@ -50,6 +50,12 @@ export const SessionAPI = {
     apiClient.get('/session/knowledge/page', {
       params: { topic_id: topicId, page: pageNumber }
     }),
+
+  // ================= 7. TTS 语音合成 =================
+  synthesizeSpeech: (text: string, voiceName?: string) =>
+    apiClient.post('/session/tts/synthesize', { text, voice_name: voiceName }, {
+      responseType: 'blob',
+    }),
 };
 
 export const ResourceAPI = {
