@@ -1419,19 +1419,19 @@ export default function AdminDashboard() {
         tags = res.data?.tags || editingSubject.tags || [];
       }
 
-      if (!topicId) throw new Error('学科创建失败');
+      if (!topicId) throw new Error(t('admin.subject.saveFailed'));
 
       setSubjectModalOpen(false);
       resetSubjectModal();
       void fetchAllData();
       startSubjectUploads(topicId, tags, filesToUpload);
     } catch (error) {
-      console.error('保存学科失败', error);
+      console.error('handleSaveSubject failed', error);
       if (isLlmNotConfiguredError(error)) {
         await appDialog.alert(LLM_NOT_CONFIGURED_MESSAGE, { title: t('admin.settings.notConfigured'), intent: 'warning' });
-        return;
+      } else {
+        await appDialog.alert(getErrorMessage(error) || t('admin.subject.saveFailed'), { title: t('admin.subject.saveFailedTitle'), intent: 'error' });
       }
-      await appDialog.alert(t('admin.subject.saveFailed'), { title: t('admin.subject.saveFailedTitle'), intent: 'error' });
     } finally {
       setModalSaving(false);
     }

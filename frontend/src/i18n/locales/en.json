@@ -142,6 +142,8 @@
       "nameMissing": "Subject name required",
       "uploadFailed": "Subject created, but resource upload failed. Please retry later.",
       "uploadFailedTitle": "Resource Upload Failed",
+      "timeout": "Request timed out (backend processing may still be in progress). The list will auto-refresh.",
+      "timeoutTitle": "Request Timeout",
       "fileFormatUnsupported": "Only video, audio, image, PDF, Word, PPT, TXT formats are supported",
       "fileFormatTitle": "Unsupported File Format",
       "fileTooLarge": "File size cannot exceed 500MB",

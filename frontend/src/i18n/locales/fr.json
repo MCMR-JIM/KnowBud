@@ -142,6 +142,8 @@
       "nameMissing": "Nom de matière requis",
       "uploadFailed": "Matière créée, mais le téléchargement a échoué. Réessayez plus tard.",
       "uploadFailedTitle": "Échec du Téléchargement",
+      "timeout": "Délai d'attente dépassé (le traitement backend peut être en cours). La liste sera actualisée automatiquement.",
+      "timeoutTitle": "Délai Dépassé",
       "fileFormatUnsupported": "Seuls les formats vidéo, audio, image, PDF, Word, PPT, TXT sont supportés",
       "fileFormatTitle": "Format de Fichier Non Supporté",
       "fileTooLarge": "La taille du fichier ne peut pas dépasser 500 Mo",

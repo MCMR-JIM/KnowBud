@@ -142,6 +142,8 @@
       "nameMissing": "缺少学科名",
       "uploadFailed": "学科已创建，但资源上传失败，请稍后重试",
       "uploadFailedTitle": "资源上传失败",
+      "timeout": "请求超时（后端处理可能仍在进行），将自动刷新列表",
+      "timeoutTitle": "请求超时",
       "fileFormatUnsupported": "仅支持视频、音频、图片、PDF、Word、PPT、TXT等学习常用格式",
       "fileFormatTitle": "文件格式不支持",
       "fileTooLarge": "文件大小不能超过 500MB",
